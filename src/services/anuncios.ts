@@ -7,7 +7,6 @@ import {
   updateDoc,
   deleteDoc,
   query,
-  limit,
   Timestamp,
 } from "firebase/firestore";
 import { db, auth } from "../lib/firebase";
