@@ -12,6 +12,7 @@ import {
   appendQualifiedLeadRow,
   getActiveStyle,
   getConversationByChatId,
+  getConversationByPhoneAndListing,
   upsertConversation,
   addPendingMessage,
   updateBufferTask,
@@ -742,6 +743,52 @@ export const newLead = onRequest({ cors: true, region: REGION }, async (req, res
   if (!phone || !listingCode) {
     res.status(400).json({ error: "telefono y anuncio son obligatorios" });
     return;
+  }
+
+  // Check if conversation already exists for this phone and listing and is still open
+  const existingConv = await getConversationByPhoneAndListing(phone, listingCode);
+  if (existingConv && !existingConv.isFinished) {
+    console.log(`Lead ${phone} already has an open conversation for ${listingCode}. Sending returning message.`);
+
+    const isSpanish = isSpanishPhoneNumber(phone);
+    const returnMessage = isSpanish
+      ? "Has vuelto a contactar por Idealista en relación al anuncio mostrado arriba, ¿cómo te puedo ayudar?"
+      : "You have contacted us again through Idealista regarding the property shown above, how can I help you?";
+
+    try {
+      await sendText({ to: phone, body: returnMessage, chatId: existingConv.chatId });
+
+      // Update history
+      const updatedHistory = [...(existingConv.history || [])];
+      updatedHistory.push({
+        role: "assistant",
+        text: returnMessage,
+        timestamp: Date.now(),
+      });
+
+      await upsertConversation(existingConv.chatId, { history: updatedHistory });
+
+      // Update in-memory cache
+      conversationStates.set(existingConv.chatId, {
+        ...existingConv,
+        history: updatedHistory,
+      });
+
+      // Also update lead info to mark recent activity
+      await updateLeadChatInfo({
+        phone,
+        listingCode,
+        chatId: existingConv.chatId,
+        operationType: existingConv.operationType as OperationType,
+      });
+
+      res.status(200).json({ chatId: existingConv.chatId, message: "Returning lead message sent" });
+      return;
+    } catch (error) {
+      console.error("Error handling returning lead:", error);
+      // If error sending returning message, we could continue to normal flow, 
+      // but usually if one fails, the others will too.
+    }
   }
 
   let listingData;

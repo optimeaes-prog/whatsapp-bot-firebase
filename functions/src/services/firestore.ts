@@ -134,6 +134,28 @@ export async function getConversationByChatId(chatId: string): Promise<Conversat
   return doc.data() as ConversationState;
 }
 
+export async function getConversationByPhoneAndListing(phone: string, listingCode: string): Promise<ConversationState | null> {
+  // Use leads collection to find the chatId because it has a composite index on [phone, listingCode]
+  const snapshot = await getDb()
+    .collection("leads")
+    .where("phone", "==", phone)
+    .where("listingCode", "==", listingCode)
+    .get();
+
+  if (snapshot.empty) {
+    return null;
+  }
+
+  const leadData = snapshot.docs[0].data();
+  const chatId = leadData.chatId;
+
+  if (!chatId) {
+    return null;
+  }
+
+  return getConversationByChatId(chatId);
+}
+
 export async function upsertConversation(chatId: string, data: Partial<ConversationState>): Promise<void> {
   const docRef = getDb().collection("conversations").doc(chatId);
   await docRef.set(
