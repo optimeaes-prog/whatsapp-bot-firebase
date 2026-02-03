@@ -1,27 +1,53 @@
 import { Timestamp } from "firebase/firestore";
 
-export type TipoOperacion = "Venta" | "Alquiler";
+export type OperationType = "Venta" | "Alquiler";
 
-export type Anuncio = {
+// Razón por la que se desactiva un anuncio
+export type ListingClosureReason =
+  | "sold_to_qualified"    // Vendido a un lead cualificado
+  | "rented_to_qualified"  // Alquilado a un lead cualificado
+  | "sold_to_other"        // Vendido a otra persona (externa)
+  | "rented_to_other"      // Alquilado a otra persona (externa)
+  | "other";               // Otros motivos
+
+export type ListingClosureInfo = {
+  reason: ListingClosureReason;
+  qualifiedLeadId?: string;      // ID del lead cualificado si aplica
+  qualifiedLeadName?: string;    // Nombre del lead para mostrar
+  notes?: string;                // Notas adicionales (opcional)
+  closedAt: Timestamp;
+};
+
+export type Listing = {
   id: string;
-  descripcion: string;
-  anuncio: string;
-  enlace: string;
-  tipoOperacion: TipoOperacion;
-  caracteristicas: string;
-  informeRentabilidadDisponible: boolean;
-  informeRentabilidad: string;
+  description: string;
+  listingCode: string;
+  link: string;
+  operationType: OperationType;
+  features: string;
+  profitabilityReportAvailable: boolean;
+  profitabilityReport: string;
+  isActive: boolean;                      // true = activo, false = inactivo
+  closureInfo?: ListingClosureInfo;       // Info de cierre (solo si isActive = false)
   createdAt: Timestamp;
   updatedAt: Timestamp;
 };
 
+export type QualificationStatus = "not_qualified" | "qualified" | "rejected";
+
 export type Lead = {
   id: string;
-  telefono: string;
-  anuncio: string;
+  phone: string;
+  listingCode: string;
   chatId: string;
-  tipoOperacion: TipoOperacion;
+  operationType: OperationType;
   createdAt: Timestamp;
+  name?: string;
+  firstMessageDate?: Timestamp;
+  lastMessageDate?: Timestamp;
+  qualificationStatus?: QualificationStatus;
+  notes?: string;
+  tags?: string[];
 };
 
 export type HistoryItem = {
@@ -30,27 +56,30 @@ export type HistoryItem = {
   timestamp: number;
 };
 
-export type Conversacion = {
+export type Conversation = {
   id: string;
-  telefono: string;
+  phone: string;
   chatId: string;
-  anuncio: string;
+  listingCode: string;
   history: HistoryItem[];
-  numeroMensajes: number;
-  ultimoMensaje: Timestamp;
-  nombre: string;
-  cualificado: boolean | null;
+  messageCount: number;
+  lastMessage: Timestamp;
+  name: string;
+  qualified?: boolean | null;
   isFinished: boolean;
+  notes?: string;
+  tags?: string[];
+  followUpSent?: boolean;
 };
 
-export type Cualificado = {
+export type QualifiedLead = {
   id: string;
-  telefono: string;
+  phone: string;
   chatId: string;
-  anuncio: string;
-  resumenConversacion: string;
-  nombre: string;
-  cualificado: boolean;
+  listingCode: string;
+  conversationSummary: string;
+  name: string;
+  qualified: boolean;
   createdAt: Timestamp;
 };
 
@@ -67,5 +96,5 @@ export type BotConfig = {
 };
 
 // Form types for creating/editing
-export type AnuncioFormData = Omit<Anuncio, 'id' | 'createdAt' | 'updatedAt'>;
-export type LeadFormData = Omit<Lead, 'id' | 'createdAt'>;
+export type ListingFormData = Omit<Listing, 'id' | 'createdAt' | 'updatedAt' | 'isActive' | 'closureInfo'>;
+export type LeadFormData = Omit<Lead, 'id' | 'createdAt' | 'firstMessageDate' | 'lastMessageDate'>;

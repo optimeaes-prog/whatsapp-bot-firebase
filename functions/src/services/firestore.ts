@@ -1,42 +1,51 @@
 import * as admin from "firebase-admin";
-import { AnuncioRow, BotConfig, BotStyle, ConversationState, HistoryItem, TipoOperacion } from "../types";
+import { getFirestore } from "firebase-admin/firestore";
+import { ListingRow, BotConfig, BotStyle, ConversationState, QualificationStatus, HistoryItem, OperationType } from "../types";
 
 // Initialize Firestore with specific database once
 let firestoreInstance: FirebaseFirestore.Firestore | null = null;
 
+const DATABASE_ID = "realestate-whatsapp-bot";
+
 const getDb = () => {
   if (!firestoreInstance) {
-    firestoreInstance = admin.firestore();
-    firestoreInstance.settings({ databaseId: "realestate-whatsapp-bot" });
+    // Use the modular API to get a named database
+    firestoreInstance = getFirestore(admin.app(), DATABASE_ID);
+    // Configure Firestore to ignore undefined properties
+    firestoreInstance.settings({ ignoreUndefinedProperties: true });
   }
   return firestoreInstance;
 };
 
-// Anuncios
-export async function fetchAnuncioById(anuncioId: string): Promise<AnuncioRow | null> {
-  const snapshot = await getDb().collection("anuncios").where("anuncio", "==", anuncioId).get();
+// Listings
+export async function fetchListingByCode(listingCode: string): Promise<ListingRow | null> {
+  const snapshot = await getDb().collection("listings").where("listingCode", "==", listingCode).get();
   if (snapshot.empty) {
     return null;
   }
   const doc = snapshot.docs[0];
   const data = doc.data();
   return {
-    descripcion: data.descripcion || "",
-    anuncio: data.anuncio || "",
-    enlace: data.enlace || "",
-    tipoOperacion: data.tipoOperacion as TipoOperacion,
-    caracteristicas: data.caracteristicas || "",
-    informeRentabilidadDisponible: data.informeRentabilidadDisponible || false,
-    informeRentabilidad: data.informeRentabilidad || "",
+    description: data.description || "",
+    listingCode: data.listingCode || "",
+    link: data.link || "",
+    operationType: data.operationType as OperationType,
+    features: data.features || "",
+    profitabilityReportAvailable: data.profitabilityReportAvailable || false,
+    profitabilityReport: data.profitabilityReport || "",
   };
 }
 
 // Leads
 export async function findLeadByChatId(chatId: string): Promise<{
-  telefono: string;
-  anuncio: string;
+  phone: string;
+  listingCode: string;
   chatId: string;
-  tipoOperacion: TipoOperacion;
+  operationType: OperationType;
+  name?: string;
+  firstMessageDate?: FirebaseFirestore.Timestamp;
+  lastMessageDate?: FirebaseFirestore.Timestamp;
+  qualificationStatus?: QualificationStatus;
 } | null> {
   const snapshot = await getDb().collection("leads").where("chatId", "==", chatId).get();
   if (snapshot.empty) {
@@ -45,35 +54,50 @@ export async function findLeadByChatId(chatId: string): Promise<{
   const doc = snapshot.docs[0];
   const data = doc.data();
   return {
-    telefono: data.telefono || "",
-    anuncio: data.anuncio || "",
+    phone: data.phone || "",
+    listingCode: data.listingCode || "",
     chatId: data.chatId || "",
-    tipoOperacion: data.tipoOperacion as TipoOperacion,
+    operationType: data.operationType as OperationType,
+    name: data.name,
+    firstMessageDate: data.firstMessageDate,
+    lastMessageDate: data.lastMessageDate,
+    qualificationStatus: data.qualificationStatus as QualificationStatus | undefined,
   };
 }
 
 export async function createLead(data: {
-  telefono: string;
-  anuncio: string;
+  phone: string;
+  listingCode: string;
   chatId: string;
-  tipoOperacion: TipoOperacion;
+  operationType: OperationType;
+  name?: string;
+  qualificationStatus?: QualificationStatus;
 }): Promise<void> {
   await getDb().collection("leads").add({
-    ...data,
+    phone: data.phone,
+    listingCode: data.listingCode,
+    chatId: data.chatId,
+    operationType: data.operationType,
+    name: data.name,
+    qualificationStatus: data.qualificationStatus,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    firstMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+    lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
   });
 }
 
 export async function updateLeadChatInfo(params: {
-  telefono: string;
-  anuncio: string;
+  phone: string;
+  listingCode: string;
   chatId: string;
-  tipoOperacion: TipoOperacion;
+  operationType: OperationType;
+  name?: string;
+  qualificationStatus?: QualificationStatus;
 }): Promise<void> {
   const snapshot = await getDb()
     .collection("leads")
-    .where("telefono", "==", params.telefono)
-    .where("anuncio", "==", params.anuncio)
+    .where("phone", "==", params.phone)
+    .where("listingCode", "==", params.listingCode)
     .get();
 
   if (snapshot.empty) {
@@ -83,15 +107,26 @@ export async function updateLeadChatInfo(params: {
   }
 
   const docRef = snapshot.docs[0].ref;
-  await docRef.update({
+  const updateData: Record<string, unknown> = {
     chatId: params.chatId,
-    tipoOperacion: params.tipoOperacion,
-  });
+    operationType: params.operationType,
+    lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (params.name !== undefined) {
+    updateData.name = params.name;
+  }
+
+  if (params.qualificationStatus !== undefined) {
+    updateData.qualificationStatus = params.qualificationStatus;
+  }
+
+  await docRef.update(updateData);
 }
 
-// Conversaciones
-export async function getConversacionByChatId(chatId: string): Promise<ConversationState | null> {
-  const docRef = getDb().collection("conversaciones").doc(chatId);
+// Conversations
+export async function getConversationByChatId(chatId: string): Promise<ConversationState | null> {
+  const docRef = getDb().collection("conversations").doc(chatId);
   const doc = await docRef.get();
   if (!doc.exists) {
     return null;
@@ -99,49 +134,54 @@ export async function getConversacionByChatId(chatId: string): Promise<Conversat
   return doc.data() as ConversationState;
 }
 
-export async function upsertConversacion(chatId: string, data: Partial<ConversationState>): Promise<void> {
-  const docRef = getDb().collection("conversaciones").doc(chatId);
+export async function upsertConversation(chatId: string, data: Partial<ConversationState>): Promise<void> {
+  const docRef = getDb().collection("conversations").doc(chatId);
   await docRef.set(
     {
       ...data,
       chatId,
-      numeroMensajes: data.history?.length || 0,
-      ultimoMensaje: admin.firestore.FieldValue.serverTimestamp(),
+      messageCount: data.history?.length || 0,
+      lastMessage: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
 }
 
 export async function appendConversationRow(params: {
-  telefono: string;
+  phone: string;
   chatId: string;
-  anuncio: string;
+  listingCode: string;
   history: HistoryItem[];
-  nombre?: string;
-  cualificado?: boolean;
+  name?: string;
+  qualified?: boolean | null;
   isFinished?: boolean;
 }): Promise<void> {
-  await upsertConversacion(params.chatId, {
-    telefono: params.telefono,
-    anuncio: params.anuncio,
+  await upsertConversation(params.chatId, {
+    phone: params.phone,
+    listingCode: params.listingCode,
     history: params.history,
-    nombre: params.nombre,
-    qualificationStatus: params.cualificado,
+    name: params.name,
+    qualificationStatus: params.qualified ?? null,
     isFinished: params.isFinished,
   } as Partial<ConversationState>);
 }
 
-// Cualificados
-export async function appendCualificadoRow(params: {
-  telefono: string;
+// Qualified Leads
+export async function appendQualifiedLeadRow(params: {
+  phone: string;
   chatId: string;
-  anuncio: string;
-  resumenConversacion: string;
-  nombre: string;
-  cualificado: boolean;
+  listingCode: string;
+  conversationSummary: string;
+  name: string;
+  qualified: boolean;
 }): Promise<void> {
-  await getDb().collection("cualificados").add({
-    ...params,
+  await getDb().collection("qualifiedLeads").add({
+    phone: params.phone,
+    chatId: params.chatId,
+    listingCode: params.listingCode,
+    conversationSummary: params.conversationSummary,
+    name: params.name,
+    qualified: params.qualified,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 }
@@ -220,4 +260,152 @@ export async function getActiveStyle(): Promise<BotStyle> {
   const config = await getBotConfig();
   const activeStyle = config.styles.find((s) => s.id === config.activeStyleId);
   return activeStyle || DEFAULT_STYLES[0];
+}
+
+// Update lead status when qualified or rejected
+export async function updateLeadStatus(params: {
+  chatId: string;
+  name?: string;
+  qualificationStatus: QualificationStatus;
+}): Promise<void> {
+  const snapshot = await getDb()
+    .collection("leads")
+    .where("chatId", "==", params.chatId)
+    .get();
+
+  if (snapshot.empty) {
+    console.warn(`No lead found with chatId ${params.chatId}`);
+    return;
+  }
+
+  const docRef = snapshot.docs[0].ref;
+  const updateData: Record<string, unknown> = {
+    qualificationStatus: params.qualificationStatus,
+    lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (params.name !== undefined) {
+    updateData.name = params.name;
+  }
+
+  await docRef.update(updateData);
+}
+
+// ==================== MESSAGE BUFFER FUNCTIONS ====================
+
+/**
+ * Add a pending message to the conversation buffer
+ */
+export async function addPendingMessage(
+  chatId: string,
+  message: { text: string; timestamp: number }
+): Promise<void> {
+  const docRef = getDb().collection("conversations").doc(chatId);
+
+  await docRef.set(
+    {
+      pendingUserMessages: admin.firestore.FieldValue.arrayUnion({
+        text: message.text,
+        timestamp: message.timestamp,
+      }),
+      lastMessage: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Update buffer task info for a conversation
+ */
+export async function updateBufferTask(
+  chatId: string,
+  taskName: string,
+  bufferExpiresAt: number
+): Promise<void> {
+  const docRef = getDb().collection("conversations").doc(chatId);
+
+  await docRef.set(
+    {
+      pendingTaskName: taskName,
+      bufferExpiresAt,
+      lastMessage: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Get pending messages and clear them atomically
+ */
+export async function getPendingMessagesAndClear(
+  chatId: string
+): Promise<{ text: string; timestamp: number }[]> {
+  const docRef = getDb().collection("conversations").doc(chatId);
+
+  return await getDb().runTransaction(async (transaction) => {
+    const doc = await transaction.get(docRef);
+
+    if (!doc.exists) {
+      return [];
+    }
+
+    const data = doc.data();
+    const pendingMessages = (data?.pendingUserMessages || []) as { text: string; timestamp: number }[];
+
+    // Clear pending messages and task info
+    transaction.update(docRef, {
+      pendingUserMessages: [],
+      pendingTaskName: admin.firestore.FieldValue.delete(),
+      bufferExpiresAt: admin.firestore.FieldValue.delete(),
+    });
+
+    return pendingMessages;
+  });
+}
+
+/**
+ * Check if conversation has pending messages
+ */
+export async function hasPendingMessages(chatId: string): Promise<boolean> {
+  const docRef = getDb().collection("conversations").doc(chatId);
+  const doc = await docRef.get();
+
+  if (!doc.exists) {
+    return false;
+  }
+
+  const data = doc.data();
+  const pendingMessages = data?.pendingUserMessages || [];
+  return Array.isArray(pendingMessages) && pendingMessages.length > 0;
+}
+
+/**
+ * Get conversations that are idle for more than a certain number of hours
+ */
+export async function getConversationsForFollowUp(maxAgeHours: number): Promise<ConversationState[]> {
+  const cutoff = new Date();
+  cutoff.setHours(cutoff.getHours() - maxAgeHours);
+
+  const snapshot = await getDb()
+    .collection("conversations")
+    .where("isFinished", "==", false)
+    .where("lastMessage", "<=", cutoff)
+    .get();
+
+  if (snapshot.empty) {
+    return [];
+  }
+
+  return snapshot.docs
+    .map(doc => doc.data() as ConversationState)
+    .filter(conv => {
+      // Only follow up if:
+      // 1. Follow up hasn't been sent yet
+      // 2. The user has NEVER responded (no user messages in history)
+      // 3. There are no pending messages waiting in the buffer
+      const hasUserResponded = conv.history?.some(h => h.role === "user");
+      const hasPendingMessages = conv.pendingUserMessages && conv.pendingUserMessages.length > 0;
+
+      return !conv.followUpSent && !hasUserResponded && !hasPendingMessages;
+    });
 }

@@ -1,16 +1,22 @@
 import * as admin from "firebase-admin";
 import { onRequest } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineString } from "firebase-functions/params";
-import { ConversationState, HistoryItem, InboundMessage, LeadSummary, TipoOperacion } from "./types";
+import { ConversationState, HistoryItem, InboundMessage, LeadSummary, OperationType, PendingItem } from "./types";
 import {
-  fetchAnuncioById,
+  fetchListingByCode,
   findLeadByChatId,
   updateLeadChatInfo,
+  updateLeadStatus,
   appendConversationRow,
-  appendCualificadoRow,
+  appendQualifiedLeadRow,
   getActiveStyle,
-  getConversacionByChatId,
-  upsertConversacion,
+  getConversationByChatId,
+  upsertConversation,
+  addPendingMessage,
+  updateBufferTask,
+  getPendingMessagesAndClear,
+  getConversationsForFollowUp,
 } from "./services/firestore";
 import { sendText } from "./services/whapiClient";
 import {
@@ -19,6 +25,7 @@ import {
   extractClientName,
   translateTextToBritishEnglish,
 } from "./services/openaiClient";
+import { scheduleBufferTask, BUFFER_DELAY_SECONDS } from "./services/cloudTasks";
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -43,14 +50,14 @@ type InitialLanguage = "es" | "en";
 // In-memory conversation state (for active conversations)
 const conversationStates = new Map<string, ConversationState>();
 
-function normalizeDigitsForCountryCheck(telefono: string): string {
-  const digitsOnly = telefono.replace(/\D/g, "");
+function normalizeDigitsForCountryCheck(phone: string): string {
+  const digitsOnly = phone.replace(/\D/g, "");
   return digitsOnly.replace(/^00+/, "");
 }
 
-function isSpanishPhoneNumber(telefono?: string): boolean {
-  if (!telefono) return true;
-  const trimmed = telefono.trim();
+function isSpanishPhoneNumber(phone?: string): boolean {
+  if (!phone) return true;
+  const trimmed = phone.trim();
   if (!trimmed) return true;
   const normalizedDigits = normalizeDigitsForCountryCheck(trimmed);
   if (!normalizedDigits) return true;
@@ -59,17 +66,17 @@ function isSpanishPhoneNumber(telefono?: string): boolean {
   return false;
 }
 
-function resolveInitialLanguage(telefono?: string): InitialLanguage {
-  return isSpanishPhoneNumber(telefono) ? "es" : "en";
+function resolveInitialLanguage(phone?: string): InitialLanguage {
+  return isSpanishPhoneNumber(phone) ? "es" : "en";
 }
 
-async function getCaracteristicasForLanguage(caracteristicas: string, language: InitialLanguage): Promise<string> {
-  if (language !== "en") return caracteristicas;
+async function getFeaturesForLanguage(features: string, language: InitialLanguage): Promise<string> {
+  if (language !== "en") return features;
   try {
-    return await translateTextToBritishEnglish(caracteristicas);
+    return await translateTextToBritishEnglish(features);
   } catch (error) {
-    console.warn("Failed to translate characteristics", error);
-    return caracteristicas;
+    console.warn("Failed to translate features", error);
+    return features;
   }
 }
 
@@ -79,8 +86,21 @@ function ensureTimestampMillis(timestamp: number): number {
   return timestamp;
 }
 
-function cleanCaracteristica(line: string): string {
-  return line.replace(/^[\u2022•*\-]+\s*/u, "").trim();
+// Normalize chatId to handle both @c.us and @s.whatsapp.net formats
+function extractPhoneFromChatId(chatId: string): string {
+  return chatId.replace(/@(c\.us|s\.whatsapp\.net)$/, "");
+}
+
+function getChatIdVariants(chatId: string): string[] {
+  const phone = extractPhoneFromChatId(chatId);
+  return [
+    `${phone}@c.us`,
+    `${phone}@s.whatsapp.net`,
+  ];
+}
+
+function cleanFeature(line: string): string {
+  return line.replace(/^[\u2022•*-]+\s*/u, "").trim();
 }
 
 function splitByCommaOutsideParentheses(text: string): string[] {
@@ -103,8 +123,8 @@ function splitByCommaOutsideParentheses(text: string): string[] {
   return segments;
 }
 
-function splitCaracteristicas(caracteristicas: string): string[] {
-  const normalized = caracteristicas.replace(/\r\n/g, "\n").trim();
+function splitFeatures(features: string): string[] {
+  const normalized = features.replace(/\r\n/g, "\n").trim();
   if (!normalized) return [];
   const newlineSplit = normalized.split(/\n+/).map((s) => s.trim()).filter(Boolean);
   if (newlineSplit.length > 1) return newlineSplit;
@@ -133,38 +153,38 @@ function pickSummaryValue(...candidates: (string | undefined)[]): string | undef
 }
 
 function buildQualifiedLeadMessage(state: ConversationState, summary?: LeadSummary): string {
-  const lines = ["Lead cualificado ✅", `Teléfono: ${state.telefono}`];
-  const resolvedName = pickSummaryValue(summary?.nombre, state.nombre);
+  const lines = ["Lead cualificado ✅", `Teléfono: ${state.phone}`];
+  const resolvedName = pickSummaryValue(summary?.name, state.name);
   lines.push(`Nombre: ${resolvedName ?? NO_DATA_LABEL}`);
-  if (state.descripcion) lines.push(`Propiedad: ${state.descripcion}`);
-  lines.push(`Operación: ${state.tipoOperacion}`);
+  if (state.description) lines.push(`Propiedad: ${state.description}`);
+  lines.push(`Operación: ${state.operationType}`);
 
-  if (state.tipoOperacion === "Alquiler") {
-    lines.push(`Personas: ${pickSummaryValue(summary?.personas) ?? NO_DATA_LABEL}`);
-    lines.push(`Ingresos: ${pickSummaryValue(summary?.ingresos) ?? NO_DATA_LABEL}`);
-    lines.push(`Mascotas: ${pickSummaryValue(summary?.mascotas) ?? NO_DATA_LABEL}`);
-    lines.push(`Fechas: ${pickSummaryValue(summary?.fechas) ?? NO_DATA_LABEL}`);
+  if (state.operationType === "Alquiler") {
+    lines.push(`Personas: ${pickSummaryValue(summary?.people) ?? NO_DATA_LABEL}`);
+    lines.push(`Ingresos: ${pickSummaryValue(summary?.income) ?? NO_DATA_LABEL}`);
+    lines.push(`Mascotas: ${pickSummaryValue(summary?.pets) ?? NO_DATA_LABEL}`);
+    lines.push(`Fechas: ${pickSummaryValue(summary?.dates) ?? NO_DATA_LABEL}`);
   } else {
-    lines.push(`Forma de pago: ${pickSummaryValue(summary?.formaPago) ?? NO_DATA_LABEL}`);
-    lines.push(`Ingresos: ${pickSummaryValue(summary?.ingresos) ?? NO_DATA_LABEL}`);
+    lines.push(`Forma de pago: ${pickSummaryValue(summary?.paymentMethod) ?? NO_DATA_LABEL}`);
+    lines.push(`Ingresos: ${pickSummaryValue(summary?.income) ?? NO_DATA_LABEL}`);
   }
 
-  lines.push(`Disponibilidad visita: ${pickSummaryValue(summary?.disponibilidadVisita) ?? NO_DATA_LABEL}`);
-  const notesValue = pickSummaryValue(summary?.notas);
+  lines.push(`Disponibilidad visita: ${pickSummaryValue(summary?.visitAvailability) ?? NO_DATA_LABEL}`);
+  const notesValue = pickSummaryValue(summary?.notes);
   if (notesValue) lines.push(`Notas: ${notesValue}`);
 
   return lines.join("\n");
 }
 
-function formatCaracteristicasList(caracteristicas: string, language: InitialLanguage): string {
-  const items = splitCaracteristicas(caracteristicas).map(cleanCaracteristica).filter(Boolean);
+function formatFeaturesList(features: string, language: InitialLanguage): string {
+  const items = splitFeatures(features).map(cleanFeature).filter(Boolean);
   if (items.length === 0) {
-    if (!caracteristicas.trim()) {
+    if (!features.trim()) {
       return language === "en"
         ? `${BULLET_SYMBOL} Property details are not available at the moment`
         : `${BULLET_SYMBOL} Información no disponible por el momento`;
     }
-    const fallback = cleanCaracteristica(caracteristicas);
+    const fallback = cleanFeature(features);
     return fallback ? `${BULLET_SYMBOL} ${fallback}` : "";
   }
   return items.map((item) => `${BULLET_SYMBOL} ${item}`).join("\n");
@@ -182,17 +202,17 @@ function compactMessage(lines: string[]): string {
 }
 
 function composeInitialMessages(
-  tipoOperacion: TipoOperacion,
-  enlace: string,
-  caracteristicas: string,
+  operationType: OperationType,
+  link: string,
+  features: string,
   options?: { language?: InitialLanguage }
 ): string[] {
   const language = options?.language ?? "es";
-  const isVenta = tipoOperacion === "Venta";
-  const formattedCaracteristicas = formatCaracteristicasList(caracteristicas, language);
+  const isSale = operationType === "Venta";
+  const formattedFeatures = formatFeaturesList(features, language);
 
   if (language === "en") {
-    const propertyContext = isVenta ? "for sale" : "for rent";
+    const propertyContext = isSale ? "for sale" : "for rent";
     const message1 = compactMessage([
       "Hi, I'm Paco Granados' virtual assistant, it's a pleasure to help you.",
       "",
@@ -203,18 +223,18 @@ function composeInitialMessages(
     const message2 = compactMessage([
       `You've shown interest in this property ${propertyContext} 👇`,
       "",
-      enlace,
+      link,
       "",
       "Just to confirm, have you reviewed the property highlights?",
       "",
-      formattedCaracteristicas,
+      formattedFeatures,
       "",
       "* If I ever say something that doesn't apply, thanks for understanding—I'm improved every day to deliver the best service 🤩",
     ]);
     return [message1, message2];
   }
 
-  const propertyContext = isVenta ? "en venta" : "en alquiler";
+  const propertyContext = isSale ? "en venta" : "en alquiler";
   const message1 = compactMessage([
     "Hola, soy el colaborador virtual de Paco Granados, un placer atenderte.",
     "",
@@ -225,11 +245,11 @@ function composeInitialMessages(
   const message2 = compactMessage([
     `Te has interesado en esta vivienda ${propertyContext}👇`,
     "",
-    enlace,
+    link,
     "",
     "Por confirmar, ¿has visto las características?",
     "",
-    formattedCaracteristicas,
+    formattedFeatures,
     "",
     "* Si en algún momento digo algo que no procede, pido comprensión, cada día me están mejorando para dar el mejor servicio 🤩",
   ]);
@@ -259,8 +279,8 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
   const rawMessages: unknown[] = Array.isArray(messagesField)
     ? messagesField
     : Array.isArray(candidate.message)
-    ? [candidate.message]
-    : [];
+      ? [candidate.message]
+      : [];
 
   const result: InboundMessage[] = [];
   for (const raw of rawMessages) {
@@ -273,41 +293,57 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
       typeof msg.text === "string"
         ? msg.text
         : typeof (msg.text as Record<string, unknown>)?.body === "string"
-        ? ((msg.text as Record<string, unknown>).body as string)
-        : typeof msg.body === "string"
-        ? msg.body
-        : "";
+          ? ((msg.text as Record<string, unknown>).body as string)
+          : typeof msg.body === "string"
+            ? msg.body
+            : "";
     const timestampValue = typeof msg.timestamp === "number" ? msg.timestamp : Number.parseInt(msg.timestamp as string, 10);
     const timestamp = ensureTimestampMillis(Number.isFinite(timestampValue) ? timestampValue : Date.now());
     if (!chatId || !text) continue;
-    result.push({ chatId, telefono: from, text, timestamp });
+    result.push({ chatId, phone: from, text, timestamp });
   }
   return result;
 }
 
-async function ensureConversationState(chatId: string, telefonoHint?: string): Promise<ConversationState | undefined> {
-  // Check in-memory first
-  const existing = conversationStates.get(chatId);
-  if (existing) return existing;
+async function ensureConversationState(chatId: string, phoneHint?: string): Promise<ConversationState | undefined> {
+  // Get all possible chatId variants (handles @c.us vs @s.whatsapp.net)
+  const chatIdVariants = getChatIdVariants(chatId);
 
-  // Check Firestore
-  const savedConv = await getConversacionByChatId(chatId);
-  if (savedConv) {
-    conversationStates.set(chatId, savedConv);
-    return savedConv;
+  // Check in-memory first (try all variants)
+  for (const variant of chatIdVariants) {
+    const existing = conversationStates.get(variant);
+    if (existing) {
+      // Also store under the incoming chatId for future lookups
+      if (variant !== chatId) conversationStates.set(chatId, existing);
+      return existing;
+    }
   }
 
-  // Try to rebuild from lead
-  const lead = await findLeadByChatId(chatId);
+  // Check Firestore (try all variants)
+  for (const variant of chatIdVariants) {
+    const savedConv = await getConversationByChatId(variant);
+    // Essential: only use saved conversation if it's "complete" (has a phone)
+    if (savedConv && savedConv.phone) {
+      conversationStates.set(chatId, savedConv);
+      return savedConv;
+    }
+  }
+
+  // Try to rebuild from lead (try all variants)
+  let lead = null;
+  for (const variant of chatIdVariants) {
+    lead = await findLeadByChatId(variant);
+    if (lead) break;
+  }
   if (!lead) return undefined;
 
-  const anuncio = await fetchAnuncioById(lead.anuncio);
-  if (!anuncio) return undefined;
+  const listing = await fetchListingByCode(lead.listingCode);
+  if (!listing) return undefined;
 
-  const telefono = telefonoHint ?? lead.telefono;
-  const initialLanguage = resolveInitialLanguage(telefono);
-  const caracteristicasText = await getCaracteristicasForLanguage(anuncio.caracteristicas, initialLanguage);
-  const initialMessages = composeInitialMessages(anuncio.tipoOperacion, anuncio.enlace, caracteristicasText, {
+  const phone = phoneHint ?? lead.phone;
+  const initialLanguage = resolveInitialLanguage(phone);
+  const featuresText = await getFeaturesForLanguage(listing.features, initialLanguage);
+  const initialMessages = composeInitialMessages(listing.operationType, listing.link, featuresText, {
     language: initialLanguage,
   });
 
@@ -318,15 +354,15 @@ async function ensureConversationState(chatId: string, telefonoHint?: string): P
   }));
 
   const state: ConversationState = {
-    telefono,
-    anuncio: anuncio.anuncio,
+    phone,
+    listingCode: listing.listingCode,
     chatId,
-    tipoOperacion: anuncio.tipoOperacion,
-    descripcion: anuncio.descripcion,
-    enlace: anuncio.enlace,
-    caracteristicas: caracteristicasText,
-    informeRentabilidadDisponible: anuncio.informeRentabilidadDisponible,
-    informeRentabilidad: anuncio.informeRentabilidad,
+    operationType: listing.operationType,
+    description: listing.description,
+    link: listing.link,
+    features: featuresText,
+    profitabilityReportAvailable: listing.profitabilityReportAvailable,
+    profitabilityReport: listing.profitabilityReport,
     history: initialHistory,
     pendingUserMessages: [],
     isFinished: false,
@@ -336,38 +372,71 @@ async function ensureConversationState(chatId: string, telefonoHint?: string): P
   return state;
 }
 
-async function processMessage(state: ConversationState, message: InboundMessage): Promise<void> {
+/**
+ * Process multiple buffered messages at once
+ * This combines all pending messages into the history before generating a response
+ */
+async function processBufferedMessages(state: ConversationState, messages: PendingItem[]): Promise<void> {
   if (state.isFinished) {
     console.log("Conversation already finished, ignoring", state.chatId);
     return;
   }
 
-  // Add user message to history
-  const userHistoryItem: HistoryItem = {
-    role: "user",
-    text: message.text,
-    timestamp: message.timestamp,
-  };
-  state.history.push(userHistoryItem);
+  if (messages.length === 0) {
+    console.log("No messages to process for", state.chatId);
+    return;
+  }
+
+  // Ensure history exists
+  if (!state.history) {
+    state.history = [];
+  }
+
+  // Sort messages by timestamp to maintain order
+  const sortedMessages = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+
+  // Add all user messages to history
+  for (const msg of sortedMessages) {
+    const userHistoryItem: HistoryItem = {
+      role: "user",
+      text: msg.text,
+      timestamp: msg.timestamp,
+    };
+    state.history.push(userHistoryItem);
+  }
+
+  console.log(`Processing ${sortedMessages.length} buffered message(s) for ${state.chatId}`);
 
   // Try to extract client name if not known
-  if (!state.nombre) {
+  if (!state.name) {
     try {
       const detectedName = await extractClientName(state.history);
-      if (detectedName) state.nombre = detectedName;
+      if (detectedName) {
+        state.name = detectedName;
+        // Update lead with the detected name
+        try {
+          await updateLeadStatus({
+            chatId: state.chatId,
+            name: detectedName,
+            qualificationStatus: "not_qualified",
+          });
+        } catch (error) {
+          console.warn("Failed to update lead with name", error);
+        }
+      }
     } catch (error) {
       console.warn("Failed to extract client name", error);
     }
   }
 
-  // Save conversation snapshot
+  // Save conversation snapshot with all messages
   await appendConversationRow({
-    telefono: state.telefono,
+    phone: state.phone,
     chatId: state.chatId,
-    anuncio: state.anuncio,
+    listingCode: state.listingCode,
     history: state.history,
-    nombre: state.nombre,
-    cualificado: state.qualificationStatus,
+    name: state.name,
+    qualified: state.qualificationStatus,
     isFinished: state.isFinished,
   });
 
@@ -395,7 +464,7 @@ async function processMessage(state: ConversationState, message: InboundMessage)
 
   // Send message
   try {
-    await sendText({ to: state.telefono, body: cleanMessage, chatId: state.chatId });
+    await sendText({ to: state.phone, body: cleanMessage, chatId: state.chatId });
   } catch (error) {
     console.error("Failed to send message via Whapi", error);
     return;
@@ -414,12 +483,12 @@ async function processMessage(state: ConversationState, message: InboundMessage)
 
   // Save updated conversation
   await appendConversationRow({
-    telefono: state.telefono,
+    phone: state.phone,
     chatId: state.chatId,
-    anuncio: state.anuncio,
+    listingCode: state.listingCode,
     history: state.history,
-    nombre: state.nombre,
-    cualificado: state.qualificationStatus,
+    name: state.name,
+    qualified: state.qualificationStatus,
     isFinished: qualificationStatus !== undefined,
   });
 
@@ -448,26 +517,60 @@ async function processMessage(state: ConversationState, message: InboundMessage)
         }
       }
 
-      // Save to cualificados
+      // Save to qualified leads
       try {
-        const resolvedName = pickSummaryValue(leadSummary?.nombre, state.nombre) ?? "";
-        await appendCualificadoRow({
-          telefono: state.telefono,
+        const resolvedName = pickSummaryValue(leadSummary?.name, state.name) ?? "";
+        await appendQualifiedLeadRow({
+          phone: state.phone,
           chatId: state.chatId,
-          anuncio: state.anuncio,
-          resumenConversacion: notificationBody,
-          nombre: resolvedName,
-          cualificado: true,
+          listingCode: state.listingCode,
+          conversationSummary: notificationBody,
+          name: resolvedName,
+          qualified: true,
         });
         console.log("Qualified lead saved", state.chatId);
       } catch (error) {
         console.error("Error saving qualified lead", error);
+      }
+
+      // Update lead status to qualified
+      try {
+        const resolvedName = pickSummaryValue(leadSummary?.name, state.name);
+        await updateLeadStatus({
+          chatId: state.chatId,
+          name: resolvedName,
+          qualificationStatus: "qualified",
+        });
+        console.log("Lead status updated to qualified", state.chatId);
+      } catch (error) {
+        console.error("Error updating lead status", error);
+      }
+    } else {
+      // Update lead status to rejected (not interested)
+      try {
+        await updateLeadStatus({
+          chatId: state.chatId,
+          name: state.name,
+          qualificationStatus: "rejected",
+        });
+        console.log("Lead status updated to rejected", state.chatId);
+      } catch (error) {
+        console.error("Error updating lead status", error);
       }
     }
   }
 }
 
 // ==================== HTTP FUNCTIONS ====================
+
+/**
+ * Get the URL for the processBuffer function
+ * URL format from deployment: https://europe-west1-real-estate-idealista-bot.cloudfunctions.net/processBuffer
+ */
+function getProcessBufferUrl(): string {
+  const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "";
+  return `https://europe-west1-${projectId}.cloudfunctions.net/processBuffer`;
+}
 
 export const webhook = onRequest({ cors: true, region: REGION }, async (req, res) => {
   try {
@@ -493,27 +596,137 @@ export const webhook = onRequest({ cors: true, region: REGION }, async (req, res
       return;
     }
 
-    console.log(`Processing ${inboundMessages.length} message(s)`);
+    console.log(`Buffering ${inboundMessages.length} message(s)`);
 
+    // Group messages by chatId
+    const messagesByChatId = new Map<string, InboundMessage[]>();
+    for (const msg of inboundMessages) {
+      const existing = messagesByChatId.get(msg.chatId) || [];
+      existing.push(msg);
+      messagesByChatId.set(msg.chatId, existing);
+    }
+
+    // Process each conversation
     await Promise.all(
-      inboundMessages.map(async (message) => {
+      Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
         try {
-          const state = await ensureConversationState(message.chatId, message.telefono);
+          // Ensure we have a valid conversation state
+          const state = await ensureConversationState(chatId, messages[0].phone);
           if (!state) {
-            console.warn("Could not reconstruct conversation state", message.chatId);
+            console.warn("Could not reconstruct conversation state", chatId);
             return;
           }
-          await processMessage(state, message);
+
+          // If conversation is finished, skip buffering
+          if (state.isFinished) {
+            console.log("Conversation already finished, skipping buffer", chatId);
+            return;
+          }
+
+          // Add messages to pending buffer in Firestore
+          for (const msg of messages) {
+            await addPendingMessage(chatId, {
+              text: msg.text,
+              timestamp: msg.timestamp,
+            });
+          }
+
+          // Schedule (or reschedule) the buffer task
+          const processUrl = getProcessBufferUrl();
+          const { taskName, scheduledTime } = await scheduleBufferTask(chatId, processUrl);
+
+          // Update conversation with task info
+          await updateBufferTask(chatId, taskName, scheduledTime);
+
+          console.log(`Buffered ${messages.length} message(s) for ${chatId}, will process at ${new Date(scheduledTime).toISOString()}`);
         } catch (error) {
-          console.error("Error processing message", message.chatId, error);
+          console.error("Error buffering messages for", chatId, error);
         }
       })
     );
 
-    res.status(200).json({ received: true, count: inboundMessages.length });
+    res.status(200).json({
+      received: true,
+      buffered: true,
+      count: inboundMessages.length,
+      bufferDelaySeconds: BUFFER_DELAY_SECONDS,
+    });
   } catch (error) {
     console.error("Webhook error:", error);
     res.status(500).json({ error: "Internal server error", details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * Process buffered messages - called by Cloud Tasks after buffer delay expires
+ */
+export const processBuffer = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  try {
+    // Only accept POST from Cloud Tasks
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    // Verify the request is from Cloud Tasks (optional but recommended)
+    const taskName = req.headers["x-cloudtasks-taskname"];
+    const queueName = req.headers["x-cloudtasks-queuename"];
+
+    if (!taskName && process.env.FUNCTIONS_EMULATOR !== "true") {
+      console.warn("Request not from Cloud Tasks, but allowing in production for flexibility");
+    }
+
+    console.log(`processBuffer called by task: ${taskName} from queue: ${queueName}`);
+
+    const { chatId } = req.body as { chatId?: string };
+
+    if (!chatId) {
+      console.error("No chatId provided in request body");
+      res.status(400).json({ error: "chatId is required" });
+      return;
+    }
+
+    console.log(`Processing buffered messages for chatId: ${chatId}`);
+
+    // Get pending messages and clear them atomically
+    const pendingMessages = await getPendingMessagesAndClear(chatId);
+
+    if (pendingMessages.length === 0) {
+      console.log(`No pending messages for ${chatId}, possibly already processed`);
+      res.status(200).json({ processed: false, reason: "No pending messages" });
+      return;
+    }
+
+    console.log(`Found ${pendingMessages.length} pending message(s) to process for ${chatId}`);
+
+    // Get conversation state
+    const state = await ensureConversationState(chatId);
+    if (!state) {
+      console.error(`Could not get conversation state for ${chatId}`);
+      res.status(404).json({ error: "Conversation not found" });
+      return;
+    }
+
+    // Process all buffered messages at once
+    await processBufferedMessages(state, pendingMessages);
+
+    // Update in-memory cache
+    conversationStates.set(chatId, state);
+
+    console.log(`Successfully processed ${pendingMessages.length} message(s) for ${chatId}`);
+
+    res.status(200).json({
+      processed: true,
+      messageCount: pendingMessages.length,
+      chatId,
+    });
+  } catch (error) {
+    console.error("processBuffer error:", error);
+    // Return 500 so Cloud Tasks can retry if configured
+    res.status(500).json({
+      error: "Internal server error",
+      details: error instanceof Error ? error.message : String(error),
+    });
   }
 });
 
@@ -523,31 +736,31 @@ export const newLead = onRequest({ cors: true, region: REGION }, async (req, res
     return;
   }
 
-  const telefono = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
-  const anuncioId = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
+  const phone = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
+  const listingCode = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
 
-  if (!telefono || !anuncioId) {
+  if (!phone || !listingCode) {
     res.status(400).json({ error: "telefono y anuncio son obligatorios" });
     return;
   }
 
-  let anuncioData;
+  let listingData;
   try {
-    anuncioData = await fetchAnuncioById(anuncioId);
+    listingData = await fetchListingByCode(listingCode);
   } catch (error) {
-    console.error("Error fetching anuncio", error);
+    console.error("Error fetching listing", error);
     res.status(500).json({ error: "Error consultando datos del anuncio" });
     return;
   }
 
-  if (!anuncioData) {
+  if (!listingData) {
     res.status(404).json({ error: "Anuncio no encontrado" });
     return;
   }
 
-  const initialLanguage = resolveInitialLanguage(telefono);
-  const caracteristicasText = await getCaracteristicasForLanguage(anuncioData.caracteristicas, initialLanguage);
-  const initialMessages = composeInitialMessages(anuncioData.tipoOperacion, anuncioData.enlace, caracteristicasText, {
+  const initialLanguage = resolveInitialLanguage(phone);
+  const featuresText = await getFeaturesForLanguage(listingData.features, initialLanguage);
+  const initialMessages = composeInitialMessages(listingData.operationType, listingData.link, featuresText, {
     language: initialLanguage,
   });
 
@@ -557,13 +770,13 @@ export const newLead = onRequest({ cors: true, region: REGION }, async (req, res
   try {
     for (let i = 0; i < initialMessages.length; i += 1) {
       const body = initialMessages[i];
-      const result = await sendText({ to: telefono, body, chatId });
+      const result = await sendText({ to: phone, body, chatId });
       // Use returned chatId if available, otherwise generate one
       if (result.chatId) {
         chatId = result.chatId;
       } else if (!chatId) {
         // Generate chatId in WhatsApp format if Whapi doesn't return it
-        chatId = `${telefono}@c.us`;
+        chatId = `${phone}@c.us`;
         console.log("Generated chatId:", chatId);
       }
       initialHistory.push({
@@ -580,17 +793,17 @@ export const newLead = onRequest({ cors: true, region: REGION }, async (req, res
 
   // Generate chatId if still not available
   if (!chatId) {
-    chatId = `${telefono}@c.us`;
+    chatId = `${phone}@c.us`;
     console.log("Messages sent but no chatId returned, using generated:", chatId);
   }
 
   // Update lead in Firestore
   try {
     await updateLeadChatInfo({
-      telefono,
-      anuncio: anuncioId,
+      phone,
+      listingCode,
       chatId,
-      tipoOperacion: anuncioData.tipoOperacion,
+      operationType: listingData.operationType,
     });
   } catch (error) {
     console.error("Error updating lead", error);
@@ -598,15 +811,15 @@ export const newLead = onRequest({ cors: true, region: REGION }, async (req, res
 
   // Create conversation state
   const state: ConversationState = {
-    telefono,
-    anuncio: anuncioId,
+    phone,
+    listingCode,
     chatId,
-    tipoOperacion: anuncioData.tipoOperacion,
-    descripcion: anuncioData.descripcion,
-    enlace: anuncioData.enlace,
-    caracteristicas: caracteristicasText,
-    informeRentabilidadDisponible: anuncioData.informeRentabilidadDisponible,
-    informeRentabilidad: anuncioData.informeRentabilidad,
+    operationType: listingData.operationType,
+    description: listingData.description,
+    link: listingData.link,
+    features: featuresText,
+    profitabilityReportAvailable: listingData.profitabilityReportAvailable,
+    profitabilityReport: listingData.profitabilityReport,
     history: initialHistory,
     pendingUserMessages: [],
     isFinished: false,
@@ -615,11 +828,88 @@ export const newLead = onRequest({ cors: true, region: REGION }, async (req, res
   conversationStates.set(chatId, state);
 
   // Save to Firestore
-  await upsertConversacion(chatId, state);
+  await upsertConversation(chatId, state);
 
   res.status(200).json({ chatId });
 });
 
 export const healthz = onRequest({ cors: true, region: REGION }, async (_req, res) => {
   res.status(200).json({ status: "ok" });
+});
+
+// Seed function to initialize collections (commented out - use scripts/addListingsAdmin.mjs instead)
+// import { seedCollectionsWithSampleData } from "./seedData";
+//
+// export const seedCollections = onRequest({ cors: true, region: REGION }, async (_req, res) => {
+//   try {
+//     await seedCollectionsWithSampleData();
+//     res.status(200).json({ 
+//       success: true, 
+//       message: "Sample data created successfully. Check Firebase Console." 
+//     });
+//   } catch (error) {
+//     console.error("Error seeding data:", error);
+//     res.status(500).json({ 
+//       error: "Failed to seed data", 
+//       details: error instanceof Error ? error.message : String(error) 
+//     });
+//   }
+// });
+
+/**
+ * Scheduled function to check for conversations that haven't responded in 24 hours
+ * Runs every hour
+ */
+export const checkFollowUps = onSchedule({
+  schedule: "0 * * * *", // Every hour
+  region: REGION,
+  timeZone: "Europe/Madrid",
+}, async (event) => {
+  console.log("Checking for conversations that need a follow-up...");
+
+  try {
+    // Get conversations that haven't had a message in 24 hours
+    const conversations = await getConversationsForFollowUp(24);
+
+    if (conversations.length === 0) {
+      console.log("No conversations need follow-up.");
+      return;
+    }
+
+    console.log(`Found ${conversations.length} conversation(s) for follow-up.`);
+
+    for (const state of conversations) {
+      try {
+        const isSpanish = isSpanishPhoneNumber(state.phone);
+        const followUpMessage = isSpanish
+          ? "¿Has podido revisar la información? Cuéntame si te interesa y coordinamos visita. :)"
+          : "Hi! Just checking if you had a chance to look at the property info. Let me know if you're interested! :)";
+
+        console.log(`Sending follow-up to ${state.phone} (${state.chatId})`);
+
+        // Send the message
+        await sendText({ to: state.phone, body: followUpMessage, chatId: state.chatId });
+
+        // Update history
+        const updatedHistory = [...(state.history || [])];
+        updatedHistory.push({
+          role: "assistant",
+          text: followUpMessage,
+          timestamp: Date.now(),
+        });
+
+        // Update state in Firestore
+        await upsertConversation(state.chatId, {
+          history: updatedHistory,
+          followUpSent: true,
+        });
+
+        console.log(`Follow-up sent and state updated for ${state.chatId}`);
+      } catch (error) {
+        console.error(`Error sending follow-up to ${state.chatId}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error("Error in checkFollowUps schedule:", error);
+  }
 });

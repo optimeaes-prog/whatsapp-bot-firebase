@@ -132,19 +132,19 @@ PROHIBIDO
 
 function buildInstructions(state: ConversationState, style: BotStyle): string {
   const basePrompt = buildBasePrompt(style.promptModifier);
-  const template = basePrompt.replace(/\{\{TIPO_OPERACION\}\}/g, state.tipoOperacion);
+  const template = basePrompt.replace(/\{\{TIPO_OPERACION\}\}/g, state.operationType);
   const parts: string[] = [
     template,
     "========================",
     "DATOS ESPECÍFICOS DE ESTA CONVERSACIÓN",
     "========================",
-    `Enlace del anuncio: ${state.enlace}`,
-    `Características comunicadas: ${state.caracteristicas}`,
-    `Informe de rentabilidad disponible: ${state.informeRentabilidadDisponible ? "TRUE" : "FALSE"}`,
+    `Enlace del anuncio: ${state.link}`,
+    `Características comunicadas: ${state.features}`,
+    `Informe de rentabilidad disponible: ${state.profitabilityReportAvailable ? "TRUE" : "FALSE"}`,
   ];
 
-  if (state.informeRentabilidadDisponible && state.informeRentabilidad) {
-    parts.push("Texto Informe Rentabilidad:", state.informeRentabilidad);
+  if (state.profitabilityReportAvailable && state.profitabilityReport) {
+    parts.push("Texto Informe Rentabilidad:", state.profitabilityReport);
   }
 
   return parts.join("\n");
@@ -191,40 +191,40 @@ Tu misión es extraer SOLO la información que el cliente ya proporcionó. No in
 
 Debes responder EXCLUSIVAMENTE con un JSON válido (sin texto extra ni comentarios) con exactamente estas claves string:
 {
-  "nombre": "",
-  "personas": "",
-  "ingresos": "",
-  "mascotas": "",
-  "formaPago": "",
-  "fechas": "",
-  "disponibilidadVisita": "",
-  "notas": ""
+  "name": "",
+  "people": "",
+  "income": "",
+  "pets": "",
+  "paymentMethod": "",
+  "dates": "",
+  "visitAvailability": "",
+  "notes": ""
 }
 
 Reglas:
 - Escribe todos los valores en español y en estilo breve.
 - Si un dato no se mencionó, deja la cadena vacía "".
-- "Personas" debe describir cuántas vivirán o su composición familiar.
-- "Ingresos" debe indicar ingresos netos/forma de sustento.
-- "Mascotas" indica sí/no y tipo.
-- "FormaPago" describe cómo pagará (hipoteca, contado, etc.).
-- "Fechas" resume fecha de entrada y, si aplica, salida.
-- "disponibilidadVisita" indica la preferencia del cliente para visitar (mañanas, tardes, indiferente, etc.).
-- "Notas" recoge cualquier contexto adicional útil (motivaciones, urgencias, etc.).
+- "people" debe describir cuántas vivirán o su composición familiar.
+- "income" debe indicar ingresos netos/forma de sustento.
+- "pets" indica sí/no y tipo.
+- "paymentMethod" describe cómo pagará (hipoteca, contado, etc.).
+- "dates" resume fecha de entrada y, si aplica, salida.
+- "visitAvailability" indica la preferencia del cliente para visitar (mañanas, tardes, indiferente, etc.).
+- "notes" recoge cualquier contexto adicional útil (motivaciones, urgencias, etc.).
 - No repitas el número de teléfono, ya se envía aparte.
 - Prioriza los datos críticos según el tipo de operación.
 `.trim();
 
 function buildLeadSummaryInstructions(state: ConversationState): string {
   const focusText =
-    state.tipoOperacion === "Alquiler"
+    state.operationType === "Alquiler"
       ? "Prioriza gente, ingresos, fechas de entrada/salida y mascotas."
       : "Prioriza forma de pago, si tiene hipoteca aprobada y contexto financiero.";
 
   return [
     LEAD_SUMMARY_PROMPT,
     "",
-    `Tipo de operación actual: ${state.tipoOperacion}. ${focusText}`,
+    `Tipo de operación actual: ${state.operationType}. ${focusText}`,
     'Si el lead confirmó que no tiene una mascota, escribe "Sin mascotas" en lugar de dejarlo vacío.',
   ].join("\n");
 }
@@ -246,14 +246,14 @@ function parseLeadSummaryResponse(output: string): LeadSummary {
   try {
     const parsed = JSON.parse(jsonCandidate);
     return {
-      nombre: parseLeadSummaryValue(parsed.nombre),
-      personas: parseLeadSummaryValue(parsed.personas),
-      ingresos: parseLeadSummaryValue(parsed.ingresos),
-      mascotas: parseLeadSummaryValue(parsed.mascotas),
-      formaPago: parseLeadSummaryValue(parsed.formaPago),
-      fechas: parseLeadSummaryValue(parsed.fechas),
-      disponibilidadVisita: parseLeadSummaryValue(parsed.disponibilidadVisita),
-      notas: parseLeadSummaryValue(parsed.notas),
+      name: parseLeadSummaryValue(parsed.name),
+      people: parseLeadSummaryValue(parsed.people),
+      income: parseLeadSummaryValue(parsed.income),
+      pets: parseLeadSummaryValue(parsed.pets),
+      paymentMethod: parseLeadSummaryValue(parsed.paymentMethod),
+      dates: parseLeadSummaryValue(parsed.dates),
+      visitAvailability: parseLeadSummaryValue(parsed.visitAvailability),
+      notes: parseLeadSummaryValue(parsed.notes),
     };
   } catch {
     console.warn("Failed to parse lead summary JSON", jsonCandidate);

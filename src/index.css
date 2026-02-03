@@ -1,5 +1,19 @@
 @import "tailwindcss";
 
+@theme {
+  --color-primary-50: #FFF9EB;
+  --color-primary-100: #FEF0C7;
+  --color-primary-200: #FEE08A;
+  --color-primary-300: #FCCC4D;
+  --color-primary-400: #F8B82D;
+  --color-primary-500: #F5A623;
+  --color-primary-600: #D98A06;
+  --color-primary-700: #B66E07;
+  --color-primary-800: #935609;
+  --color-primary-900: #78460D;
+  --color-primary-950: #45260A;
+}
+
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
@@ -16,7 +30,7 @@ body {
 
 /* Custom component classes */
 .btn-primary {
-  @apply bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors;
+  @apply bg-primary-500 hover:bg-primary-600 text-white font-medium py-2 px-4 rounded-lg transition-colors;
 }
 
 .btn-secondary {
@@ -28,5 +42,5 @@ body {
 }
 
 .input {
-  @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent;
+  @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
 }

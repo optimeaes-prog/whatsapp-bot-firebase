@@ -7,8 +7,8 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
     
-    // Anuncios - authenticated users can CRUD
-    match /anuncios/{anuncioId} {
+    // Listings (formerly anuncios) - authenticated users can CRUD
+    match /listings/{listingId} {
       allow read, write: if request.auth != null;
     }
     
@@ -18,14 +18,14 @@ service cloud.firestore {
       allow write: if request.auth != null;
     }
     
-    // Conversaciones - authenticated users can read, functions can write
-    match /conversaciones/{convId} {
+    // Conversations (formerly conversaciones) - authenticated users can read, functions can write
+    match /conversations/{convId} {
       allow read: if request.auth != null;
       allow write: if request.auth != null;
     }
     
-    // Cualificados - authenticated users can read, functions can write
-    match /cualificados/{cualId} {
+    // Qualified Leads (formerly cualificados) - authenticated users can read, functions can write
+    match /qualifiedLeads/{qualId} {
       allow read: if request.auth != null;
       allow write: if request.auth != null;
     }

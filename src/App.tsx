@@ -5,10 +5,10 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
-import { Anuncios } from "./pages/Anuncios";
+import { Listings } from "./pages/Listings";
 import { Leads } from "./pages/Leads";
-import { Conversaciones } from "./pages/Conversaciones";
-import { Cualificados } from "./pages/Cualificados";
+import { Conversations } from "./pages/Conversations";
+import { QualifiedLeads } from "./pages/QualifiedLeads";
 import { Configuracion } from "./pages/Configuracion";
 
 const queryClient = new QueryClient();
@@ -35,7 +35,7 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Layout>
-                    <Anuncios />
+                    <Listings />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -55,7 +55,7 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Layout>
-                    <Conversaciones />
+                    <Conversations />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -65,7 +65,7 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Layout>
-                    <Cualificados />
+                    <QualifiedLeads />
                   </Layout>
                 </ProtectedRoute>
               }

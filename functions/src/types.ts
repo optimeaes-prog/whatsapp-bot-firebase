@@ -11,51 +11,61 @@ export type PendingItem = {
   timestamp: number;
 };
 
-export type TipoOperacion = "Venta" | "Alquiler";
+export type OperationType = "Venta" | "Alquiler";
 
 export type ConversationState = {
-  telefono: string;
-  anuncio: string;
+  phone: string;
+  listingCode: string;
   chatId: string;
-  tipoOperacion: TipoOperacion;
-  nombre?: string;
-  descripcion: string;
-  enlace: string;
-  caracteristicas: string;
-  informeRentabilidadDisponible: boolean;
-  informeRentabilidad?: string;
+  operationType: OperationType;
+  name?: string;
+  description: string;
+  link: string;
+  features: string;
+  profitabilityReportAvailable: boolean;
+  profitabilityReport?: string;
   history: HistoryItem[];
   pendingUserMessages: PendingItem[];
   isFinished: boolean;
   qualificationStatus?: boolean;
+  // Buffer fields for Cloud Tasks
+  pendingTaskName?: string;
+  bufferExpiresAt?: number;
+  followUpSent?: boolean;
 };
 
 export type LeadSummary = {
-  nombre?: string;
-  personas?: string;
-  ingresos?: string;
-  mascotas?: string;
-  formaPago?: string;
-  fechas?: string;
-  disponibilidadVisita?: string;
-  notas?: string;
+  name?: string;
+  people?: string;
+  income?: string;
+  pets?: string;
+  paymentMethod?: string;
+  dates?: string;
+  visitAvailability?: string;
+  notes?: string;
 };
+
+export type QualificationStatus = "not_qualified" | "qualified" | "rejected";
 
 export type LeadRow = {
-  telefono: string;
-  anuncio: string;
+  phone: string;
+  listingCode: string;
   chatId: string;
-  tipoOperacion: TipoOperacion;
+  operationType: OperationType;
+  name?: string;
+  firstMessageDate?: FirebaseFirestore.Timestamp;
+  lastMessageDate?: FirebaseFirestore.Timestamp;
+  qualificationStatus?: QualificationStatus;
 };
 
-export type AnuncioRow = {
-  descripcion: string;
-  anuncio: string;
-  enlace: string;
-  tipoOperacion: TipoOperacion;
-  caracteristicas: string;
-  informeRentabilidadDisponible: boolean;
-  informeRentabilidad: string;
+export type ListingRow = {
+  description: string;
+  listingCode: string;
+  link: string;
+  operationType: OperationType;
+  features: string;
+  profitabilityReportAvailable: boolean;
+  profitabilityReport: string;
 };
 
 export type BotStyle = {
@@ -72,7 +82,7 @@ export type BotConfig = {
 
 export type InboundMessage = {
   chatId: string;
-  telefono: string;
+  phone: string;
   text: string;
   timestamp: number;
 };
