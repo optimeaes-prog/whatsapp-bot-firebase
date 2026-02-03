@@ -929,8 +929,8 @@ export const checkFollowUps = onSchedule({
       try {
         const isSpanish = isSpanishPhoneNumber(state.phone);
         const followUpMessage = isSpanish
-          ? "¿Has podido revisar la información? Cuéntame si te interesa y coordinamos visita. :)"
-          : "Hi! Just checking if you had a chance to look at the property info. Let me know if you're interested! :)";
+          ? "¡Hola! Debido a la gran cantidad de interesados, no me gustaría que te quedaras fuera. ¿Me puedes responder al mensaje anterior porfa? :)"
+          : "Hi! Due to high demand for this property, I wouldn't want you to miss out. Could you please get back to me regarding my previous message? :)";
 
         console.log(`Sending follow-up to ${state.phone} (${state.chatId})`);
 
