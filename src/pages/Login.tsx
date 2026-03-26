@@ -22,7 +22,7 @@ export function Login() {
       } else {
         await signIn(email, password);
       }
-      navigate("/");
+      navigate("/dashboard");
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : "Error de autenticación";
       setError(errorMessage);
@@ -36,7 +36,7 @@ export function Login() {
     setLoading(true);
     try {
       await signInWithGoogle();
-      navigate("/");
+      navigate("/dashboard");
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : "Error con Google";
       setError(errorMessage);

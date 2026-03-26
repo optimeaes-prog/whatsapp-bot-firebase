@@ -1,9 +1,11 @@
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db } from "../lib/firebase";
-import type { BotConfig, BotStyle } from "../types";
+import type { BotConfig, BotStyle, MessagingProvider } from "../types";
+
+import { getOrganizationBasePath } from "../lib/organization";
 
 const CONFIG_DOC_ID = "config";
-const COLLECTION_NAME = "botConfig";
+const COLLECTION_NAME = `${getOrganizationBasePath()}/botConfig`;
 
 // Default bot styles
 export const DEFAULT_STYLES: BotStyle[] = [
@@ -18,7 +20,7 @@ export const DEFAULT_STYLES: BotStyle[] = [
 - AGRUPA las preguntas relacionadas en UN SOLO mensaje.
 - Si el usuario da varios datos, reconócelos brevemente y pregunta SOLO lo que falta.
 - Sé amable pero valora el tiempo del usuario.
-- VARÍA tu vocabulario: no repitas "Perfecto" constantemente. Usa alternativas como "Genial", "Estupendo", "Vale", "De acuerdo", etc.`,
+- VARÍA tu vocabulario de afirmaciones dependiendo del idioma de la conversación (ej. en español usa 'Genial', 'Estupendo', 'Vale', 'De acuerdo'; en inglés usa 'Great', 'Understood', 'Alright'), no repitas siempre lo mismo.`,
   },
   {
     id: "amigable",
@@ -28,7 +30,7 @@ export const DEFAULT_STYLES: BotStyle[] = [
 - Incluye emojis ocasionales para dar calidez (😊, 👍, 🏠, ✨) pero sin exceso.
 - Haz preguntas de una en una para que la conversación fluya naturalmente.
 - Muestra entusiasmo genuino por ayudar al cliente a encontrar su hogar ideal.
-- Usa expresiones cercanas como "¡Qué bien!", "Me encanta", "¡Genial!".
+- Usa expresiones cercanas acordes al idioma de la conversación (ej. en español "¡Qué bien!", "Me encanta", "¡Genial!"; en inglés "That's great!", "Awesome!").
 - Personaliza las respuestas usando el nombre del cliente cuando lo sepas.
 - Sé empático si el cliente expresa dudas o preocupaciones.`,
   },
@@ -43,7 +45,7 @@ export const DEFAULT_STYLES: BotStyle[] = [
 - Sé cortés pero manteniendo distancia profesional.
 - No uses emojis ni expresiones demasiado efusivas.
 - Estructura las respuestas de forma clara y ordenada.
-- Agradece formalmente: "Le agradezco su interés", "Gracias por su tiempo".`,
+- Agradece formalmente según el idioma: "Le agradezco su interés", "Gracias por su tiempo", o "Thank you for your time".`,
   },
   {
     id: "conciso",
@@ -68,17 +70,34 @@ export async function getBotConfig(): Promise<BotConfig> {
     const defaultConfig: BotConfig = {
       activeStyleId: "directo",
       styles: DEFAULT_STYLES,
+      messagingProvider: "whapi",
+      orgName: "Atlas Capital Group",
     };
     await setDoc(docRef, defaultConfig);
     return defaultConfig;
   }
 
-  return snapshot.data() as BotConfig;
+  const data = snapshot.data() as BotConfig;
+  // Ensure messagingProvider has a default
+  if (!data.messagingProvider) {
+    data.messagingProvider = "whapi";
+  }
+  return data;
 }
 
 export async function updateActiveStyle(styleId: string): Promise<void> {
   const docRef = doc(db, COLLECTION_NAME, CONFIG_DOC_ID);
   await setDoc(docRef, { activeStyleId: styleId }, { merge: true });
+}
+
+export async function updateMessagingProvider(provider: MessagingProvider): Promise<void> {
+  const docRef = doc(db, COLLECTION_NAME, CONFIG_DOC_ID);
+  await setDoc(docRef, { messagingProvider: provider }, { merge: true });
+}
+
+export async function updateOrgName(orgName: string): Promise<void> {
+  const docRef = doc(db, COLLECTION_NAME, CONFIG_DOC_ID);
+  await setDoc(docRef, { orgName }, { merge: true });
 }
 
 export async function getActiveStyle(): Promise<BotStyle> {

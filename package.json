@@ -8,18 +8,17 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "seed": "node scripts/seedFirestore.js",
-    "seed:admin": "node scripts/seedWithAdmin.js",
-    "add:anuncios": "node scripts/addNewAnunciosAdmin.js",
-    "add:listings": "node scripts/addListingsAdmin.mjs",
-    "add:qualified-leads": "node scripts/addQualifiedLeads.mjs"
+    "twilio:dev": "export $(grep -E 'TWILIO_ACCOUNT_SID|TWILIO_AUTH_TOKEN' functions/.env | grep -v 'API' | xargs) && twilio dev-phone"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.19",
+    "axios": "^1.13.6",
     "clsx": "^2.1.1",
+    "dotenv": "^17.3.1",
     "firebase": "^12.8.0",
     "lucide-react": "^0.563.0",
     "react": "^19.2.0",
+    "react-calendly": "^4.4.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.12.0",
     "tailwind-merge": "^3.4.0"
@@ -35,7 +34,7 @@
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
-    "firebase-admin": "^13.6.0",
+    "firebase-admin": "^13.7.0",
     "globals": "^16.5.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",

@@ -12,7 +12,9 @@ import {
 import { db, auth } from "../lib/firebase";
 import type { Listing, ListingFormData, ListingClosureReason, ListingClosureInfo } from "../types";
 
-const COLLECTION_NAME = "listings";
+import { getOrganizationBasePath } from "../lib/organization";
+
+const COLLECTION_NAME = `${getOrganizationBasePath()}/listings`;
 
 // Helper function to add timeout to promises
 function withTimeout<T>(promise: Promise<T>, ms: number, operation: string): Promise<T> {
@@ -28,17 +30,17 @@ export async function getListings(): Promise<Listing[]> {
   try {
     const currentUser = auth.currentUser;
     console.log("Current user:", currentUser?.email || "NOT AUTHENTICATED");
-    
+
     if (!currentUser) {
       throw new Error("Usuario no autenticado. Por favor, inicia sesión.");
     }
 
     console.log("Fetching listings (timeout: 60s)...");
     const colRef = collection(db, COLLECTION_NAME);
-    
+
     const snapshot = await withTimeout(getDocs(colRef), 60000, "getListings");
     console.log(`Fetched ${snapshot.docs.length} listings`);
-    
+
     const listings = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -82,7 +84,7 @@ export async function createListing(data: ListingFormData): Promise<string> {
     const currentUser = auth.currentUser;
     console.log("Creating listing for user:", currentUser?.email);
     console.log("Data:", JSON.stringify(data));
-    
+
     const docRef = await withTimeout(
       addDoc(collection(db, COLLECTION_NAME), {
         description: data.description,
@@ -90,6 +92,12 @@ export async function createListing(data: ListingFormData): Promise<string> {
         link: data.link,
         operationType: data.operationType,
         features: data.features,
+        idealistaDescription: (data as any).idealistaDescription || "",
+        price: (data as any).price || "",
+        m2: (data as any).m2 || "",
+        rooms: (data as any).rooms || "",
+        address: (data as any).address || "",
+        agentName: (data as any).agentName || "",
         profitabilityReportAvailable: data.profitabilityReportAvailable,
         profitabilityReport: data.profitabilityReport,
         isActive: true, // Nuevo anuncio siempre empieza como activo
@@ -115,15 +123,21 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
   const updateData: Record<string, unknown> = {
     updatedAt: Timestamp.now(),
   };
-  
+
   if (data.description !== undefined) updateData.description = data.description;
   if (data.listingCode !== undefined) updateData.listingCode = data.listingCode;
   if (data.link !== undefined) updateData.link = data.link;
   if (data.operationType !== undefined) updateData.operationType = data.operationType;
   if (data.features !== undefined) updateData.features = data.features;
+  if ((data as any).idealistaDescription !== undefined) updateData.idealistaDescription = (data as any).idealistaDescription;
+  if ((data as any).price !== undefined) updateData.price = (data as any).price;
+  if ((data as any).m2 !== undefined) updateData.m2 = (data as any).m2;
+  if ((data as any).rooms !== undefined) updateData.rooms = (data as any).rooms;
+  if ((data as any).address !== undefined) updateData.address = (data as any).address;
+  if ((data as any).agentName !== undefined) updateData.agentName = (data as any).agentName;
   if (data.profitabilityReportAvailable !== undefined) updateData.profitabilityReportAvailable = data.profitabilityReportAvailable;
   if (data.profitabilityReport !== undefined) updateData.profitabilityReport = data.profitabilityReport;
-  
+
   await updateDoc(docRef, updateData);
 }
 
@@ -145,11 +159,11 @@ export async function deactivateListing(
     reason,
     closedAt: Timestamp.now(),
   };
-  
+
   if (qualifiedLeadId) closureInfo.qualifiedLeadId = qualifiedLeadId;
   if (qualifiedLeadName) closureInfo.qualifiedLeadName = qualifiedLeadName;
   if (notes) closureInfo.notes = notes;
-  
+
   await updateDoc(docRef, {
     isActive: false,
     closureInfo,
@@ -189,7 +203,7 @@ export async function getConversionStats(): Promise<{
   other: number;
 }> {
   const closedListings = await getClosedListings();
-  
+
   return {
     totalClosed: closedListings.length,
     soldToQualified: closedListings.filter(l => l.closureInfo?.reason === "sold_to_qualified").length,
@@ -199,3 +213,6 @@ export async function getConversionStats(): Promise<{
     other: closedListings.filter(l => l.closureInfo?.reason === "other").length,
   };
 }
+
+// La funcionalidad de generación automática ha sido desactivada a petición del usuario
+// para favorecer la introducción manual de datos debido a los bloqueos de Idealista.

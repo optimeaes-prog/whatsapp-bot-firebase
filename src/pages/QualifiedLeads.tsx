@@ -1,20 +1,49 @@
-import { useEffect, useState } from "react";
-import { CheckCircle, User, Phone, FileText, Clock, Search, ArrowUpDown, ChevronDown, ChevronRight } from "lucide-react";
-import type { QualifiedLead } from "../types";
-import { getQualifiedLeads } from "../services/qualifiedLeads";
-import { formatDate, formatPhone, cn } from "../lib/utils";
+import { useEffect, useState, Fragment } from "react";
+import { useSearchParams } from "react-router-dom";
+import { CheckCircle, User, Phone, FileText, Clock, Search, ArrowUpDown, ExternalLink, MessageSquare, Trash2, Send, CheckSquare, Square, XCircle, Users, ArrowUp, ArrowDown, X, Download, Filter } from "lucide-react";
+import type { QualifiedLead, Conversation } from "../types";
+import { getQualifiedLeads, deleteQualifiedLead } from "../services/qualifiedLeads";
+import { getListings } from "../services/listings";
+import { getConversationByChatId, sendMassMessageToWhatsApp } from "../services/conversations";
+import { formatDate, formatPhone, cn, formatMessageTime } from "../lib/utils";
+import { downloadConversation } from "../lib/export";
 
-type SortField = "name" | "createdAt" | "listingCode";
+type SortField = "name" | "phone" | "listingCode" | "listingDescription" | "createdAt" | "messageCount";
 type SortDirection = "asc" | "desc";
 
+type QualifiedLeadWithListing = QualifiedLead & {
+  listingDescription?: string;
+  messageCount?: number;
+  operationType?: string;
+  tags?: string[];
+  notes?: string;
+};
+
 export function QualifiedLeads() {
-  const [qualifiedLeads, setQualifiedLeads] = useState<QualifiedLead[]>([]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const adFromUrl = searchParams.get("ad");
+
+  const [qualifiedLeads, setQualifiedLeads] = useState<QualifiedLeadWithListing[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterTipo, setFilterTipo] = useState<"all" | "Venta" | "Alquiler">("all");
+  const [filterAnuncio, setFilterAnuncio] = useState<string>(adFromUrl || "all");
   const [sortField, setSortField] = useState<SortField>("createdAt");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set());
+
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
+  const [loadingConversation, setLoadingConversation] = useState(false);
+  const [isMassMessageModalOpen, setIsMassMessageModalOpen] = useState(false);
+  const [massMessageText, setMassMessageText] = useState("");
+  const [sendingMassMessage, setSendingMassMessage] = useState(false);
+
+  useEffect(() => {
+    if (adFromUrl) {
+      setFilterAnuncio(adFromUrl);
+    }
+  }, [adFromUrl]);
 
   useEffect(() => {
     loadQualifiedLeads();
@@ -22,8 +51,40 @@ export function QualifiedLeads() {
 
   async function loadQualifiedLeads() {
     try {
-      const data = await getQualifiedLeads();
-      setQualifiedLeads(data);
+      const [data, listingsData] = await Promise.all([
+        getQualifiedLeads(),
+        getListings()
+      ]);
+
+      const listingsMap = new Map(
+        listingsData.map(l => [l.listingCode, l.description])
+      );
+
+      const leadsWithListingsAndMessages = await Promise.all(
+        data.map(async (lead) => {
+          let extra = {};
+          try {
+            const conversation = await getConversationByChatId(lead.chatId);
+            if (conversation) {
+              extra = {
+                messageCount: conversation.messageCount,
+                tags: conversation.tags,
+                notes: conversation.notes,
+                operationType: (lead as any).operationType || "Venta",
+              };
+            }
+          } catch (e) {
+            console.error(e);
+          }
+          return {
+            ...lead,
+            ...extra,
+            listingDescription: listingsMap.get(lead.listingCode)
+          };
+        })
+      );
+
+      setQualifiedLeads(leadsWithListingsAndMessages);
     } catch (error) {
       console.error("Error loading qualified leads:", error);
     } finally {
@@ -31,14 +92,127 @@ export function QualifiedLeads() {
     }
   }
 
+  async function openConversation(lead: QualifiedLeadWithListing) {
+    setLoadingConversation(true);
+    try {
+      const conversation = await getConversationByChatId(lead.chatId);
+      if (!conversation) {
+        alert("No hay conversación disponible para este lead.");
+        return;
+      }
+      setSelectedConversation(conversation);
+    } catch (error) {
+      console.error("Error loading conversation:", error);
+      alert("Error al cargar la conversación");
+    } finally {
+      setLoadingConversation(false);
+    }
+  }
+
+  async function handleDeleteLead(e: React.MouseEvent, lead: QualifiedLeadWithListing) {
+    e.stopPropagation();
+    const leadName = lead.name || formatPhone(lead.phone);
+    const warningMessage = `⚠️ ADVERTENCIA: Esta acción eliminará permanentemente:\n\n` +
+      `• El lead cualificado de ${leadName}\n\n` +
+      `Esta acción NO se puede rehacer.\n\n` +
+      `¿Estás seguro de que quieres continuar?`;
+
+    if (!window.confirm(warningMessage)) {
+      return;
+    }
+
+    try {
+      await deleteQualifiedLead(lead.id);
+      setQualifiedLeads(qualifiedLeads.filter(l => l.id !== lead.id));
+      setSelectedLeadIds(prev => {
+        const next = new Set(prev);
+        next.delete(lead.id);
+        return next;
+      });
+    } catch (error) {
+      console.error("Error deleting qualified lead:", error);
+      alert("Error al eliminar el lead cualificado");
+    }
+  }
+
+  function toggleLeadSelection(leadId: string) {
+    setSelectedLeadIds(prev => {
+      const next = new Set(prev);
+      if (next.has(leadId)) {
+        next.delete(leadId);
+      } else {
+        next.add(leadId);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllSelection() {
+    if (selectedLeadIds.size === filteredAndSortedLeads.length) {
+      setSelectedLeadIds(new Set());
+    } else {
+      setSelectedLeadIds(new Set(filteredAndSortedLeads.map(l => l.id)));
+    }
+  }
+
+  async function handleSendMassMessage() {
+    if (!massMessageText.trim()) {
+      alert("Por favor introduce un mensaje");
+      return;
+    }
+
+    const selectedChatIds = qualifiedLeads
+      .filter(l => selectedLeadIds.has(l.id))
+      .map(l => l.chatId);
+
+    if (selectedChatIds.length === 0) return;
+
+    setSendingMassMessage(true);
+    try {
+      const result = await sendMassMessageToWhatsApp(selectedChatIds, massMessageText);
+      alert(`Mensaje enviado correctamente: ${result.summary.sent} éxitos, ${result.summary.failed} errores.`);
+      setIsMassMessageModalOpen(false);
+      setMassMessageText("");
+      setSelectedLeadIds(new Set());
+      loadQualifiedLeads();
+    } catch (error) {
+      console.error("Error sending mass message:", error);
+      alert("Error al enviar el mensaje masivo");
+    } finally {
+      setSendingMassMessage(false);
+    }
+  }
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDirection("desc");
+    }
+  };
+
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown size={14} className="text-gray-400" />;
+    }
+    return sortDirection === "asc" ? (
+      <ArrowUp size={14} className="text-primary-600" />
+    ) : (
+      <ArrowDown size={14} className="text-primary-600" />
+    );
+  };
+
   const filteredAndSortedLeads = qualifiedLeads
     .filter((lead) => {
       const matchesSearch =
         (lead.phone || "").includes(search) ||
         (lead.listingCode || "").toLowerCase().includes(search.toLowerCase()) ||
-        (lead.name || "").toLowerCase().includes(search.toLowerCase());
-      const matchesTipo = filterTipo === "all" || (lead as any).operationType === filterTipo;
-      return matchesSearch && matchesTipo;
+        (lead.name || "").toLowerCase().includes(search.toLowerCase()) ||
+        (lead.listingDescription || "").toLowerCase().includes(search.toLowerCase());
+      const matchesTipo = filterTipo === "all" || lead.operationType === filterTipo || (lead as any).operationType === filterTipo;
+      const matchesAnuncio = filterAnuncio === "all" || lead.listingCode === filterAnuncio;
+      return matchesSearch && matchesTipo && matchesAnuncio;
     })
     .sort((a, b) => {
       let aValue: any;
@@ -49,13 +223,25 @@ export function QualifiedLeads() {
           aValue = (a.name || "").toLowerCase();
           bValue = (b.name || "").toLowerCase();
           break;
+        case "phone":
+          aValue = a.phone;
+          bValue = b.phone;
+          break;
         case "listingCode":
           aValue = a.listingCode;
           bValue = b.listingCode;
           break;
+        case "listingDescription":
+          aValue = (a.listingDescription || "").toLowerCase();
+          bValue = (b.listingDescription || "").toLowerCase();
+          break;
         case "createdAt":
           aValue = a.createdAt?.toMillis() || 0;
           bValue = b.createdAt?.toMillis() || 0;
+          break;
+        case "messageCount":
+          aValue = a.messageCount || 0;
+          bValue = b.messageCount || 0;
           break;
         default:
           return 0;
@@ -84,11 +270,14 @@ export function QualifiedLeads() {
           </p>
         </div>
         <div className="flex gap-2">
-          {(search || filterTipo !== "all") && (
+          {(search || filterTipo !== "all" || filterAnuncio !== "all" || selectedLeadIds.size > 0) && (
             <button
               onClick={() => {
                 setSearch("");
                 setFilterTipo("all");
+                setFilterAnuncio("all");
+                setSelectedLeadIds(new Set());
+                setSearchParams({});
               }}
               className="text-sm text-gray-600 hover:text-gray-900 underline"
             >
@@ -97,6 +286,35 @@ export function QualifiedLeads() {
           )}
         </div>
       </div>
+
+      {/* Floating Action Bar for Mass Messaging */}
+      {selectedLeadIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[90%] max-w-md animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="bg-white rounded-2xl shadow-2xl border border-primary-100 p-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center text-primary-600">
+                <Users size={20} />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-gray-900">{selectedLeadIds.size} seleccionados</p>
+                <button
+                  onClick={() => setSelectedLeadIds(new Set())}
+                  className="text-[11px] text-primary-600 font-bold hover:underline"
+                >
+                  Deseleccionar todos
+                </button>
+              </div>
+            </div>
+            <button
+              onClick={() => setIsMassMessageModalOpen(true)}
+              className="px-5 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-bold hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/20 active:scale-95 flex items-center gap-2"
+            >
+              <Send size={16} />
+              <span>Enviar Mensaje</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="card mb-6 p-4">
@@ -112,84 +330,51 @@ export function QualifiedLeads() {
                 className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow"
               />
             </div>
-            <select
-              value={filterTipo}
-              onChange={(e) => setFilterTipo(e.target.value as typeof filterTipo)}
-              className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white w-full sm:w-auto sm:min-w-[140px]"
-            >
-              <option value="all">Todos los tipos</option>
-              <option value="Venta">Venta</option>
-              <option value="Alquiler">Alquiler</option>
-            </select>
-          </div>
-          <div className="flex flex-wrap gap-2 items-center text-sm">
-            <span className="text-gray-600">Ordenar por:</span>
-            <button
-              onClick={() => {
-                if (sortField === "createdAt") {
-                  setSortDirection(sortDirection === "asc" ? "desc" : "asc");
-                } else {
-                  setSortField("createdAt");
-                  setSortDirection("desc");
-                }
-              }}
-              className={cn(
-                "px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors",
-                sortField === "createdAt"
-                  ? "bg-primary-100 text-primary-700 font-medium"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              )}
-            >
-              <Clock size={14} />
-              Fecha
-              {sortField === "createdAt" && (
-                <ArrowUpDown size={12} />
-              )}
-            </button>
-            <button
-              onClick={() => {
-                if (sortField === "name") {
-                  setSortDirection(sortDirection === "asc" ? "desc" : "asc");
-                } else {
-                  setSortField("name");
-                  setSortDirection("asc");
-                }
-              }}
-              className={cn(
-                "px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors",
-                sortField === "name"
-                  ? "bg-primary-100 text-primary-700 font-medium"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              )}
-            >
-              <User size={14} />
-              Nombre
-              {sortField === "name" && (
-                <ArrowUpDown size={12} />
-              )}
-            </button>
-            <button
-              onClick={() => {
-                if (sortField === "listingCode") {
-                  setSortDirection(sortDirection === "asc" ? "desc" : "asc");
-                } else {
-                  setSortField("listingCode");
-                  setSortDirection("asc");
-                }
-              }}
-              className={cn(
-                "px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors",
-                sortField === "listingCode"
-                  ? "bg-primary-100 text-primary-700 font-medium"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              )}
-            >
-              <FileText size={14} />
-              Anuncio
-              {sortField === "listingCode" && (
-                <ArrowUpDown size={12} />
-              )}
-            </button>
+            <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border shadow-sm">
+              <Filter size={18} className="text-gray-500 flex-shrink-0" />
+              <select
+                value={filterTipo}
+                onChange={(e) => setFilterTipo(e.target.value as typeof filterTipo)}
+                className="bg-transparent text-sm focus:outline-none focus:ring-0 text-gray-700 font-medium w-full sm:w-auto"
+              >
+                <option value="all">Todos los tipos</option>
+                <option value="Venta">Venta</option>
+                <option value="Alquiler">Alquiler</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border shadow-sm">
+              <Filter size={18} className="text-gray-500 flex-shrink-0" />
+              <select
+                value={filterAnuncio}
+                onChange={(e) => {
+                  const newValue = e.target.value;
+                  setFilterAnuncio(newValue);
+                  if (newValue === "all") {
+                    searchParams.delete("ad");
+                    setSearchParams(searchParams);
+                  } else {
+                    setSearchParams({ ...Object.fromEntries(searchParams.entries()), ad: newValue });
+                  }
+                }}
+                className="bg-transparent text-sm focus:outline-none focus:ring-0 text-gray-700 font-medium w-full sm:w-[140px] max-w-[200px] truncate"
+              >
+                <option value="all">Todos los anuncios</option>
+                {Array.from(
+                  qualifiedLeads.reduce((map, lead) => {
+                    if (lead.listingCode && !map.has(lead.listingCode)) {
+                      map.set(lead.listingCode, lead.listingDescription || lead.listingCode);
+                    }
+                    return map;
+                  }, new Map<string, string>())
+                )
+                  .sort((a, b) => a[0].localeCompare(b[0]))
+                  .map(([code, description]) => (
+                    <option key={code} value={code}>
+                      {description === code ? code : `${code} - ${description.substring(0, 30)}${description.length > 30 ? "..." : ""}`}
+                    </option>
+                  ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -203,71 +388,569 @@ export function QualifiedLeads() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-3 sm:gap-4">
-          {filteredAndSortedLeads.map((lead) => (
-            <div key={lead.id} className="card p-4 sm:p-6">
-              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 sm:gap-4 mb-3 sm:mb-4">
-                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                  <User size={18} className="text-primary-600 flex-shrink-0" />
-                  <div className="min-w-0">
-                    <h3 className="font-semibold text-gray-900 text-sm sm:text-base truncate">{lead.name}</h3>
-                    <div className="flex items-center gap-1 text-xs sm:text-sm text-gray-500 mt-0.5">
-                      <Phone size={12} className="flex-shrink-0" />
-                      <span className="truncate">{formatPhone(lead.phone)}</span>
+        <>
+          {/* Mobile Select All Button */}
+          <div className="md:hidden flex justify-start mb-3">
+            <button
+              onClick={toggleAllSelection}
+              className="text-sm font-medium text-primary-600 hover:text-primary-700 flex items-center gap-2 bg-primary-50 px-3 py-1.5 rounded-lg border border-primary-100"
+            >
+              {selectedLeadIds.size === filteredAndSortedLeads.length && filteredAndSortedLeads.length > 0 ? (
+                <>
+                  <CheckSquare size={16} /> Deseleccionar todos
+                </>
+              ) : (
+                <>
+                  <CheckSquare size={16} /> Seleccionar todos
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Mobile Card View */}
+          <div className="md:hidden space-y-3">
+            {filteredAndSortedLeads.map((lead) => (
+              <div
+                key={lead.id}
+                className={cn(
+                  "card p-4 cursor-pointer hover:shadow-md transition-shadow relative",
+                  selectedLeadIds.has(lead.id) && "ring-2 ring-primary-500 bg-primary-50/30"
+                )}
+                onClick={() => toggleLeadSelection(lead.id)}
+              >
+                <div className="absolute top-2 right-2 md:hidden">
+                  {selectedLeadIds.has(lead.id) ? (
+                    <CheckSquare size={18} className="text-primary-600" />
+                  ) : (
+                    <Square size={18} className="text-gray-300" />
+                  )}
+                </div>
+                <div className="flex items-start justify-between mb-3 mt-4">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <User size={18} className="text-primary-600 flex-shrink-0" />
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-gray-900 truncate" onClick={(e) => { e.stopPropagation(); toggleLeadSelection(lead.id); }}>
+                        {lead.name || "Sin nombre"}
+                      </h3>
+                      <div className="flex items-center gap-1.5 text-sm text-gray-500">
+                        <Phone size={12} />
+                        <span>{formatPhone(lead.phone)}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 text-xs sm:text-sm text-gray-500 whitespace-nowrap">
-                  <Clock size={12} className="flex-shrink-0" />
-                  {lead.createdAt ? formatDate(lead.createdAt.toDate()) : "—"}
-                </div>
-              </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-xs sm:text-sm text-gray-600">
-                  <strong>Anuncio:</strong> {lead.listingCode}
-                </p>
-                {lead.qualified && (
-                  <span className="inline-flex items-center gap-1 px-2 sm:px-3 py-0.5 sm:py-1 text-xs font-medium rounded-full bg-green-100 text-green-700">
-                    <CheckCircle size={12} />
-                    Cualificado
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700">
+                    <CheckCircle size={12} /> Cualificado
                   </span>
-                )}
-              </div>
-
-              {lead.conversationSummary && (
-                <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-gray-200">
-                  <button
-                    onClick={() => {
-                      setExpandedSummaries(prev => {
-                        const next = new Set(prev);
-                        if (next.has(lead.id)) {
-                          next.delete(lead.id);
-                        } else {
-                          next.add(lead.id);
-                        }
-                        return next;
-                      });
-                    }}
-                    className="flex items-center gap-2 mb-2 hover:text-gray-900 transition-colors w-full text-left"
-                  >
-                    {expandedSummaries.has(lead.id) ? (
-                      <ChevronDown size={16} className="text-gray-400 flex-shrink-0" />
-                    ) : (
-                      <ChevronRight size={16} className="text-gray-400 flex-shrink-0" />
+                  {lead.operationType && (
+                    <span
+                      className={cn(
+                        "px-2 py-0.5 text-xs font-medium rounded-full",
+                        lead.operationType === "Venta"
+                          ? "bg-primary-100 text-primary-700"
+                          : "bg-green-100 text-green-700"
+                      )}
+                    >
+                      {lead.operationType}
+                    </span>
+                  )}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 w-fit">
+                      <span>{lead.listingCode}</span>
+                      <a
+                        href={`https://www.idealista.com/inmueble/${lead.listingCode}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary-600 hover:text-primary-700 transition-colors p-0.5 rounded-sm hover:bg-gray-200"
+                        title="Ver en Idealista"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <ExternalLink size={10} />
+                      </a>
+                    </div>
+                    {lead.listingDescription && (
+                      <span className="text-[10px] text-gray-500 line-clamp-1 italic px-1">
+                        {lead.listingDescription}
+                      </span>
                     )}
-                    <FileText size={16} className="text-gray-400 flex-shrink-0" />
-                    <span className="text-xs sm:text-sm font-medium text-gray-700">Resumen de conversación</span>
-                  </button>
-                  {expandedSummaries.has(lead.id) && (
-                    <pre className="text-xs sm:text-sm text-gray-600 whitespace-pre-wrap font-sans ml-6 sm:ml-8 overflow-x-auto">
-                      {lead.conversationSummary}
-                    </pre>
+                  </div>
+                  {lead.tags?.filter(tag => tag.toLowerCase() !== 'lead').map(tag => (
+                    <span key={tag} className="px-2 py-0.5 text-xs font-medium rounded-full bg-primary-50 text-primary-600 border border-primary-100">
+                      {tag}
+                    </span>
+                  ))}
+                  {lead.notes && (
+                    <div className="w-full mt-1.5 text-[11px] text-gray-600 bg-amber-50/50 p-1.5 rounded border border-amber-100/50 italic break-words" title={lead.notes}>
+                      <span className="font-semibold text-amber-700">Nota:</span> {lead.notes}
+                    </div>
                   )}
                 </div>
-              )}
+
+                <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1">
+                      <MessageSquare size={12} className="text-primary-500" />
+                      <span>{lead.messageCount || 0} mensajes</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Clock size={12} />
+                    <span>
+                      {lead.createdAt ? formatDate(lead.createdAt.toDate()) : "—"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex justify-between items-center z-10">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openConversation(lead); }}
+                    className="text-primary-600 hover:text-primary-800 hover:bg-primary-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
+                    title="Ver Chat"
+                  >
+                    <MessageSquare size={16} /> Ver Chat
+                  </button>
+                  <button
+                    onClick={(e) => handleDeleteLead(e, lead)}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-lg transition-colors flex-shrink-0"
+                    title="Eliminar lead"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop Table View */}
+          <div className="hidden md:block card overflow-hidden p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="px-3 py-2 text-center w-8">
+                      <button onClick={toggleAllSelection} className="text-gray-400 hover:text-primary-600 transition-colors">
+                        {selectedLeadIds.size === filteredAndSortedLeads.length && filteredAndSortedLeads.length > 0 ? (
+                          <CheckSquare size={16} className="text-primary-600" />
+                        ) : (
+                          <Square size={16} />
+                        )}
+                      </button>
+                    </th>
+                    <th
+                      className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort("name")}
+                    >
+                      <div className="flex items-center gap-1">
+                        Nombre
+                        {getSortIcon("name")}
+                      </div>
+                    </th>
+                    <th
+                      className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort("phone")}
+                    >
+                      <div className="flex items-center gap-1">
+                        Teléfono
+                        {getSortIcon("phone")}
+                      </div>
+                    </th>
+                    <th
+                      className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort("listingCode")}
+                    >
+                      <div className="flex items-center gap-1">
+                        Anuncio
+                        {getSortIcon("listingCode")}
+                      </div>
+                    </th>
+                    <th
+                      className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort("listingDescription")}
+                    >
+                      <div className="flex items-center gap-1">
+                        Nombre Anuncio
+                        {getSortIcon("listingDescription")}
+                      </div>
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Tipo
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Estado
+                    </th>
+                    <th
+                      className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort("createdAt")}
+                    >
+                      <div className="flex items-center gap-1">
+                        Fecha
+                        {getSortIcon("createdAt")}
+                      </div>
+                    </th>
+                    <th
+                      className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort("messageCount")}
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        Msjs
+                        {getSortIcon("messageCount")}
+                      </div>
+                    </th>
+                    <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Resumen
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Notas
+                    </th>
+                    <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Chat
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Tags
+                    </th>
+                    <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Acción
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {filteredAndSortedLeads.map((lead) => (
+                    <Fragment key={lead.id}>
+                    <tr
+                      className={cn(
+                        "hover:bg-gray-50 transition-colors cursor-pointer",
+                        selectedLeadIds.has(lead.id) && "bg-primary-50/50"
+                      )}
+                      onClick={(e) => {
+                         const target = e.target as HTMLElement;
+                         if (target.closest('button') || target.closest('a')) return;
+                         openConversation(lead);
+                      }}
+                    >
+                      <td className="px-3 py-3 text-center">
+                        <button onClick={(e) => { e.stopPropagation(); toggleLeadSelection(lead.id); }} className="text-gray-400 hover:text-primary-600 transition-colors">
+                          {selectedLeadIds.has(lead.id) ? (
+                            <CheckSquare size={16} className="text-primary-600" />
+                          ) : (
+                            <Square size={16} />
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <User size={14} className="text-primary-600 flex-shrink-0" />
+                          <span className="font-medium text-gray-900 truncate max-w-[120px]" title={lead.name || "—"}>
+                            {lead.name || "—"}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <Phone size={14} className="text-gray-400 flex-shrink-0" />
+                          <span className="text-gray-900 text-xs">
+                            {formatPhone(lead.phone)}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-gray-900 font-medium">{lead.listingCode}</span>
+                          <a
+                            href={`https://www.idealista.com/inmueble/${lead.listingCode}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary-600 hover:text-primary-700 transition-colors p-1 rounded-md hover:bg-primary-50"
+                            title="Ver en Idealista"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <ExternalLink size={12} />
+                          </a>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        {lead.listingDescription ? (
+                          <span className="text-sm text-gray-900 truncate max-w-[200px] block" title={lead.listingDescription}>
+                            {lead.listingDescription}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 text-sm">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        {lead.operationType && (
+                          <span
+                            className={cn(
+                              "px-2 py-0.5 text-xs font-medium rounded-full",
+                              lead.operationType === "Venta"
+                                ? "bg-primary-100 text-primary-700"
+                                : "bg-green-100 text-green-700"
+                            )}
+                          >
+                            {lead.operationType}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700 inline-flex items-center gap-1">
+                          <CheckCircle size={10} /> Cualificado
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap text-xs text-gray-500">
+                        {lead.createdAt ? formatDate(lead.createdAt.toDate()) : "—"}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap text-center">
+                        <span className={cn(
+                          "font-medium",
+                          lead.messageCount && lead.messageCount > 0 ? "text-gray-900" : "text-gray-400"
+                        )}>
+                          {lead.messageCount || 0}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-center">
+                         <div className="max-w-[150px] relative group inline-block">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedSummaries(prev => {
+                                const next = new Set(prev);
+                                if (next.has(lead.id)) next.delete(lead.id);
+                                else next.add(lead.id);
+                                return next;
+                              });
+                            }}
+                            className="text-xs text-gray-500 hover:text-gray-800 underline truncate max-w-full block text-left"
+                            title="Ver resumen"
+                          >
+                            {lead.conversationSummary ? "Ver Resumen" : "—"}
+                          </button>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap cursor-pointer" onClick={(e) => { e.stopPropagation(); openConversation(lead); }}>
+                        {lead.notes ? (
+                          <span className="text-xs text-gray-600 truncate max-w-[150px] inline-block align-bottom" title={lead.notes}>
+                            {lead.notes}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap text-center">
+                        <button onClick={(e) => { e.stopPropagation(); openConversation(lead); }} className="text-primary-600 hover:text-primary-800 p-1.5 hover:bg-primary-50 rounded" title="Ver Conversación">
+                          <MessageSquare size={16} className="mx-auto" />
+                        </button>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap cursor-pointer" onClick={(e) => { e.stopPropagation(); openConversation(lead); }}>
+                        <div className="flex flex-wrap gap-1 max-w-[150px]">
+                          {lead.tags?.filter(tag => tag.toLowerCase() !== 'lead').map(tag => (
+                            <span key={tag} className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-primary-50 text-primary-600 border border-primary-100">
+                              {tag}
+                            </span>
+                          ))}
+                          {(!lead.tags || lead.tags.filter(tag => tag.toLowerCase() !== 'lead').length === 0) && <span className="text-gray-400 text-[10px]">—</span>}
+                        </div>
+                      </td>                      <td className="px-3 py-3 whitespace-nowrap text-center">
+                        <button
+                          onClick={(e) => handleDeleteLead(e, lead)}
+                          className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1.5 rounded transition-colors inline-flex items-center justify-center"
+                          title="Eliminar lead"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                    
+                    {/* Render expanded summary row underneath */}
+                    {expandedSummaries.has(lead.id) && lead.conversationSummary && (
+                      <tr className="bg-gray-50">
+                        <td colSpan={14} className="px-4 py-3 border-b border-gray-100">
+                           <div className="flex items-start gap-2 text-sm text-gray-700 bg-white p-3 rounded shadow-sm border border-gray-100">
+                             <FileText size={16} className="text-gray-400 flex-shrink-0 mt-0.5" />
+                             <pre className="text-xs font-sans whitespace-pre-wrap flex-1">{lead.conversationSummary}</pre>
+                           </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          </div>
+        </>
+      )}
+
+      {/* Modal de conversación */}
+      {selectedConversation && (
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white sm:rounded-lg shadow-xl max-w-4xl w-full h-full sm:h-auto sm:max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="p-3 sm:p-4 border-b border-gray-200 bg-gray-50 flex flex-col">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedConversation(null)}
+                  className="sm:hidden text-gray-600 hover:text-gray-900 p-1"
+                >
+                  <X size={20} />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <h2 className="font-semibold text-gray-900 truncate text-sm sm:text-lg">
+                    {selectedConversation.name || formatPhone(selectedConversation.phone)}
+                  </h2>
+                  <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+                    <span className="truncate">{selectedConversation.listingCode}</span>
+                    <span>•</span>
+                    <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} msjs</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => downloadConversation(selectedConversation)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm ml-2"
+                  title="Descargar conversación"
+                >
+                  <Download size={14} />
+                  <span className="hidden xs:inline">Descargar</span>
+                </button>
+                <button
+                  onClick={() => setSelectedConversation(null)}
+                  className="hidden sm:block text-gray-400 hover:text-gray-600 transition-colors ml-2"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+            </div>
+
+            <div
+              className="flex-1 overflow-y-auto p-2 sm:p-4 bg-gray-50"
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23e5e7eb' fill-opacity='0.2'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`
+              }}
+            >
+              <div className="space-y-3 sm:max-w-4xl sm:mx-auto">
+                {selectedConversation.history && selectedConversation.history.length > 0 ? (
+                  selectedConversation.history.map((item, index) => (
+                    <div
+                      key={index}
+                      className={cn(
+                        "p-3 rounded-lg text-sm",
+                        item.role === "assistant"
+                          ? "bg-white border border-gray-200 mr-8"
+                          : "bg-primary-100 text-primary-800 ml-8"
+                      )}
+                      style={{ overflowWrap: 'anywhere' }}
+                    >
+                      <span className={cn(
+                        "text-xs font-medium mb-1 block",
+                        item.role === "assistant" ? "text-gray-400" : "text-primary-600"
+                      )}>
+                        {item.role === "assistant" ? "Bot" : "Interesado"}
+                      </span>
+                      <p 
+                        className="whitespace-pre-wrap break-words" 
+                        style={{ wordBreak: 'break-word' }}
+                        dangerouslySetInnerHTML={{ 
+                          __html: item.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<strong>$1</strong>') 
+                        }}
+                      />
+                      {item.timestamp && (
+                        <p className="text-[10px] mt-1 text-right text-gray-400">
+                          {formatMessageTime(item.timestamp)}
+                        </p>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-12 text-gray-400">
+                    <MessageSquare size={48} className="mx-auto mb-3 opacity-50" />
+                    <p className="text-sm">No hay mensajes en esta conversación</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loadingConversation && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
+            <p className="text-gray-700 mt-4">Cargando conversación...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Mensaje Masivo */}
+      {isMassMessageModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-primary-50/50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-primary-100 rounded-lg text-primary-600">
+                  <Send size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900">Enviar mensaje masivo</h3>
+                  <p className="text-xs text-gray-500 font-medium">
+                    Se enviará a {selectedLeadIds.size} leads seleccionados
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsMassMessageModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+            <div className="p-4">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Mensaje de WhatsApp
+              </label>
+              <div className="relative group">
+                <textarea
+                  value={massMessageText}
+                  onChange={(e) => setMassMessageText(e.target.value)}
+                  placeholder="Escribe el mensaje que recibirán todos los leads..."
+                  className="w-full h-40 px-4 py-3 text-sm border border-gray-200 rounded-xl focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all resize-none group-hover:border-gray-300"
+                />
+                <div className="absolute bottom-3 right-3 text-[10px] font-bold text-gray-400 bg-white/80 px-2 py-1 rounded-md">
+                  {massMessageText.length} caracteres
+                </div>
+              </div>
+              <div className="mt-4 flex items-start gap-2 p-3 bg-amber-50 rounded-lg border border-amber-100">
+                <div className="text-amber-600 mt-0.5 font-bold">⚠️</div>
+                <p className="text-[11px] text-amber-700 leading-relaxed font-medium">
+                  Este mensaje se enviará de forma individual a cada lead. Asegúrate de que el contenido sea apropiado para todos los destinatarios seleccionados.
+                </p>
+              </div>
+            </div>
+            <div className="p-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-2">
+              <button
+                onClick={() => setIsMassMessageModalOpen(false)}
+                className="flex-1 px-4 py-2.5 text-sm font-bold text-gray-600 hover:bg-gray-200 rounded-xl transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSendMassMessage}
+                disabled={sendingMassMessage || !massMessageText.trim()}
+                className="flex-[2] px-4 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-bold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary-500/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                {sendingMassMessage ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                    <span>Enviando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send size={16} />
+                    <span>Enviar a {selectedLeadIds.size} leads</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

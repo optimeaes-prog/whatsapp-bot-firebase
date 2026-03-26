@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
-import { Plus, Edit, Trash2, FileText, ExternalLink, Power, PowerOff, CheckCircle, XCircle, User } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import { Plus, Edit, Trash2, FileText, Power, PowerOff, CheckCircle, XCircle, User, Users, MapPin, ExternalLink, MessageCircle } from "lucide-react";
 import type { Listing, ListingFormData, OperationType, ListingClosureReason, QualifiedLead } from "../types";
 import { getListings, createListing, updateListing, deleteListing, deactivateListing, reactivateListing } from "../services/listings";
-import { getQualifiedLeadsByListingCode } from "../services/qualifiedLeads";
-import { cn, formatDate } from "../lib/utils";
+import { getConversations } from "../services/conversations";
+import { getQualifiedLeadsByListingCode, getQualifiedLeads } from "../services/qualifiedLeads";
+import { cn } from "../lib/utils";
 
 const emptyFormData: ListingFormData = {
   description: "",
@@ -11,8 +13,14 @@ const emptyFormData: ListingFormData = {
   link: "", // Se generará automáticamente al guardar
   operationType: "Venta",
   features: "",
+  idealistaDescription: "",
+  price: "",
+  m2: "",
+  rooms: "",
+  address: "",
   profitabilityReportAvailable: false,
   profitabilityReport: "",
+  agentName: "",
 };
 
 // Razones de cierre con etiquetas para mostrar
@@ -25,6 +33,7 @@ const closureReasonLabels: Record<ListingClosureReason, string> = {
 };
 
 export function Listings() {
+  const navigate = useNavigate();
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -32,12 +41,21 @@ export function Listings() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<ListingFormData>(emptyFormData);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  
+
+  // Estados para autocompletado de dirección
+  const [addressSuggestions, setAddressSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
   // Estado para filtro activo/inactivo
-  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive">("all");
-  
+  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive">("active");
+
+  const [conversationCounts, setConversationCounts] = useState<Record<string, number>>({});
+  const [qualifiedCounts, setQualifiedCounts] = useState<Record<string, number>>({});
+
   // Estado para modal de desactivación
   const [deactivateModalOpen, setDeactivateModalOpen] = useState(false);
   const [deactivatingListing, setDeactivatingListing] = useState<Listing | null>(null);
@@ -48,8 +66,33 @@ export function Listings() {
   const [loadingQualifiedLeads, setLoadingQualifiedLeads] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
 
+  // Helper to format price with suffix
+  const formatPrice = (price: string | undefined, type: OperationType): string => {
+    if (!price) return "";
+    // Remove existing € or €/mes
+    let clean = price.split("€")[0].trim();
+    if (!clean) return "";
+
+    if (type === "Alquiler") {
+      return `${clean} €/mes`;
+    } else {
+      return `${clean} €`;
+    }
+  };
+
   useEffect(() => {
     loadListings();
+  }, []);
+
+  // Cerrar sugerencias al hacer clic fuera
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (suggestionsRef.current && !suggestionsRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   async function loadListings() {
@@ -58,6 +101,32 @@ export function Listings() {
     try {
       const data = await getListings();
       setListings(data);
+
+      try {
+        const [conversations, qualifieds] = await Promise.all([
+          getConversations(),
+          getQualifiedLeads()
+        ]);
+        
+        const cCounts: Record<string, number> = {};
+        conversations.forEach(conv => {
+          if (conv.listingCode) {
+            cCounts[conv.listingCode] = (cCounts[conv.listingCode] || 0) + 1;
+          }
+        });
+        setConversationCounts(cCounts);
+
+        const qCounts: Record<string, number> = {};
+        qualifieds.forEach(qual => {
+          if (qual.listingCode) {
+            qCounts[qual.listingCode] = (qCounts[qual.listingCode] || 0) + 1;
+          }
+        });
+        setQualifiedCounts(qCounts);
+      } catch (err) {
+        console.error("Error loading counts:", err);
+      }
+
     } catch (error) {
       console.error("Error loading listings:", error);
       const errorMessage = error instanceof Error ? error.message : "Error desconocido";
@@ -75,31 +144,42 @@ export function Listings() {
     setFormData(emptyFormData);
     setEditingId(null);
     setModalOpen(true);
+    setAddressSuggestions([]);
+    setShowSuggestions(false);
+    setIsSelecting(false);
   }
 
   function openEditModal(listing: Listing) {
     setFormData({
       description: listing.description,
       listingCode: listing.listingCode,
-      link: "", // Se regenerará automáticamente al guardar
+      link: listing.link || "",
       operationType: listing.operationType,
       features: listing.features,
+      idealistaDescription: listing.idealistaDescription || "",
+      price: listing.price || "",
+      m2: listing.m2 || "",
+      rooms: listing.rooms || "",
+      address: listing.address || "",
       profitabilityReportAvailable: listing.profitabilityReportAvailable,
       profitabilityReport: listing.profitabilityReport,
+      agentName: listing.agentName || "",
     });
     setEditingId(listing.id);
     setModalOpen(true);
+    setAddressSuggestions([]);
+    setShowSuggestions(false);
+    setIsSelecting(false);
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    setSaveError(null);
 
     try {
-      // Auto-generar el enlace del anuncio a partir del listingCode
       const dataToSave = {
         ...formData,
+        price: formatPrice(formData.price, formData.operationType),
         link: `https://www.idealista.com/inmueble/${formData.listingCode}`
       };
 
@@ -113,11 +193,7 @@ export function Listings() {
     } catch (error) {
       console.error("Error saving listing:", error);
       const errorMessage = error instanceof Error ? error.message : "Error desconocido";
-      if (errorMessage.includes("timeout")) {
-        setSaveError("El guardado está tardando demasiado. Tu conexión con Firebase es muy lenta. Por favor verifica la consola de Firebase.");
-      } else {
-        setSaveError("Error al guardar: " + errorMessage);
-      }
+      alert("Error al guardar: " + errorMessage);
     } finally {
       setSaving(false);
     }
@@ -134,15 +210,12 @@ export function Listings() {
     }
   }
 
-  // Abrir modal de desactivación
   async function openDeactivateModal(listing: Listing) {
     setDeactivatingListing(listing);
     setClosureReason("");
     setSelectedQualifiedLead(null);
     setClosureNotes("");
     setDeactivateModalOpen(true);
-    
-    // Cargar leads cualificados de este anuncio
     setLoadingQualifiedLeads(true);
     try {
       const leads = await getQualifiedLeadsByListingCode(listing.listingCode);
@@ -155,17 +228,14 @@ export function Listings() {
     }
   }
 
-  // Procesar desactivación
   async function handleDeactivate() {
     if (!deactivatingListing || !closureReason) return;
-    
-    // Validar que se haya seleccionado un lead si la razón lo requiere
     const requiresLead = closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified";
     if (requiresLead && !selectedQualifiedLead) {
       alert("Debes seleccionar el lead cualificado al que se vendió/alquiló");
       return;
     }
-    
+
     setDeactivating(true);
     try {
       await deactivateListing(
@@ -186,7 +256,6 @@ export function Listings() {
     }
   }
 
-  // Reactivar un anuncio
   async function handleReactivate(id: string) {
     try {
       await reactivateListing(id);
@@ -197,9 +266,68 @@ export function Listings() {
     }
   }
 
-  // Filtrar listings según el filtro de estado
+  async function searchAddress(query: string) {
+    if (!query || query.length < 3) {
+      setAddressSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    setLoadingSuggestions(true);
+    try {
+      console.log("Searching address for:", query);
+      // Remove trailing slash and lang param which might cause 400
+      const response = await fetch(`https://photon.komoot.io/api?q=${encodeURIComponent(query)}&limit=10`);
+      if (!response.ok) {
+        console.error("Photon API error status:", response.status);
+        throw new Error("Network response was not ok");
+      }
+
+      const data = await response.json();
+      const suggestions = data.features
+        .filter((f: any) => f.properties.city || f.properties.state) // Filter out very vague results
+        .map((f: any) => {
+          const { name, street, housenumber, city, postcode, state } = f.properties;
+
+          // Construir dirección amigable
+          const main = name || street;
+          const detail = [housenumber, city, postcode, state].filter(Boolean).join(", ");
+
+          return detail ? `${main}, ${detail}` : main;
+        });
+
+      const uniqueSuggestions = Array.from(new Set(suggestions as string[]));
+      console.log("Found suggestions:", uniqueSuggestions.length);
+      setAddressSuggestions(uniqueSuggestions);
+      setShowSuggestions(uniqueSuggestions.length > 0);
+    } catch (error) {
+      console.error("Error fetching address suggestions:", error);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }
+
+  // Debounce para la búsqueda de direcciones
+  useEffect(() => {
+    if (isSelecting) {
+      setIsSelecting(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (formData.address && formData.address.length >= 3) {
+        searchAddress(formData.address);
+      } else {
+        setAddressSuggestions([]);
+        setShowSuggestions(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [formData.address]);
+
   const filteredListings = listings.filter(listing => {
-    const isActive = listing.isActive !== false; // compatibilidad con listings sin el campo
+    const isActive = listing.isActive !== false;
     if (filterStatus === "active") return isActive;
     if (filterStatus === "inactive") return !isActive;
     return true;
@@ -243,7 +371,6 @@ export function Listings() {
         </button>
       </div>
 
-      {/* Filtro de estado */}
       <div className="card mb-6 p-4">
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-sm text-gray-600">Filtrar por estado:</span>
@@ -251,9 +378,7 @@ export function Listings() {
             onClick={() => setFilterStatus("all")}
             className={cn(
               "px-3 py-1.5 rounded-lg text-sm transition-colors",
-              filterStatus === "all"
-                ? "bg-primary-100 text-primary-700 font-medium"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              filterStatus === "all" ? "bg-primary-100 text-primary-700 font-medium" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             )}
           >
             Todos
@@ -262,9 +387,7 @@ export function Listings() {
             onClick={() => setFilterStatus("active")}
             className={cn(
               "px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5 transition-colors",
-              filterStatus === "active"
-                ? "bg-green-100 text-green-700 font-medium"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              filterStatus === "active" ? "bg-green-100 text-green-700 font-medium" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             )}
           >
             <CheckCircle size={14} />
@@ -274,9 +397,7 @@ export function Listings() {
             onClick={() => setFilterStatus("inactive")}
             className={cn(
               "px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5 transition-colors",
-              filterStatus === "inactive"
-                ? "bg-red-100 text-red-700 font-medium"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              filterStatus === "inactive" ? "bg-red-100 text-red-700 font-medium" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             )}
           >
             <XCircle size={14} />
@@ -307,117 +428,102 @@ export function Listings() {
                         {listing.description}
                       </h3>
                     </div>
-                    {/* Badges */}
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span
-                        className={cn(
-                          "px-2 py-0.5 text-xs font-medium rounded-full flex items-center gap-1",
-                          isActive
-                            ? "bg-green-100 text-green-700"
-                            : "bg-red-100 text-red-700"
-                        )}
-                      >
+                      <span className={cn("px-2 py-0.5 text-xs font-medium rounded-full flex items-center gap-1", isActive ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700")}>
                         {isActive ? <CheckCircle size={12} /> : <XCircle size={12} />}
                         {isActive ? "Activo" : "Inactivo"}
                       </span>
-                      <span
-                        className={cn(
-                          "px-2 py-0.5 text-xs font-medium rounded-full",
-                          listing.operationType === "Venta"
-                            ? "bg-primary-100 text-primary-700"
-                            : "bg-green-100 text-green-700"
-                        )}
-                      >
+                      <span className={cn("px-2 py-0.5 text-xs font-medium rounded-full", listing.operationType === "Venta" ? "bg-primary-100 text-primary-700" : "bg-green-100 text-green-700")}>
                         {listing.operationType}
                       </span>
-                      {listing.profitabilityReportAvailable && (
-                        <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-700 flex items-center gap-1">
-                          <FileText size={12} />
-                          Informe
+                      <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700 flex items-center gap-1">
+                        <MessageCircle size={12} />
+                        {conversationCounts[listing.listingCode] || 0} {(conversationCounts[listing.listingCode] === 1) ? "conversación" : "conversaciones"}
+                      </span>
+                      <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-purple-100 text-purple-700 flex items-center gap-1">
+                        <Users size={12} />
+                        {qualifiedCounts[listing.listingCode] || 0} {(qualifiedCounts[listing.listingCode] === 1) ? "cualificado" : "cualificados"}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 p-3 bg-gray-50 rounded-lg text-sm border border-gray-100">
+                      <div>
+                        <span className="text-gray-500 block text-xs mb-0.5">Precio</span>
+                        <span className="font-semibold text-gray-900">{listing.price || "N/A"}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500 block text-xs mb-0.5">Distribución</span>
+                        <span className="font-medium text-gray-800">
+                          {[listing.m2 && `${listing.m2} m²`, listing.rooms && `${listing.rooms} hab.`].filter(Boolean).join(" • ") || "N/A"}
                         </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500 block text-xs mb-0.5">ID Anuncio</span>
+                        <div className="font-medium text-gray-800 flex items-center gap-1">
+                          {listing.listingCode}
+                          <a
+                            href={listing.link || `https://www.idealista.com/inmueble/${listing.listingCode}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary-600 hover:text-primary-700 transition-colors hover:bg-primary-50 rounded p-0.5"
+                            title="Ver en Idealista"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <ExternalLink size={12} />
+                          </a>
+                        </div>
+                      </div>
+                      {listing.address && (
+                        <div className="col-span-2 sm:col-span-4 border-t border-gray-200/60 pt-2 mt-1">
+                          <span className="text-gray-500 block text-xs mb-0.5">Dirección</span>
+                          <span className="font-medium text-gray-800 flex items-start gap-1">
+                            <MapPin size={14} className="mt-0.5 flex-shrink-0 text-gray-500" />
+                            <span>{listing.address}</span>
+                          </span>
+                        </div>
                       )}
                     </div>
-                    <p className="text-sm text-gray-500 mb-2">ID: {listing.listingCode}</p>
-                    <ul className="text-sm text-gray-600 space-y-1">
-                      {listing.features.split('\n').filter(line => line.trim()).slice(0, 3).map((feature, idx) => (
-                        <li key={idx} className="flex items-start gap-2">
-                          <span className="text-primary-500 mt-0.5">•</span>
-                          <span>{feature.replace(/^[\u2022•*-]+\s*/u, '').trim()}</span>
-                        </li>
-                      ))}
-                      {listing.features.split('\n').filter(line => line.trim()).length > 3 && (
-                        <li className="text-gray-400 text-xs pl-4">
-                          +{listing.features.split('\n').filter(line => line.trim()).length - 3} más...
-                        </li>
-                      )}
-                    </ul>
-                    {listing.link && (
-                      <a
-                        href={listing.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700 mt-2"
-                      >
-                        <ExternalLink size={14} />
-                        Ver anuncio
-                      </a>
+
+                    {listing.idealistaDescription && (
+                      <div className="mt-3">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 mb-1">
+                          <FileText size={12} />
+                          <span>Descripción Idealista</span>
+                        </div>
+                        <p className="text-xs text-gray-600 line-clamp-3">
+                          {listing.idealistaDescription}
+                        </p>
+                      </div>
                     )}
-                    
-                    {/* Info de cierre si está inactivo */}
+
                     {!isActive && listing.closureInfo && (
                       <div className="mt-4 pt-4 border-t border-gray-200">
                         <div className="text-sm">
-                          <p className="font-medium text-gray-700">
-                            Razón de cierre: {closureReasonLabels[listing.closureInfo.reason]}
-                          </p>
-                          {listing.closureInfo.qualifiedLeadName && (
-                            <p className="text-gray-600 flex items-center gap-1 mt-1">
-                              <User size={14} />
-                              Lead: {listing.closureInfo.qualifiedLeadName}
-                            </p>
-                          )}
-                          {listing.closureInfo.notes && (
-                            <p className="text-gray-500 mt-1">Notas: {listing.closureInfo.notes}</p>
-                          )}
-                          <p className="text-gray-400 text-xs mt-1">
-                            Cerrado: {listing.closureInfo.closedAt ? formatDate(listing.closureInfo.closedAt.toDate()) : "—"}
-                          </p>
+                          <p className="font-medium text-gray-700">Razón de cierre: {closureReasonLabels[listing.closureInfo.reason]}</p>
+                          {listing.closureInfo.qualifiedLeadName && <p className="text-gray-600 flex items-center gap-1 mt-1"><User size={14} /> Lead: {listing.closureInfo.qualifiedLeadName}</p>}
+                          {listing.closureInfo.notes && <p className="text-gray-500 mt-1">Notas: {listing.closureInfo.notes}</p>}
                         </div>
                       </div>
                     )}
                   </div>
-                  {/* Action buttons */}
-                  <div className="flex items-center gap-1 sm:gap-2 sm:ml-4 border-t sm:border-t-0 pt-3 sm:pt-0 mt-2 sm:mt-0">
-                    {/* Botón de activar/desactivar */}
-                    {isActive ? (
-                      <button
-                        onClick={() => openDeactivateModal(listing)}
-                        className="p-2.5 sm:p-2 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
-                        title="Desactivar anuncio"
-                      >
-                        <PowerOff size={18} />
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleReactivate(listing.id)}
-                        className="p-2.5 sm:p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                        title="Reactivar anuncio"
-                      >
-                        <Power size={18} />
-                      </button>
-                    )}
+                  <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 mt-4 sm:mt-0 justify-end">
                     <button
-                      onClick={() => openEditModal(listing)}
-                      className="p-2.5 sm:p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                      onClick={() => navigate(`/cualificados?ad=${listing.listingCode}`)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 hover:bg-primary-100 rounded-lg text-sm font-medium transition-colors mr-1 sm:mr-3"
+                      title="Ver cualificados"
                     >
-                      <Edit size={18} />
+                      <Users size={16} />
+                      <span className="whitespace-nowrap">Ver cualificados</span>
                     </button>
-                    <button
-                      onClick={() => setDeleteConfirm(listing.id)}
-                      className="p-2.5 sm:p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    >
-                      <Trash2 size={18} />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      {isActive ? (
+                        <button onClick={() => openDeactivateModal(listing)} className="p-2 text-gray-400 hover:text-orange-600" title="Desactivar anuncio"><PowerOff size={18} /></button>
+                      ) : (
+                        <button onClick={() => handleReactivate(listing.id)} className="p-2 text-gray-400 hover:text-green-600" title="Reactivar anuncio"><Power size={18} /></button>
+                      )}
+                      <button onClick={() => openEditModal(listing)} className="p-2 text-gray-400 hover:text-primary-600" title="Editar anuncio"><Edit size={18} /></button>
+                      <button onClick={() => setDeleteConfirm(listing.id)} className="p-2 text-gray-400 hover:text-red-600" title="Eliminar anuncio"><Trash2 size={18} /></button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -426,56 +532,91 @@ export function Listings() {
         </div>
       )}
 
-      {/* Modal */}
       {modalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[95vh] sm:max-h-[90vh] overflow-y-auto">
-            <div className="p-4 sm:p-6 border-b border-gray-200">
-              <h2 className="text-lg sm:text-xl font-semibold text-gray-900">
-                {editingId ? "Editar Anuncio" : "Nuevo Anuncio"}
-              </h2>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200 flex justify-between items-center">
+              <h2 className="text-xl font-semibold text-gray-900">{editingId ? "Editar Anuncio" : "Nuevo Anuncio"}</h2>
+              <button onClick={() => setModalOpen(false)} className="text-gray-400 hover:text-gray-600">
+                <XCircle size={24} />
+              </button>
             </div>
-            <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-4">
+            <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Descripción
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="input"
-                  placeholder="Ej: Piso 2 habitaciones en Fuengirola"
-                />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre anuncio</label>
+                <input type="text" required value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="input" placeholder="Ej: Piso 2 habitaciones en Fuengirola" />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    ID del Anuncio en Idealista
-                  </label>
+              {/* Campo de Dirección con Autocompletado */}
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Dirección exacta</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <MapPin size={16} className="text-gray-400" />
+                  </div>
                   <input
                     type="text"
-                    required
-                    value={formData.listingCode}
-                    onChange={(e) => setFormData({ ...formData, listingCode: e.target.value })}
-                    className="input"
-                    placeholder="Ej: 109766872"
+                    value={formData.address}
+                    onChange={(e) => {
+                      setFormData({ ...formData, address: e.target.value });
+                    }}
+                    onFocus={() => {
+                      if (addressSuggestions.length > 0) setShowSuggestions(true);
+                      else if (formData.address && formData.address.length >= 3) searchAddress(formData.address);
+                    }}
+                    className="input !pl-10"
+                    placeholder="Calle, número, ciudad..."
+                    autoComplete="off"
                   />
-                  <p className="mt-1 text-xs text-gray-500 break-all">
-                    El enlace se generará automáticamente
-                  </p>
+                  {loadingSuggestions && (
+                    <div className="absolute inset-y-0 right-0 pr-3 flex items-center">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
+                    </div>
+                  )}
+                </div>
+
+                {showSuggestions && addressSuggestions.length > 0 && (
+                  <div ref={suggestionsRef} className="absolute z-50 mt-1 w-full bg-white rounded-lg shadow-lg border border-gray-200 max-h-60 overflow-y-auto py-1">
+                    {addressSuggestions.map((suggestion, index) => (
+                      <button
+                        key={index}
+                        type="button"
+                        onClick={() => {
+                          setIsSelecting(true);
+                          setFormData({ ...formData, address: suggestion });
+                          setShowSuggestions(false);
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-primary-50 hover:text-primary-700 transition-colors flex items-start gap-2 border-b border-gray-50 last:border-0"
+                      >
+                        <MapPin size={14} className="mt-0.5 flex-shrink-0 text-gray-400" />
+                        <span>{suggestion}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">ID del Anuncio en Idealista</label>
+                  <input type="text" required value={formData.listingCode} onChange={(e) => setFormData({ ...formData, listingCode: e.target.value })} className="input" placeholder="Ej: 110595991" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Tipo de Operación
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del Agente</label>
+                  <input type="text" required value={formData.agentName} onChange={(e) => setFormData({ ...formData, agentName: e.target.value })} className="input" placeholder="Ej: Paco" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Operación</label>
                   <select
                     value={formData.operationType}
-                    onChange={(e) =>
-                      setFormData({ ...formData, operationType: e.target.value as OperationType })
-                    }
+                    onChange={(e) => {
+                      const newType = e.target.value as OperationType;
+                      setFormData({
+                        ...formData,
+                        operationType: newType,
+                        price: formData.price ? formatPrice(formData.price, newType) : ""
+                      });
+                    }}
                     className="input"
                   >
                     <option value="Venta">Venta</option>
@@ -483,291 +624,139 @@ export function Listings() {
                   </select>
                 </div>
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Características (una por línea)
-                </label>
-                <textarea
-                  value={formData.features}
-                  onChange={(e) => setFormData({ ...formData, features: e.target.value })}
-                  className="input min-h-[120px] font-mono text-sm"
-                  placeholder={"3 habitaciones\n2 baños\n90m²\nTerraza\nOrientación sur"}
-                />
-                <p className="mt-1 text-xs text-gray-500">
-                  Cada línea se mostrará como un punto en el mensaje al cliente.
-                </p>
-                {formData.features && (
-                  <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                    <p className="text-xs font-medium text-gray-500 mb-2">Vista previa:</p>
-                    <ul className="text-sm text-gray-700 space-y-1">
-                      {formData.features.split('\n').filter(line => line.trim()).map((feature, idx) => (
-                        <li key={idx} className="flex items-start gap-2">
-                          <span className="text-primary-500">•</span>
-                          <span>{feature.replace(/^[\u2022•*-]+\s*/u, '').trim()}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                <label className="block text-sm font-medium text-gray-700 mb-1">Características importantes (una por línea)</label>
+                <textarea value={formData.features} onChange={(e) => setFormData({ ...formData, features: e.target.value })} className="input min-h-[100px]" placeholder={"- Entrada a la vivienda de tierra\n- Vivienda ocupada\n- Vivienda de temporada"} />
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Precio</label>
+                  <input
+                    type="text"
+                    value={formData.price}
+                    onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                    onBlur={() => {
+                      if (formData.price) {
+                        setFormData({
+                          ...formData,
+                          price: formatPrice(formData.price, formData.operationType)
+                        });
+                      }
+                    }}
+                    className="input"
+                    placeholder={formData.operationType === "Venta" ? "Ej: 250.000 €" : "Ej: 965 €/mes"}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Metros cuadrados (m²)</label>
+                  <input type="text" value={formData.m2} onChange={(e) => setFormData({ ...formData, m2: e.target.value })} className="input" placeholder="Ej: 35" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Habitaciones</label>
+                  <input type="text" value={formData.rooms} onChange={(e) => setFormData({ ...formData, rooms: e.target.value })} className="input" placeholder="Ej: 1" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Descripción de anuncio en Idealista</label>
+                <textarea value={formData.idealistaDescription} onChange={(e) => setFormData({ ...formData, idealistaDescription: e.target.value })} className="input min-h-[120px]" placeholder="Pega aquí la descripción completa del anuncio de Idealista..." />
               </div>
 
               {formData.operationType === "Venta" && (
-                <>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      id="profitabilityReportAvailable"
-                      checked={formData.profitabilityReportAvailable}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          profitabilityReportAvailable: e.target.checked,
-                        })
-                      }
-                      className="w-4 h-4 text-primary-600 rounded border-gray-300 focus:ring-primary-500"
-                    />
-                    <label htmlFor="profitabilityReportAvailable" className="text-sm font-medium text-gray-700">
-                      Informe de rentabilidad disponible
-                    </label>
-                  </div>
-
-                  {formData.profitabilityReportAvailable && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Informe de Rentabilidad
-                      </label>
-                      <textarea
-                        value={formData.profitabilityReport}
-                        onChange={(e) =>
-                          setFormData({ ...formData, profitabilityReport: e.target.value })
-                        }
-                        className="input min-h-[150px]"
-                        placeholder="Incluye aquí el informe de rentabilidad que se enviará al cliente..."
-                      />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Este texto se enviará tal cual al cliente cuando muestre interés en la
-                        rentabilidad del inmueble.
-                      </p>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {saveError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-                  {saveError}
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" id="profitabilityReportAvailable" checked={formData.profitabilityReportAvailable} onChange={(e) => setFormData({ ...formData, profitabilityReportAvailable: e.target.checked })} className="w-4 h-4 text-primary-600 rounded border-gray-300" />
+                  <label htmlFor="profitabilityReportAvailable" className="text-sm font-medium text-gray-700">Informe de rentabilidad disponible</label>
                 </div>
               )}
 
-              <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 pt-4 border-t border-gray-200">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModalOpen(false);
-                    setSaveError(null);
-                  }}
-                  className="btn-secondary w-full sm:w-auto"
-                >
-                  Cancelar
-                </button>
-                <button type="submit" disabled={saving} className="btn-primary disabled:opacity-50 w-full sm:w-auto">
-                  {saving ? "Guardando..." : editingId ? "Guardar cambios" : "Crear anuncio"}
-                </button>
+              {formData.profitabilityReportAvailable && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Informe de Rentabilidad</label>
+                  <textarea value={formData.profitabilityReport} onChange={(e) => setFormData({ ...formData, profitabilityReport: e.target.value })} className="input min-h-[120px]" placeholder="Incluye aquí el informe de rentabilidad..." />
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+                <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancelar</button>
+                <button type="submit" disabled={saving} className="btn-primary">{saving ? "Guardando..." : "Guardar"}</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Delete confirmation */}
       {deleteConfirm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Eliminar anuncio</h3>
-            <p className="text-gray-600 mb-6">
-              ¿Estás seguro de que quieres eliminar este anuncio? Esta acción no se puede deshacer.
-            </p>
+            <p className="text-gray-600 mb-6 font-normal">¿Estás seguro de que quieres eliminar este anuncio? Esta acción no se puede deshacer.</p>
             <div className="flex justify-end gap-3">
-              <button onClick={() => setDeleteConfirm(null)} className="btn-secondary">
-                Cancelar
-              </button>
-              <button
-                onClick={() => handleDelete(deleteConfirm)}
-                className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-              >
-                Eliminar
-              </button>
+              <button onClick={() => setDeleteConfirm(null)} className="btn-secondary">Cancelar</button>
+              <button onClick={() => handleDelete(deleteConfirm)} className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">Eliminar</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Modal de desactivación */}
       {deactivateModalOpen && deactivatingListing && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[95vh] sm:max-h-[90vh] overflow-y-auto">
-            <div className="p-4 sm:p-6 border-b border-gray-200">
-              <h2 className="text-lg sm:text-xl font-semibold text-gray-900">Desactivar Anuncio</h2>
-              <p className="text-sm text-gray-500 mt-1 truncate">
-                {deactivatingListing.description} ({deactivatingListing.listingCode})
-              </p>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200">
+              <h2 className="text-xl font-semibold text-gray-900">Desactivar Anuncio</h2>
+              <p className="text-sm text-gray-500 mt-1 truncate">{deactivatingListing.description}</p>
             </div>
-            
-            <div className="p-4 sm:p-6 space-y-4">
-              {/* Razón de cierre */}
+
+            <div className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  ¿Por qué se desactiva este anuncio?
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">¿Por qué se desactiva este anuncio?</label>
                 <div className="space-y-2">
-                  {deactivatingListing.operationType === "Venta" ? (
-                    <>
-                      <label className="flex items-center gap-2 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="closureReason"
-                          value="sold_to_qualified"
-                          checked={closureReason === "sold_to_qualified"}
-                          onChange={() => setClosureReason("sold_to_qualified")}
-                          className="text-primary-600"
-                        />
-                        <span className="text-sm">Vendido a un lead cualificado</span>
-                      </label>
-                      <label className="flex items-center gap-2 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="closureReason"
-                          value="sold_to_other"
-                          checked={closureReason === "sold_to_other"}
-                          onChange={() => {
-                            setClosureReason("sold_to_other");
-                            setSelectedQualifiedLead(null);
-                          }}
-                          className="text-primary-600"
-                        />
-                        <span className="text-sm">Vendido a otra persona (externa)</span>
-                      </label>
-                    </>
-                  ) : (
-                    <>
-                      <label className="flex items-center gap-2 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="closureReason"
-                          value="rented_to_qualified"
-                          checked={closureReason === "rented_to_qualified"}
-                          onChange={() => setClosureReason("rented_to_qualified")}
-                          className="text-primary-600"
-                        />
-                        <span className="text-sm">Alquilado a un lead cualificado</span>
-                      </label>
-                      <label className="flex items-center gap-2 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
-                        <input
-                          type="radio"
-                          name="closureReason"
-                          value="rented_to_other"
-                          checked={closureReason === "rented_to_other"}
-                          onChange={() => {
-                            setClosureReason("rented_to_other");
-                            setSelectedQualifiedLead(null);
-                          }}
-                          className="text-primary-600"
-                        />
-                        <span className="text-sm">Alquilado a otra persona (externa)</span>
-                      </label>
-                    </>
-                  )}
-                  <label className="flex items-center gap-2 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
-                    <input
-                      type="radio"
-                      name="closureReason"
-                      value="other"
-                      checked={closureReason === "other"}
-                      onChange={() => {
-                        setClosureReason("other");
-                        setSelectedQualifiedLead(null);
-                      }}
-                      className="text-primary-600"
-                    />
-                    <span className="text-sm">Otros motivos</span>
-                  </label>
+                  <select value={closureReason} onChange={(e) => setClosureReason(e.target.value as ListingClosureReason)} className="input">
+                    <option value="">Selecciona una razón...</option>
+                    {deactivatingListing.operationType === "Venta" ? (
+                      <>
+                        <option value="sold_to_qualified">Vendido a un lead cualificado</option>
+                        <option value="sold_to_other">Vendido a otra persona (externa)</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="rented_to_qualified">Alquilado a un lead cualificado</option>
+                        <option value="rented_to_other">Alquilado a otra persona (externa)</option>
+                      </>
+                    )}
+                    <option value="other">Otros motivos</option>
+                  </select>
                 </div>
               </div>
 
-              {/* Selector de lead cualificado */}
               {(closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified") && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Selecciona el lead cualificado
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Selecciona el lead cualificado</label>
                   {loadingQualifiedLeads ? (
-                    <div className="flex items-center justify-center p-4">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
-                    </div>
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600 mx-auto"></div>
                   ) : qualifiedLeadsForListing.length === 0 ? (
-                    <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                      <p className="text-sm text-yellow-700">
-                        No hay leads cualificados para este anuncio. Puedes seleccionar otra razón de cierre.
-                      </p>
-                    </div>
+                    <div className="p-4 bg-yellow-50 text-yellow-700 text-sm rounded-lg">No hay leads cualificados para este anuncio.</div>
                   ) : (
-                    <div className="space-y-2 max-h-48 overflow-y-auto">
-                      {qualifiedLeadsForListing.map((lead) => (
-                        <label
-                          key={lead.id}
-                          className={cn(
-                            "flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50",
-                            selectedQualifiedLead?.id === lead.id && "border-primary-500 bg-primary-50"
-                          )}
-                        >
-                          <input
-                            type="radio"
-                            name="qualifiedLead"
-                            checked={selectedQualifiedLead?.id === lead.id}
-                            onChange={() => setSelectedQualifiedLead(lead)}
-                            className="text-primary-600"
-                          />
-                          <div>
-                            <p className="font-medium text-gray-900">{lead.name}</p>
-                            <p className="text-sm text-gray-500">{lead.phone}</p>
-                          </div>
-                        </label>
+                    <select className="input" onChange={(e) => setSelectedQualifiedLead(qualifiedLeadsForListing.find(l => l.id === e.target.value) || null)}>
+                      <option value="">Selecciona un lead...</option>
+                      {qualifiedLeadsForListing.map(lead => (
+                        <option key={lead.id} value={lead.id}>{lead.name} ({lead.phone})</option>
                       ))}
-                    </div>
+                    </select>
                   )}
                 </div>
               )}
 
-              {/* Notas adicionales */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Notas adicionales (opcional)
-                </label>
-                <textarea
-                  value={closureNotes}
-                  onChange={(e) => setClosureNotes(e.target.value)}
-                  className="input min-h-[80px]"
-                  placeholder="Cualquier información adicional sobre el cierre..."
-                />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Notas adicionales (opcional)</label>
+                <textarea value={closureNotes} onChange={(e) => setClosureNotes(e.target.value)} className="input min-h-[80px]" placeholder="Cualquier información adicional..." />
               </div>
             </div>
 
-            <div className="flex flex-col-reverse sm:flex-row justify-end gap-3 p-4 sm:p-6 border-t border-gray-200">
-              <button
-                onClick={() => {
-                  setDeactivateModalOpen(false);
-                  setDeactivatingListing(null);
-                }}
-                className="btn-secondary w-full sm:w-auto"
-              >
-                Cancelar
-              </button>
+            <div className="flex justify-end gap-3 p-6 border-t border-gray-200">
+              <button onClick={() => { setDeactivateModalOpen(false); setDeactivatingListing(null); }} className="btn-secondary">Cancelar</button>
               <button
                 onClick={handleDeactivate}
-                disabled={!closureReason || deactivating || 
-                  ((closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified") && !selectedQualifiedLead)}
-                className="bg-orange-600 hover:bg-orange-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed w-full sm:w-auto"
+                disabled={!closureReason || deactivating || ((closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified") && !selectedQualifiedLead)}
+                className="bg-orange-600 hover:bg-orange-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50"
               >
                 {deactivating ? "Desactivando..." : "Desactivar"}
               </button>
@@ -781,18 +770,7 @@ export function Listings() {
 
 function Megaphone({ className, size }: { className?: string; size?: number }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={size || 24}
-      height={size || 24}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width={size || 24} height={size || 24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="m3 11 18-5v12L3 14v-3z" />
       <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" />
     </svg>

@@ -9,7 +9,15 @@ import { Listings } from "./pages/Listings";
 import { Leads } from "./pages/Leads";
 import { Conversations } from "./pages/Conversations";
 import { QualifiedLeads } from "./pages/QualifiedLeads";
+import { Alerts } from "./pages/Alerts";
 import { Configuracion } from "./pages/Configuracion";
+import { AuditLog } from "./pages/AuditLog";
+import { Calls } from "./pages/Calls";
+import { Landing } from "./pages/Landing";
+import { Users } from "./pages/Users";
+import { Credits } from "./pages/Credits";
+import { Onboarding } from "./pages/Onboarding";
+import { AdminOnboards } from "./pages/AdminOnboards";
 
 const queryClient = new QueryClient();
 
@@ -20,12 +28,23 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/" element={<Landing />} />
             <Route
-              path="/"
+              path="/dashboard"
               element={
                 <ProtectedRoute>
                   <Layout>
                     <Dashboard />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/onboarding"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Onboarding />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -71,6 +90,16 @@ function App() {
               }
             />
             <Route
+              path="/alertas"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Alerts />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/configuracion"
               element={
                 <ProtectedRoute>
@@ -80,7 +109,57 @@ function App() {
                 </ProtectedRoute>
               }
             />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route
+              path="/historial"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <AuditLog />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/llamadas"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Calls />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/creditos"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Credits />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/usuarios"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Users />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/onboards"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <AdminOnboards />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </BrowserRouter>
       </AuthProvider>

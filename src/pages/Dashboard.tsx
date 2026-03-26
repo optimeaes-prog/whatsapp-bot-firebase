@@ -1,81 +1,31 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Megaphone, Users, MessageSquare, CheckCircle, TrendingUp, Target } from "lucide-react";
-import { getListings, getConversionStats } from "../services/listings";
+import { Megaphone, Users, MessageSquare, CheckCircle, TrendingUp, Target, Filter, Calendar, MessageCircle } from "lucide-react";
+import { getListings } from "../services/listings";
 import { getLeads } from "../services/leads";
 import { getConversations } from "../services/conversations";
 import { getQualifiedLeads } from "../services/qualifiedLeads";
-
-type Stats = {
-  anuncios: number;
-  anunciosActivos: number;
-  anunciosCerrados: number;
-  leads: number;
-  conversaciones: number;
-  conversacionesActivas: number;
-  cualificados: number;
-  tasaCualificacion: number;
-  // Métricas de conversión
-  conversionRate: number; // % de cualificados que resultaron en venta/alquiler
-  vendidosACualificados: number;
-  alquiladosACualificados: number;
-};
-
+import type { Listing, Lead, Conversation, QualifiedLead } from "../types";
 export function Dashboard() {
-  const [stats, setStats] = useState<Stats>({
-    anuncios: 0,
-    anunciosActivos: 0,
-    anunciosCerrados: 0,
-    leads: 0,
-    conversaciones: 0,
-    conversacionesActivas: 0,
-    cualificados: 0,
-    tasaCualificacion: 0,
-    conversionRate: 0,
-    vendidosACualificados: 0,
-    alquiladosACualificados: 0,
-  });
+  const [dateFilter, setDateFilter] = useState("last_30");
+  const [listingFilter, setListingFilter] = useState("all");
   const [loading, setLoading] = useState(true);
-
+  const [rawData, setRawData] = useState<{
+    listings: Listing[];
+    leads: Lead[];
+    conversations: Conversation[];
+    qualifiedLeads: QualifiedLead[];
+  } | null>(null);
   useEffect(() => {
     async function loadStats() {
       try {
-        const [listings, leads, conversations, qualifiedLeads, conversionStats] = await Promise.all([
+        const [listings, leads, conversations, qualifiedLeads] = await Promise.all([
           getListings(),
           getLeads(),
           getConversations(),
           getQualifiedLeads(),
-          getConversionStats(),
         ]);
-
-        const anunciosActivos = listings.filter(l => l.isActive !== false).length;
-        const anunciosCerrados = listings.filter(l => l.isActive === false).length;
-        
-        const conversacionesActivas = conversations.filter((c) => !c.isFinished).length;
-        const tasaCualificacion =
-          conversations.length > 0
-            ? Math.round((qualifiedLeads.length / conversations.length) * 100)
-            : 0;
-
-        // Calcular conversion rate: de los leads cualificados, cuántos resultaron en venta/alquiler
-        const totalConversionesToQualified = conversionStats.soldToQualified + conversionStats.rentedToQualified;
-        const conversionRate = qualifiedLeads.length > 0
-          ? Math.round((totalConversionesToQualified / qualifiedLeads.length) * 100)
-          : 0;
-
-        setStats({
-          anuncios: listings.length,
-          anunciosActivos,
-          anunciosCerrados,
-          leads: leads.length,
-          conversaciones: conversations.length,
-          conversacionesActivas,
-          cualificados: qualifiedLeads.length,
-          tasaCualificacion,
-          conversionRate,
-          vendidosACualificados: conversionStats.soldToQualified,
-          alquiladosACualificados: conversionStats.rentedToQualified,
-        });
+        setRawData({ listings, leads, conversations, qualifiedLeads });
       } catch (error) {
         console.error("Error loading stats:", error);
       } finally {
@@ -85,6 +35,89 @@ export function Dashboard() {
 
     loadStats();
   }, []);
+
+  const stats = useMemo(() => {
+    if (!rawData) return {
+      anuncios: 0, anunciosActivos: 0, anunciosCerrados: 0, leads: 0, conversaciones: 0,
+      conversacionesActivas: 0, cualificados: 0, tasaCualificacion: 0, conversionRate: 0,
+      vendidosACualificados: 0, alquiladosACualificados: 0, respondidos: 0, tasaRespuesta: 0,
+      totalMensajes: 0
+    };
+
+    let { listings, leads, conversations, qualifiedLeads } = rawData;
+
+    // Filter by Ad (Listing Code)
+    if (listingFilter !== "all") {
+      listings = listings.filter(l => l.listingCode === listingFilter);
+      leads = leads.filter(l => l.listingCode === listingFilter);
+      conversations = conversations.filter(c => c.listingCode === listingFilter);
+      qualifiedLeads = qualifiedLeads.filter(q => q.listingCode === listingFilter);
+    }
+
+    // Filter by Date Range
+    const getStartOfDay = (date: Date) => { const d = new Date(date); d.setHours(0, 0, 0, 0); return d; };
+    const getEndOfDay = (date: Date) => { const d = new Date(date); d.setHours(23, 59, 59, 999); return d; };
+    
+    let range: {start: Date, end: Date} | null = null;
+    const now = new Date();
+    
+    if (dateFilter === "today") range = { start: getStartOfDay(now), end: getEndOfDay(now) };
+    else if (dateFilter === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); range = { start: getStartOfDay(y), end: getEndOfDay(y) }; }
+    else if (dateFilter === "last_7") { const p = new Date(now); p.setDate(p.getDate() - 7); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
+    else if (dateFilter === "last_30") { const p = new Date(now); p.setDate(p.getDate() - 30); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
+
+    const isWithinRange = (ts: any, r: {start: Date, end: Date} | null) => {
+      if (!r) return true;
+      if (!ts) return false;
+      const date = ts?.toDate ? ts.toDate() : new Date(ts);
+      return date >= r.start && date <= r.end;
+    };
+
+    if (range) {
+      leads = leads.filter(l => isWithinRange(l.createdAt, range));
+      conversations = conversations.filter(c => isWithinRange(c.lastMessage, range));
+      qualifiedLeads = qualifiedLeads.filter(q => isWithinRange(q.createdAt, range));
+    }
+
+    const anunciosActivos = listings.filter(l => l.isActive !== false).length;
+    // Apply date filter to closed listings so we only count conversions in the selected period
+    const closedListings = listings.filter(l => l.isActive === false && isWithinRange(l.closureInfo?.closedAt || l.createdAt, range));
+    const anunciosCerrados = closedListings.length;
+    
+    const conversacionesActivas = conversations.filter((c) => !c.isFinished).length;
+    const tasaCualificacion = conversations.length > 0 ? Math.round((qualifiedLeads.length / conversations.length) * 100) : 0;
+
+    const vendidosACualificados = closedListings.filter(l => l.closureInfo?.reason === "sold_to_qualified").length;
+    const alquiladosACualificados = closedListings.filter(l => l.closureInfo?.reason === "rented_to_qualified").length;
+    const totalConversionesToQualified = vendidosACualificados + alquiladosACualificados;
+    const conversionRate = qualifiedLeads.length > 0 ? Math.round((totalConversionesToQualified / qualifiedLeads.length) * 100) : 0;
+
+    const respondidos = conversations.filter(c => c.history?.some(msg => msg.role === "user")).length;
+    const tasaRespuesta = leads.length > 0 ? Math.round((respondidos / leads.length) * 100) : 0;
+    const totalMensajes = conversations.reduce((acc, c) => acc + (c.messageCount || 0), 0);
+
+    return {
+      anuncios: listings.length,
+      anunciosActivos,
+      anunciosCerrados,
+      leads: leads.length,
+      conversaciones: conversations.length,
+      conversacionesActivas,
+      cualificados: qualifiedLeads.length,
+      tasaCualificacion,
+      conversionRate,
+      vendidosACualificados,
+      alquiladosACualificados,
+      respondidos,
+      tasaRespuesta,
+      totalMensajes,
+    };
+  }, [rawData, dateFilter, listingFilter]);
+
+  const uniqueListings = useMemo(() => {
+    if (!rawData) return [];
+    return Array.from(new Set(rawData.listings.map(l => l.listingCode).filter(Boolean)));
+  }, [rawData]);
 
   if (loading) {
     return (
@@ -108,7 +141,7 @@ export function Dashboard() {
         </div>
 
         {/* Primary Metrics Skeleton */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {[1, 2, 3, 4].map((i) => (
             <div key={i} className="card animate-pulse">
               <div className="flex items-center gap-4 mb-4">
@@ -149,15 +182,6 @@ export function Dashboard() {
   // Métricas principales del negocio
   const primaryMetrics = [
     {
-      title: "Anuncios",
-      value: stats.anuncios,
-      subtitle: `${stats.anunciosActivos} activos, ${stats.anunciosCerrados} cerrados`,
-      icon: <Megaphone className="text-primary-600" size={32} />,
-      href: "/anuncios",
-      color: "bg-primary-50",
-      iconColor: "text-primary-600",
-    },
-    {
       title: "Leads",
       value: stats.leads,
       icon: <Users className="text-green-600" size={32} />,
@@ -173,6 +197,13 @@ export function Dashboard() {
       href: "/conversaciones",
       color: "bg-purple-50",
       iconColor: "text-purple-600",
+    },
+    {
+      title: "Mensajes",
+      value: stats.totalMensajes,
+      icon: <MessageCircle className="text-blue-600" size={32} />,
+      color: "bg-blue-50",
+      iconColor: "text-blue-600",
     },
     {
       title: "Cualificados",
@@ -196,6 +227,15 @@ export function Dashboard() {
       valueColor: "text-orange-600",
     },
     {
+      title: "Tasa de Respuesta",
+      value: `${stats.tasaRespuesta}%`,
+      subtitle: `${stats.respondidos} han respondido de ${stats.leads} leads`,
+      icon: <MessageCircle size={40} />,
+      color: "bg-blue-50",
+      iconColor: "text-blue-600",
+      valueColor: "text-blue-600",
+    },
+    {
       title: "Tasa de Conversión",
       value: `${stats.conversionRate}%`,
       subtitle: `${stats.vendidosACualificados} ventas + ${stats.alquiladosACualificados} alquileres`,
@@ -206,12 +246,47 @@ export function Dashboard() {
     },
   ];
 
+
+
   return (
     <div>
-      <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-6 sm:mb-8">Dashboard</h1>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 sm:mb-8">
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Dashboard</h1>
+        
+        <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+          <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border shadow-sm">
+            <Calendar size={18} className="text-gray-500" />
+            <select
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="bg-transparent text-sm focus:outline-none focus:ring-0 text-gray-700 font-medium"
+            >
+              <option value="today">Hoy</option>
+              <option value="yesterday">Ayer</option>
+              <option value="last_7">Últimos 7 días</option>
+              <option value="last_30">Últimos 30 días</option>
+              <option value="all">Todos</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border shadow-sm">
+            <Filter size={18} className="text-gray-500" />
+            <select
+              value={listingFilter}
+              onChange={(e) => setListingFilter(e.target.value)}
+              className="bg-transparent text-sm focus:outline-none focus:ring-0 text-gray-700 font-medium max-w-[200px] truncate"
+            >
+              <option value="all">Todos los anuncios</option>
+              {uniqueListings.map(code => (
+                <option key={code} value={code}>{code}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
 
       {/* KPIs Destacados */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
         {kpiMetrics.map((metric) => (
           <div key={metric.title} className="card p-4 sm:p-6 hover:shadow-lg transition-shadow">
             <div className="flex items-start justify-between mb-3 sm:mb-4">
@@ -305,12 +380,20 @@ export function Dashboard() {
               <span className="font-semibold text-purple-600">{stats.conversacionesActivas}</span>
             </div>
             <div className="flex justify-between items-center">
+              <span className="text-gray-600">Total mensajes</span>
+              <span className="font-semibold text-blue-600">{stats.totalMensajes}</span>
+            </div>
+            <div className="flex justify-between items-center">
               <span className="text-gray-600">Leads cualificados</span>
               <span className="font-semibold text-emerald-600">{stats.cualificados}</span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-gray-600">Tasa de cualificación</span>
               <span className="font-semibold text-orange-600">{stats.tasaCualificacion}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Tasa de respuesta</span>
+              <span className="font-semibold text-blue-600">{stats.tasaRespuesta}%</span>
             </div>
             <div className="flex justify-between items-center pt-2 border-t border-gray-100">
               <span className="text-gray-600">Tasa de conversión</span>

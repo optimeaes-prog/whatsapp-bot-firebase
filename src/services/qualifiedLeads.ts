@@ -6,19 +6,19 @@ import {
   addDoc,
   query,
   orderBy,
-  limit,
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import type { QualifiedLead } from "../types";
 
-const COLLECTION_NAME = "qualifiedLeads";
+import { getOrganizationBasePath } from "../lib/organization";
+
+const COLLECTION_NAME = `${getOrganizationBasePath()}/qualifiedLeads`;
 
 export async function getQualifiedLeads(): Promise<QualifiedLead[]> {
   const q = query(
-    collection(db, COLLECTION_NAME), 
-    orderBy("createdAt", "desc"),
-    limit(100)
+    collection(db, COLLECTION_NAME),
+    orderBy("createdAt", "desc")
   );
   const snapshot = await getDocs(q);
   return snapshot.docs.map((doc) => ({
@@ -60,4 +60,10 @@ export async function createQualifiedLead(data: {
 export async function getQualifiedLeadsByListingCode(listingCode: string): Promise<QualifiedLead[]> {
   const allLeads = await getQualifiedLeads();
   return allLeads.filter(lead => lead.listingCode === listingCode);
+}
+
+export async function deleteQualifiedLead(id: string): Promise<void> {
+  const { deleteDoc } = await import("firebase/firestore");
+  const docRef = doc(db, COLLECTION_NAME, id);
+  await deleteDoc(docRef);
 }

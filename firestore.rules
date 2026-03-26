@@ -7,32 +7,45 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
     
-    // Listings (formerly anuncios) - authenticated users can CRUD
-    match /listings/{listingId} {
+    match /organizations/{orgId} {
       allow read, write: if request.auth != null;
-    }
-    
-    // Leads - authenticated users can read, functions can write
-    match /leads/{leadId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
-    }
-    
-    // Conversations (formerly conversaciones) - authenticated users can read, functions can write
-    match /conversations/{convId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
-    }
-    
-    // Qualified Leads (formerly cualificados) - authenticated users can read, functions can write
-    match /qualifiedLeads/{qualId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
-    }
-    
-    // Bot Config - authenticated users can read/write
-    match /botConfig/{configId} {
-      allow read, write: if request.auth != null;
+
+      // Listings (formerly anuncios) - authenticated users can CRUD
+      match /listings/{listingId} {
+        allow read, write: if request.auth != null;
+      }
+      
+      // Leads - authenticated users can read, functions can write
+      match /leads/{leadId} {
+        allow read, write: if request.auth != null;
+      }
+      
+      // Conversations (formerly conversaciones) - authenticated users can read, functions can write
+      match /conversations/{convId} {
+        allow read, write: if request.auth != null;
+      }
+      
+      // Qualified Leads (formerly cualificados) - authenticated users can read, functions can write
+      match /qualifiedLeads/{qualId} {
+        allow read, write: if request.auth != null;
+      }
+      
+      // Bot Config - authenticated users can read/write
+      match /botConfig/{configId} {
+        allow read, write: if request.auth != null;
+      }
+      
+      // Credits - users can read their own balance, only backend functions can write
+      match /credits/{userId} {
+        allow read: if request.auth != null; // Since org id encapsulates, kept simple for now
+        allow write: if false;  
+      }
+      
+      // Credit Transactions - users can read their own transactions
+      match /creditTransactions/{transactionId} {
+        allow read: if request.auth != null;
+        allow write: if false;  
+      }
     }
   }
 }

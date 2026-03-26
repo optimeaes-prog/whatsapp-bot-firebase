@@ -9,20 +9,20 @@ import {
   query,
   orderBy,
   where,
-  limit,
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import type { Lead, LeadFormData } from "../types";
 import { deleteConversationByChatId } from "./conversations";
 
-const COLLECTION_NAME = "leads";
+import { getOrganizationBasePath } from "../lib/organization";
+
+const COLLECTION_NAME = `${getOrganizationBasePath()}/leads`;
 
 export async function getLeads(): Promise<Lead[]> {
   const q = query(
     collection(db, COLLECTION_NAME),
-    orderBy("createdAt", "desc"),
-    limit(100)
+    orderBy("createdAt", "desc")
   );
   const snapshot = await getDocs(q);
   return snapshot.docs.map((doc) => ({
@@ -106,7 +106,7 @@ export async function updateLeadQualificationStatus(
 
 export async function updateLead(
   id: string,
-  data: Partial<Pick<Lead, "notes" | "tags" | "name">>
+  data: Partial<Pick<Lead, "notes" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus">>
 ): Promise<void> {
   const docRef = doc(db, COLLECTION_NAME, id);
   await updateDoc(docRef, data);

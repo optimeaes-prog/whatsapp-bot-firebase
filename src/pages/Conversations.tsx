@@ -1,8 +1,16 @@
 import { useEffect, useState } from "react";
-import { MessageSquare, Search, ArrowLeft, Trash2 } from "lucide-react";
+import { MessageSquare, Search, ArrowLeft, Trash2, Send, Bot, BotOff, Download, ChevronDown, ChevronUp } from "lucide-react";
 import type { Conversation } from "../types";
-import { getConversations, deleteConversation } from "../services/conversations";
+import {
+  getConversations,
+  deleteConversation,
+  updateConversation,
+  sendMessageToWhatsApp,
+  triggerBotResponse,
+  getConversationById
+} from "../services/conversations";
 import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn } from "../lib/utils";
+import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
 
 export function Conversations() {
@@ -11,6 +19,9 @@ export function Conversations() {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "finished">("all");
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [newMessage, setNewMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [showDetailsMobile, setShowDetailsMobile] = useState(false);
 
   useEffect(() => {
     loadConversations();
@@ -20,6 +31,20 @@ export function Conversations() {
     try {
       const data = await getConversations();
       setConversations(data);
+      
+      setSelectedConversation(prev => {
+        if (prev) {
+          // Keep the currently selected conversation updated with new data
+          const updated = data.find(c => c.id === prev.id);
+          return updated || prev;
+        }
+        // Auto-select the first (latest) conversation if none is selected,
+        // and only on desktop (to avoid hiding the conversation list on mobile)
+        if (!prev && data.length > 0 && window.innerWidth >= 768) {
+          return data[0];
+        }
+        return prev;
+      });
     } catch (error) {
       console.error("Error loading conversations:", error);
     } finally {
@@ -42,6 +67,79 @@ export function Conversations() {
       console.error("Error deleting conversation:", error);
       alert("Error al eliminar la conversación");
     }
+  }
+
+  async function handleToggleBot() {
+    if (!selectedConversation) return;
+    const newValue = !selectedConversation.botDisabled;
+    try {
+      await updateConversation(selectedConversation.id, { botDisabled: newValue });
+
+      const updatedConv = { ...selectedConversation, botDisabled: newValue };
+      setSelectedConversation(updatedConv);
+      setConversations(conversations.map(c => c.id === updatedConv.id ? updatedConv : c));
+
+      if (!newValue) {
+        // If re-enabling, trigger bot response if last message was from user
+        const lastMsg = updatedConv.history?.[updatedConv.history.length - 1];
+        if (lastMsg?.role === "user") {
+          try {
+            await triggerBotResponse(updatedConv.id);
+            // Wait a bit for the bot to respond then reload
+            setTimeout(() => loadConversations().then(() => {
+              getConversationById(updatedConv.id).then(c => {
+                if (c) setSelectedConversation(c);
+              });
+            }), 2000);
+          } catch (err) {
+            console.error("Error triggering bot:", err);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error toggling bot:", error);
+      alert("Error al cambiar el estado del bot");
+    }
+  }
+
+  async function handleSendMessage(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedConversation || !newMessage.trim() || sending) return;
+
+    setSending(true);
+    try {
+      await sendMessageToWhatsApp(selectedConversation.id, newMessage);
+      setNewMessage("");
+
+      // Update local state temporarily for immediate feedback
+      const tempMsg = {
+        role: "assistant" as const,
+        text: newMessage,
+        timestamp: Date.now()
+      };
+
+      const updatedConv = {
+        ...selectedConversation,
+        history: [...(selectedConversation.history || []), tempMsg],
+        messageCount: (selectedConversation.messageCount || 0) + 1
+      };
+
+      setSelectedConversation(updatedConv);
+      setConversations(conversations.map(c => c.id === updatedConv.id ? updatedConv : c));
+
+      // Then reload properly
+      setTimeout(() => loadConversations(), 1000);
+    } catch (error) {
+      console.error("Error sending message:", error);
+      alert("Error al enviar el mensaje");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function handleDownloadConversation() {
+    if (!selectedConversation) return;
+    downloadConversation(selectedConversation);
   }
 
   const filteredConversations = conversations.filter((conv) => {
@@ -171,7 +269,15 @@ export function Conversations() {
                   onClick={() => setSelectedConversation(conv)}
                 >
                   {conv.tags?.map(tag => (
-                    <span key={tag} className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-primary-50 text-primary-600 border border-primary-100">
+                    <span
+                      key={tag}
+                      className={cn(
+                        "px-1.5 py-0.5 text-[10px] font-medium rounded border",
+                        tag === 'lead' ? "bg-green-50 text-green-700 border-green-100" :
+                          tag === 'non-lead' ? "bg-gray-50 text-gray-600 border-gray-100" :
+                            "bg-primary-50 text-primary-600 border-primary-100"
+                      )}
+                    >
                       {tag}
                     </span>
                   ))}
@@ -182,6 +288,11 @@ export function Conversations() {
                 >
                   <MessageSquare size={12} />
                   <span>{conv.messageCount || 0} mensajes</span>
+                  {conv.botDisabled && (
+                    <span className="flex items-center gap-1 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">
+                      <BotOff size={10} /> Bot Off
+                    </span>
+                  )}
                 </div>
               </div>
             ))
@@ -211,6 +322,38 @@ export function Conversations() {
                   <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} msjs</span>
                 </div>
               </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleToggleBot}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors border",
+                    selectedConversation.botDisabled
+                      ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                      : "bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                  )}
+                  title={selectedConversation.botDisabled ? "Activar Bot" : "Desactivar Bot"}
+                >
+                  {selectedConversation.botDisabled ? (
+                    <>
+                      <BotOff size={14} />
+                      Bot Desactivado
+                    </>
+                  ) : (
+                    <>
+                      <Bot size={14} />
+                      Bot Activo
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={handleDownloadConversation}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm"
+                  title="Descargar conversación"
+                >
+                  <Download size={14} />
+                  Descargar
+                </button>
+              </div>
             </div>
             {/* Badges - on separate line on mobile */}
             <div className="flex items-center gap-2 mt-2 ml-0 md:ml-0">
@@ -238,37 +381,37 @@ export function Conversations() {
           <div className="flex-1 overflow-y-auto p-2 sm:p-4 bg-gray-50" style={{
             backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23e5e7eb' fill-opacity='0.2'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`
           }}>
-            <div className="space-y-2 sm:space-y-3 sm:max-w-4xl sm:mx-auto">
+            <div className="space-y-3 sm:max-w-4xl sm:mx-auto">
               {selectedConversation.history && selectedConversation.history.length > 0 ? (
                 selectedConversation.history.map((item, index) => (
                   <div
                     key={index}
                     className={cn(
-                      "flex",
-                      item.role === "assistant" ? "justify-end" : "justify-start"
+                      "p-3 rounded-lg text-sm",
+                      item.role === "assistant"
+                        ? "bg-white border border-gray-200 mr-8"
+                        : "bg-primary-100 text-primary-800 ml-8"
                     )}
+                    style={{ overflowWrap: 'anywhere' }}
                   >
-                    <div
-                      className={cn(
-                        "max-w-[80%] sm:max-w-[75%] rounded-lg px-3 py-2 shadow-sm",
-                        item.role === "assistant"
-                          ? "bg-green-500 text-white rounded-br-sm"
-                          : "bg-white text-gray-900 rounded-bl-sm"
-                      )}
-                      style={{ overflowWrap: 'anywhere' }}
-                    >
-                      <p className="text-sm whitespace-pre-wrap break-words" style={{ wordBreak: 'break-word' }}>{item.text}</p>
-                      {item.timestamp && (
-                        <p className={cn(
-                          "text-[10px] mt-1 text-right",
-                          item.role === "assistant"
-                            ? "text-green-100"
-                            : "text-gray-400"
-                        )}>
-                          {formatMessageTime(item.timestamp)}
-                        </p>
-                      )}
-                    </div>
+                    <span className={cn(
+                      "text-xs font-medium mb-1 block",
+                      item.role === "assistant" ? "text-gray-400" : "text-primary-600"
+                    )}>
+                      {item.role === "assistant" ? "Bot" : "Interesado"}
+                    </span>
+                    <p 
+                      className="whitespace-pre-wrap break-words" 
+                      style={{ wordBreak: 'break-word' }}
+                      dangerouslySetInnerHTML={{ 
+                        __html: item.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<strong>$1</strong>') 
+                      }}
+                    />
+                    {item.timestamp && (
+                      <p className="text-[10px] mt-1 text-right text-gray-400">
+                        {formatMessageTime(item.timestamp)}
+                      </p>
+                    )}
                   </div>
                 ))
               ) : (
@@ -280,16 +423,57 @@ export function Conversations() {
             </div>
           </div>
 
+          {/* Input de mensaje manual (solo cuando el bot está desactivado) */}
+          {
+            selectedConversation.botDisabled && !selectedConversation.isFinished && (
+              <div className="p-3 bg-white border-t border-gray-200">
+                <form onSubmit={handleSendMessage} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    placeholder="Escribe un mensaje manual..."
+                    className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-full focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+                    disabled={sending}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newMessage.trim() || sending}
+                    className="p-2 bg-primary-600 text-white rounded-full hover:bg-primary-700 disabled:opacity-50 transition-colors"
+                  >
+                    {sending ? (
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Send size={18} />
+                    )}
+                  </button>
+                </form>
+                <p className="text-[10px] text-gray-400 mt-2 text-center italic">
+                  El bot está desactivado. Tus mensajes se enviarán directamente al cliente.
+                </p>
+              </div>
+            )
+          }
+
           {/* Lead Details (Notes/Tags) */}
-          <div className="border-t border-gray-200">
-            <LeadDetails
-              conversation={selectedConversation || undefined}
-              onUpdate={() => {
-                loadConversations();
-              }}
-            />
+          <div className="border-t border-gray-200 bg-white">
+            <button 
+              onClick={() => setShowDetailsMobile(!showDetailsMobile)}
+              className="w-full flex items-center justify-between p-3 text-sm font-medium text-gray-700 md:hidden hover:bg-gray-50 transition-colors"
+            >
+              <span>Detalles del Lead (Notas/Tags)</span>
+              {showDetailsMobile ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </button>
+            <div className={cn("md:block", showDetailsMobile ? "block" : "hidden")}>
+              <LeadDetails
+                conversation={selectedConversation || undefined}
+                onUpdate={() => {
+                  loadConversations();
+                }}
+              />
+            </div>
           </div>
-        </div>
+        </div >
       ) : (
         <div className="hidden md:flex flex-1 items-center justify-center bg-gray-50">
           <div className="text-center">
@@ -302,7 +486,8 @@ export function Conversations() {
             </p>
           </div>
         </div>
-      )}
-    </div>
+      )
+      }
+    </div >
   );
 }
