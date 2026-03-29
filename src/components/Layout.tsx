@@ -6,7 +6,7 @@ import {
   Megaphone,
   Users,
   MessageSquare,
-  CheckCircle,
+
   Settings,
   LogOut,
   Menu,
@@ -36,7 +36,7 @@ const mainNavItems: NavItem[] = [
   { href: "/anuncios", label: "Anuncios", icon: <Megaphone size={20} /> },
   { href: "/leads", label: "Leads", icon: <Users size={20} /> },
   { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
-  { href: "/cualificados", label: "Cualificados", icon: <CheckCircle size={20} /> },
+
   { href: "/llamadas", label: "Llamadas", icon: <PhoneIncoming size={20} /> },
   { href: "/creditos", label: "Créditos", icon: <Coins size={20} /> },
 ];
@@ -81,10 +81,10 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Mobile header */}
-      <div className="lg:hidden bg-white border-b border-gray-200 px-4 py-6 flex items-center justify-between">
+      <div className="lg:hidden bg-white border-b border-gray-200 px-4 py-4 flex items-center justify-between">
         <button
           onClick={() => setSidebarOpen(true)}
-          className="p-2 rounded-md hover:bg-gray-100"
+          className="p-2 rounded-btn hover:bg-gray-100"
         >
           <Menu size={24} />
         </button>
@@ -111,7 +111,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <img src="/logo.png" alt="Proplead" className="w-44 h-auto mx-auto my-4" />
           <button
             onClick={() => setSidebarOpen(false)}
-            className="lg:hidden absolute top-4 right-3 p-2 rounded-md hover:bg-gray-100"
+            className="lg:hidden absolute top-4 right-3 p-2 rounded-btn hover:bg-gray-100"
           >
             <X size={20} />
           </button>
@@ -132,7 +132,7 @@ export function Layout({ children }: { children: ReactNode }) {
                     to={item.href}
                     onClick={() => setSidebarOpen(false)}
                     className={cn(
-                      "flex items-center justify-between px-3 py-3 rounded-lg transition-all border shadow-sm relative overflow-hidden",
+                      "flex items-center justify-between px-3 py-3 rounded-btn transition-all border shadow-sm relative overflow-hidden",
                       isTarget
                         ? "bg-primary-600 text-white border-primary-700"
                         : "bg-primary-50 border-primary-200 text-primary-800 hover:bg-primary-100"
@@ -162,7 +162,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 to={item.href}
                 onClick={() => setSidebarOpen(false)}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors",
+                  "flex items-center gap-3 px-3 py-2 rounded-btn transition-colors",
                   isTarget
                     ? "bg-primary-50 text-primary-700"
                     : "text-gray-600 hover:bg-gray-100"
@@ -178,7 +178,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <div className="pt-4 mt-4 border-t border-gray-100">
               <button
                 onClick={() => setAdminExpanded(!adminExpanded)}
-                className="flex items-center justify-between w-full px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="flex items-center justify-between w-full px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-btn transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <Shield size={20} />
@@ -195,7 +195,7 @@ export function Layout({ children }: { children: ReactNode }) {
                       to={item.href}
                       onClick={() => setSidebarOpen(false)}
                       className={cn(
-                        "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors",
+                        "flex items-center gap-3 px-3 py-2 rounded-btn transition-colors",
                         location.pathname === item.href
                           ? "bg-primary-50 text-primary-700"
                           : "text-gray-600 hover:bg-gray-100"
@@ -226,7 +226,7 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
           <button
             onClick={handleSignOut}
-            className="flex items-center gap-2 w-full px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+            className="flex items-center gap-2 w-full px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-btn transition-colors"
           >
             <LogOut size={20} />
             <span>Cerrar sesión</span>

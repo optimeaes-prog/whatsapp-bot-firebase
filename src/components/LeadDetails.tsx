@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { toast } from "sonner";
 import { Tag, StickyNote, Plus, X, Save } from "lucide-react";
 import type { Lead, Conversation } from "../types";
 import { updateLead, getLeadByChatId } from "../services/leads";
@@ -66,7 +67,7 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
             if (onUpdate) onUpdate();
         } catch (error) {
             console.error("Error saving lead details:", error);
-            alert("Error al guardar las notas/tags");
+            toast.error("Error al guardar las notas/tags");
         } finally {
             setSaving(false);
         }
@@ -96,7 +97,7 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                     {tags.map((tag) => (
                         <span
                             key={tag}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 text-xs font-medium"
+                            className="inline-flex items-center gap-1 rounded-full border border-primary-100 bg-primary-50 px-2 py-0.5 text-xs font-medium text-primary-700"
                         >
                             {tag}
                             <button
@@ -119,7 +120,7 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                     <button
                         type="submit"
                         disabled={!newTag.trim()}
-                        className="p-1.5 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors border border-primary-200 disabled:opacity-50"
+                        className="p-1.5 text-primary-600 hover:bg-primary-50 rounded-btn transition-colors border border-primary-200 disabled:opacity-50"
                     >
                         <Plus size={18} />
                     </button>
@@ -130,7 +131,7 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                 <button
                     onClick={handleSave}
                     disabled={saving}
-                    className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors text-sm font-medium shadow-sm disabled:opacity-50"
+                    className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-btn hover:bg-primary-700 transition-colors text-sm font-medium shadow-sm disabled:opacity-50"
                 >
                     {saving ? (
                         <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />

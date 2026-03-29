@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Settings, Check, MessageSquare, Loader2, Phone, Home } from "lucide-react";
 import type { BotConfig, BotStyle, MessagingProvider } from "../types";
 import { getBotConfig, updateActiveStyle, updateMessagingProvider, updateOrgName, DEFAULT_STYLES } from "../services/botConfig";
 import { cn } from "../lib/utils";
+import { PageHeader, PageLoading } from "../components/ui";
 
 export function Configuracion() {
   const [config, setConfig] = useState<BotConfig | null>(null);
@@ -36,10 +38,10 @@ export function Configuracion() {
     try {
       await updateActiveStyle(styleId);
       setConfig({ ...config, activeStyleId: styleId });
-      alert("Estilo actualizado correctamente");
+      toast.success("Estilo actualizado correctamente");
     } catch (error) {
       console.error("Error updating style:", error);
-      alert("Error al actualizar el estilo");
+      toast.error("Error al actualizar el estilo");
     } finally {
       setSaving(false);
     }
@@ -52,10 +54,10 @@ export function Configuracion() {
     try {
       await updateMessagingProvider(provider);
       setConfig({ ...config, messagingProvider: provider });
-      alert(`Proveedor cambiado a ${provider} correctamente`);
+      toast.success(`Proveedor cambiado a ${provider} correctamente`);
     } catch (error) {
       console.error("Error updating provider:", error);
-      alert("Error al actualizar el proveedor");
+      toast.error("Error al actualizar el proveedor");
     } finally {
       setSavingProvider(false);
     }
@@ -69,31 +71,24 @@ export function Configuracion() {
       console.log("Intentando guardar nombre de inmobiliaria:", orgName);
       await updateOrgName(orgName.trim());
       setConfig({ ...config, orgName: orgName.trim() });
-      alert("Nombre de la inmobiliaria guardado correctamente");
+      toast.success("Nombre de la inmobiliaria guardado correctamente");
     } catch (error) {
       console.error("Error updating org name:", error);
-      alert("Error al actualizar el nombre de la inmobiliaria: " + (error instanceof Error ? error.message : String(error)));
+      toast.error("Error al actualizar el nombre de la inmobiliaria: " + (error instanceof Error ? error.message : String(error)));
     } finally {
       setSavingOrg(false);
     }
   }
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    );
+    return <PageLoading className="h-64" />;
   }
 
   const styles = config?.styles || DEFAULT_STYLES;
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-6">
-        <Settings className="text-gray-400" size={28} />
-        <h1 className="text-2xl font-bold text-gray-900">Configuración</h1>
-      </div>
+      <PageHeader className="mb-6" title="Configuración" icon={<Settings size={28} />} />
 
       {/* Organization Info Section */}
       <div className="card mb-8">
@@ -130,7 +125,7 @@ export function Configuracion() {
       {/* Messaging Provider Section */}
       <div className="border-t pt-8 mb-8">
         <div className="flex items-center gap-2 mb-4">
-          <Phone className="text-green-500" size={24} />
+          <Phone className="text-emerald-600" size={24} />
           <h2 className="text-lg font-semibold text-gray-900">Proveedor de Mensajería</h2>
         </div>
 
@@ -144,7 +139,7 @@ export function Configuracion() {
             onClick={() => handleSelectProvider("whapi")}
             disabled={savingProvider}
             className={cn(
-              "w-full text-left p-5 rounded-xl border-2 transition-all",
+              "w-full text-left p-5 rounded-btn border-2 transition-all",
               config?.messagingProvider === "whapi" || !config?.messagingProvider
                 ? "border-green-500 bg-green-50"
                 : "border-gray-200 hover:border-gray-300 bg-white"
@@ -173,7 +168,7 @@ export function Configuracion() {
             onClick={() => handleSelectProvider("twilio")}
             disabled={savingProvider}
             className={cn(
-              "w-full text-left p-5 rounded-xl border-2 transition-all",
+              "w-full text-left p-5 rounded-btn border-2 transition-all",
               config?.messagingProvider === "twilio"
                 ? "border-green-500 bg-green-50"
                 : "border-gray-200 hover:border-gray-300 bg-white"
@@ -210,14 +205,14 @@ export function Configuracion() {
       <div className="border-t pt-8">
         <div className="flex items-center gap-2 mb-4">
           <MessageSquare className="text-primary-500" size={24} />
-          <h2 className="text-lg font-semibold text-gray-900">Estilo del Bot</h2>
+          <h2 className="text-lg font-semibold text-gray-900">Estilo del Asistente</h2>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-6">
           {/* Selector de estilos */}
           <div>
             <p className="text-gray-600 mb-4">
-              Selecciona el estilo de comunicación que el bot utilizará al hablar con los clientes.
+              Selecciona el estilo de comunicación que el asistente utilizará al hablar con los clientes.
             </p>
 
             <div className="space-y-3">
@@ -229,7 +224,7 @@ export function Configuracion() {
                   onMouseLeave={() => setPreviewStyle(null)}
                   disabled={saving}
                   className={cn(
-                    "w-full text-left p-4 rounded-xl border-2 transition-all",
+                    "w-full text-left p-4 rounded-btn border-2 transition-all",
                     config?.activeStyleId === style.id
                       ? "border-primary-500 bg-primary-50"
                       : "border-gray-200 hover:border-gray-300 bg-white"
@@ -293,7 +288,7 @@ export function Configuracion() {
                       )}
                     >
                       <span className="text-xs font-medium text-gray-400 mb-1 block">
-                        {msg.role === "bot" ? "Bot" : "Cliente"}
+                        {msg.role === "bot" ? "Asistente" : "Cliente"}
                       </span>
                       {msg.text}
                     </div>

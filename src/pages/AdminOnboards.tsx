@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { CheckCircle, AlertCircle, Building2, Users, Phone, Mail } from "lucide-react";
 import { getPendingOnboards, confirmOnboarding } from "../services/organization";
 import type { OrganizationSettings } from "../services/organization";
+import { PageHeader, PageContainer, PageLoading } from "../components/ui";
 
 export function AdminOnboards() {
   const [pending, setPending] = useState<(OrganizationSettings & { id: string })[]>([]);
@@ -25,7 +27,7 @@ export function AdminOnboards() {
   }
 
   async function handleConfirm(orgId: string) {
-    if (!window.confirm(`¿Estás seguro de que quieres activar el bot para esta inmobiliaria?`)) return;
+    if (!window.confirm(`¿Estás seguro de que quieres activar el asistente para esta inmobiliaria?`)) return;
     
     try {
       setProcessingId(orgId);
@@ -34,29 +36,22 @@ export function AdminOnboards() {
       setPending(prev => prev.filter(org => org.id !== orgId));
     } catch (error) {
       console.error("Error confirming onboarding:", error);
-      alert("Hubo un error al confirmar. Inténtalo de nuevo.");
+      toast.error("Hubo un error al confirmar. Inténtalo de nuevo.");
     } finally {
       setProcessingId(null);
     }
   }
 
   if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center p-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
-        <p className="text-gray-500">Cargando solicitudes pendientes...</p>
-      </div>
-    );
+    return <PageLoading message="Cargando solicitudes pendientes..." className="py-12" />;
   }
 
   return (
-    <div className="max-w-6xl mx-auto py-8 px-4 sm:px-6">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Activación de Bots (Onboards)</h1>
-        <p className="text-gray-600">
-          Lista de usuarios e inmobiliarias que han completado su configuración inicial y esperan la activación manual de su agente.
-        </p>
-      </div>
+    <PageContainer maxWidth="6xl">
+      <PageHeader
+        title="Activación de Asistentes (Onboards)"
+        subtitle="Lista de usuarios e inmobiliarias que han completado su configuración inicial y esperan la activación manual de su agente."
+      />
 
       {pending.length === 0 ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
@@ -75,11 +70,11 @@ export function AdminOnboards() {
 
             return (
               <div key={org.id} className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden flex flex-col transition-all hover:shadow-lg">
-                <div className="bg-orange-50 border-b border-orange-100 p-4 flex items-center gap-3">
-                  <AlertCircle className="text-orange-500" size={24} />
+                <div className="flex items-center gap-3 border-b border-primary-100 bg-primary-50 p-4">
+                  <AlertCircle className="text-primary-600" size={24} />
                   <div>
                     <h3 className="font-bold text-gray-900 leading-tight">Pendiente de Activación</h3>
-                    <p className="text-xs text-orange-700">Paso 5 / 6</p>
+                    <p className="text-xs text-primary-800">Paso 5 / 6</p>
                   </div>
                 </div>
                 
@@ -121,7 +116,7 @@ export function AdminOnboards() {
                   <button
                     onClick={() => handleConfirm(org.id)}
                     disabled={isProcessing}
-                    className="w-full flex items-center justify-center gap-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-70"
+                    className="w-full flex items-center justify-center gap-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2.5 rounded-btn text-sm font-semibold transition-colors disabled:opacity-70"
                   >
                     {isProcessing ? (
                       <>
@@ -131,7 +126,7 @@ export function AdminOnboards() {
                     ) : (
                       <>
                         <CheckCircle size={18} />
-                        Confirmar y Activar Bot
+                        Confirmar y Activar Asistente
                       </>
                     )}
                   </button>
@@ -141,6 +136,6 @@ export function AdminOnboards() {
           })}
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

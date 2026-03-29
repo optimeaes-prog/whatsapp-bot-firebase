@@ -59,7 +59,7 @@ export function downloadConversation(conversation: Conversation) {
             `).join('')}
           </div>
           <div class="footer">
-            Generado automáticamente por Proplead WhatsApp Bot
+            Generado automáticamente por Proplead WhatsApp Asistente
           </div>
         </div>
       </body>

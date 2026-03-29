@@ -209,7 +209,7 @@ export async function sendMassMessageToWhatsApp(chatIds: string[], text: string)
   return response.json();
 }
 
-export async function triggerBotResponse(chatId: string): Promise<void> {
+export async function triggerAssistantResponse(chatId: string): Promise<void> {
   const response = await fetch(`${FUNCTIONS_BASE_URL}/triggerBot`, {
     method: "POST",
     headers: {
@@ -220,7 +220,7 @@ export async function triggerBotResponse(chatId: string): Promise<void> {
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.error || "Error triggering bot");
+    throw new Error(error.error || "Error triggering assistant");
   }
 }
 

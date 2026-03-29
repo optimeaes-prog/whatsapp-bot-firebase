@@ -1,27 +1,47 @@
-import { useEffect, useState } from "react";
-import { MessageSquare, Search, ArrowLeft, Trash2, Send, Bot, BotOff, Download, ChevronDown, ChevronUp } from "lucide-react";
+import { useEffect, useState, useMemo } from "react";
+import { toast } from "sonner";
+import { MessageSquare, Search, ArrowLeft, Trash2, Send, Bot, BotOff, Download, ChevronDown, ChevronUp, CheckCircle, Megaphone, Activity, Calendar, CheckSquare, Square } from "lucide-react";
 import type { Conversation } from "../types";
 import {
   getConversations,
   deleteConversation,
   updateConversation,
   sendMessageToWhatsApp,
-  triggerBotResponse,
+  triggerAssistantResponse,
   getConversationById
 } from "../services/conversations";
 import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn } from "../lib/utils";
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
+import { getListings } from "../services/listings";
+import { getQualifiedLeads } from "../services/qualifiedLeads";
+import type { Listing } from "../types";
+import { InboxShell, PageLoading } from "../components/ui";
 
 export function Conversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "finished">("all");
+  const [filterListing, setFilterListing] = useState("all");
+  const [filterQualified, setFilterQualified] = useState<"all" | "qualified" | "not_qualified">("all");
+  const [filterListingStatus, setFilterListingStatus] = useState<"all" | "active" | "inactive">("all");
+  const [filterAssistantStatus, setFilterAssistantStatus] = useState<"all" | "active" | "disabled">("all");
+  const [filterDate, setFilterDate] = useState("all");
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [newMessage, setNewMessage] = useState("");
+  const [qualifiedChatIds, setQualifiedChatIds] = useState<Set<string>>(new Set());
   const [sending, setSending] = useState(false);
   const [showDetailsMobile, setShowDetailsMobile] = useState(false);
+
+  // Dropdown open states
+  const [isDateDropdownOpen, setIsDateDropdownOpen] = useState(false);
+  const [isListingDropdownOpen, setIsListingDropdownOpen] = useState(false);
+  const [isQualifiedDropdownOpen, setIsQualifiedDropdownOpen] = useState(false);
+  const [isListingStatusDropdownOpen, setIsListingStatusDropdownOpen] = useState(false);
+  const [isAssistantStatusDropdownOpen, setIsAssistantStatusDropdownOpen] = useState(false);
+  const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
 
   useEffect(() => {
     loadConversations();
@@ -29,8 +49,14 @@ export function Conversations() {
 
   async function loadConversations() {
     try {
-      const data = await getConversations();
+      const [data, listingsData, qualifiedData] = await Promise.all([
+        getConversations(),
+        getListings(),
+        getQualifiedLeads()
+      ]);
       setConversations(data);
+      setListings(listingsData);
+      setQualifiedChatIds(new Set(qualifiedData.map(q => q.chatId)));
       
       setSelectedConversation(prev => {
         if (prev) {
@@ -65,11 +91,11 @@ export function Conversations() {
       }
     } catch (error) {
       console.error("Error deleting conversation:", error);
-      alert("Error al eliminar la conversación");
+      toast.error("Error al eliminar la conversación");
     }
   }
 
-  async function handleToggleBot() {
+  async function handleToggleAssistant() {
     if (!selectedConversation) return;
     const newValue = !selectedConversation.botDisabled;
     try {
@@ -84,7 +110,7 @@ export function Conversations() {
         const lastMsg = updatedConv.history?.[updatedConv.history.length - 1];
         if (lastMsg?.role === "user") {
           try {
-            await triggerBotResponse(updatedConv.id);
+            await triggerAssistantResponse(updatedConv.id);
             // Wait a bit for the bot to respond then reload
             setTimeout(() => loadConversations().then(() => {
               getConversationById(updatedConv.id).then(c => {
@@ -92,13 +118,13 @@ export function Conversations() {
               });
             }), 2000);
           } catch (err) {
-            console.error("Error triggering bot:", err);
+            console.error("Error triggering assistant:", err);
           }
         }
       }
     } catch (error) {
       console.error("Error toggling bot:", error);
-      alert("Error al cambiar el estado del bot");
+      toast.error("Error al cambiar el estado del asistente");
     }
   }
 
@@ -131,7 +157,7 @@ export function Conversations() {
       setTimeout(() => loadConversations(), 1000);
     } catch (error) {
       console.error("Error sending message:", error);
-      alert("Error al enviar el mensaje");
+      toast.error("Error al enviar el mensaje");
     } finally {
       setSending(false);
     }
@@ -142,59 +168,357 @@ export function Conversations() {
     downloadConversation(selectedConversation);
   }
 
+  const listingMap = useMemo(() => {
+    const map = new Map<string, Listing>();
+    listings.forEach(l => {
+      if (l.listingCode) map.set(l.listingCode, l);
+    });
+    return map;
+  }, [listings]);
+
+  const uniqueListingCodes = useMemo(() => {
+    return Array.from(new Set(listings.map(l => l.listingCode).filter(Boolean))).sort();
+  }, [listings]);
+
   const filteredConversations = conversations.filter((conv) => {
     const matchesSearch =
       (conv.phone || "").includes(search) ||
       (conv.name || "").toLowerCase().includes(search.toLowerCase()) ||
       (conv.listingCode || "").toLowerCase().includes(search.toLowerCase());
+    
     const matchesStatus =
       filterStatus === "all" ||
       (filterStatus === "active" && !conv.isFinished) ||
       (filterStatus === "finished" && conv.isFinished);
-    return matchesSearch && matchesStatus;
+
+    const matchesListing = 
+      filterListing === "all" || 
+      conv.listingCode === filterListing;
+
+    const isQualified = conv.qualified === true || (conv as any).qualificationStatus === true || qualifiedChatIds.has(conv.chatId);
+    const isRejected = conv.qualified === false || (conv as any).qualificationStatus === false;
+
+    const matchesQualified = 
+      filterQualified === "all" ||
+      (filterQualified === "qualified" && isQualified) ||
+      (filterQualified === "not_qualified" && isRejected);
+
+    const listing = conv.listingCode ? listingMap.get(conv.listingCode) : null;
+    const matchesListingStatus = 
+      filterListingStatus === "all" ||
+      (filterListingStatus === "active" && listing?.isActive !== false) ||
+      (filterListingStatus === "inactive" && listing?.isActive === false);
+
+    const matchesAssistantStatus = 
+      filterAssistantStatus === "all" ||
+      (filterAssistantStatus === "active" && !conv.botDisabled) ||
+      (filterAssistantStatus === "disabled" && conv.botDisabled);
+
+    const getStartOfDay = (date: Date) => { const d = new Date(date); d.setHours(0, 0, 0, 0); return d; };
+    const getEndOfDay = (date: Date) => { const d = new Date(date); d.setHours(23, 59, 59, 999); return d; };
+    
+    let range: {start: Date, end: Date} | null = null;
+    const now = new Date();
+    
+    if (filterDate === "today") range = { start: getStartOfDay(now), end: getEndOfDay(now) };
+    else if (filterDate === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); range = { start: getStartOfDay(y), end: getEndOfDay(y) }; }
+    else if (filterDate === "last_7") { const p = new Date(now); p.setDate(p.getDate() - 7); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
+    else if (filterDate === "last_30") { const p = new Date(now); p.setDate(p.getDate() - 30); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
+
+    const isWithinRange = (ts: any, r: {start: Date, end: Date} | null) => {
+      if (!r) return true;
+      if (!ts) return false;
+      const date = ts?.toDate ? ts.toDate() : new Date(ts);
+      return date >= r.start && date <= r.end;
+    };
+
+    const matchesDate = isWithinRange(conv.lastMessage, range);
+
+    return matchesSearch && matchesStatus && matchesListing && matchesQualified && matchesListingStatus && matchesAssistantStatus && matchesDate;
   });
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    );
+    return <PageLoading className="h-64" />;
   }
 
   return (
-    <div className="h-[calc(100vh-8rem)] md:h-[calc(100vh-4rem)] flex bg-white rounded-lg shadow-sm overflow-hidden">
+    <InboxShell>
       {/* Panel izquierdo - Lista de conversaciones */}
       <div className={cn(
         "flex flex-col border-r border-gray-200 bg-white transition-all",
-        selectedConversation ? "hidden md:flex md:w-[380px]" : "w-full md:w-[380px]"
+        selectedConversation ? "hidden md:flex md:w-[450px]" : "w-full md:w-[450px]"
       )}>
         {/* Header */}
-        <div className="p-3 sm:p-4 border-b border-gray-200 bg-gray-50">
-          <h1 className="text-lg sm:text-xl font-bold text-gray-900 mb-3">Conversaciones</h1>
+        <div className="p-3 sm:p-4 border-b border-gray-200 bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <h1 className="text-lg sm:text-xl font-bold text-gray-900">Conversaciones</h1>
+            <span className="bg-primary-100 text-primary-700 text-xs font-bold px-2 py-1 rounded-full">
+              {filteredConversations.length}
+            </span>
+          </div>
 
           {/* Búsqueda */}
-          <div className="relative mb-3">
+          <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
             <input
               type="text"
               placeholder="Buscar por teléfono o nombre..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow"
+              className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow bg-white"
             />
           </div>
 
-          {/* Filtros */}
-          <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value as typeof filterStatus)}
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white transition-shadow"
-          >
-            <option value="all">Todas las conversaciones</option>
-            <option value="active">Activas</option>
-            <option value="finished">Finalizadas</option>
-          </select>
+          {/* Filtros Avanzados */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="relative">
+              <div 
+                className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-btn border shadow-sm cursor-pointer select-none" 
+                onClick={() => setIsDateDropdownOpen(!isDateDropdownOpen)}
+              >
+                <Calendar size={14} className="text-gray-400 shrink-0" />
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                  <span className="truncate">
+                    Fecha: {filterDate === "today" ? "Hoy" : 
+                           filterDate === "yesterday" ? "Ayer" : 
+                           filterDate === "last_7" ? "7 días" : 
+                           filterDate === "last_30" ? "30 días" : "Todos"}
+                  </span>
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isDateDropdownOpen && "rotate-180")} />
+                </div>
+              </div>
+              {isDateDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsDateDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-1 w-32 bg-white rounded-lg shadow-xl border border-gray-100 z-50 p-1 animate-in fade-in zoom-in-95 duration-100">
+                    {[
+                      { value: "all", label: "Todo" },
+                      { value: "today", label: "Hoy" },
+                      { value: "yesterday", label: "Ayer" },
+                      { value: "last_7", label: "7 días" },
+                      { value: "last_30", label: "30 días" }
+                    ].map(option => (
+                      <button
+                        key={option.value}
+                        onClick={() => {
+                          setFilterDate(option.value);
+                          setIsDateDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-1.5 w-full px-1.5 py-1 hover:bg-gray-50 rounded transition-colors text-left"
+                      >
+                        {filterDate === option.value ? <CheckSquare size={12} className="text-primary-600" /> : <Square size={12} className="text-gray-300" />}
+                        <span className="text-[10px] text-gray-700 font-medium">{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="relative min-w-0">
+              <div 
+                className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-btn border shadow-sm cursor-pointer select-none" 
+                onClick={() => setIsListingDropdownOpen(!isListingDropdownOpen)}
+              >
+                <Megaphone size={14} className="text-gray-400 shrink-0" />
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                  <span className="truncate">Anuncio: {filterListing === "all" ? "Todos" : filterListing}</span>
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isListingDropdownOpen && "rotate-180")} />
+                </div>
+              </div>
+              {isListingDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsListingDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-1 w-40 bg-white rounded-lg shadow-xl border border-gray-100 z-50 p-1 animate-in fade-in zoom-in-95 duration-100 max-h-[200px] overflow-y-auto">
+                    <button
+                      onClick={() => {
+                        setFilterListing("all");
+                        setIsListingDropdownOpen(false);
+                      }}
+                      className="flex items-center gap-1.5 w-full px-1.5 py-1 hover:bg-gray-50 rounded transition-colors text-left font-bold"
+                    >
+                      {filterListing === "all" ? <CheckSquare size={12} className="text-primary-600" /> : <Square size={12} className="text-gray-300" />}
+                      <span className="text-[10px] text-gray-700">Todos</span>
+                    </button>
+                    <div className="h-px bg-gray-50 my-1" />
+                    {uniqueListingCodes.map(code => (
+                      <button
+                        key={code}
+                        onClick={() => {
+                          setFilterListing(code);
+                          setIsListingDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-1.5 w-full px-1.5 py-1 hover:bg-gray-50 rounded transition-colors text-left"
+                      >
+                        {filterListing === code ? <CheckSquare size={12} className="text-primary-600" /> : <Square size={12} className="text-gray-300" />}
+                        <span className="text-[10px] text-gray-700 truncate">{code}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="relative min-w-0">
+              <div 
+                className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-btn border shadow-sm cursor-pointer select-none" 
+                onClick={() => setIsQualifiedDropdownOpen(!isQualifiedDropdownOpen)}
+              >
+                <CheckCircle size={14} className="text-gray-400 shrink-0" />
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                  <span className="truncate">
+                    Cualificación: {filterQualified === "all" ? "Todos" : 
+                                   filterQualified === "qualified" ? "Cualificados" : "No cualificados"}
+                  </span>
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isQualifiedDropdownOpen && "rotate-180")} />
+                </div>
+              </div>
+              {isQualifiedDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsQualifiedDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-50 p-1 animate-in fade-in zoom-in-95 duration-100">
+                    {[
+                      { value: "all", label: "Todo" },
+                      { value: "qualified", label: "Cualificados" },
+                      { value: "not_qualified", label: "No cualificados" }
+                    ].map(option => (
+                      <button
+                        key={option.value}
+                        onClick={() => {
+                          setFilterQualified(option.value as any);
+                          setIsQualifiedDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-1.5 w-full px-1.5 py-1 hover:bg-gray-50 rounded transition-colors text-left"
+                      >
+                        {filterQualified === option.value ? <CheckSquare size={12} className="text-primary-600" /> : <Square size={12} className="text-gray-300" />}
+                        <span className="text-[10px] text-gray-700 font-medium">{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="relative min-w-0">
+              <div 
+                className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-btn border shadow-sm cursor-pointer select-none" 
+                onClick={() => setIsListingStatusDropdownOpen(!isListingStatusDropdownOpen)}
+              >
+                <Activity size={14} className="text-gray-400 shrink-0" />
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                  <span className="truncate">
+                    Anuncio: {filterListingStatus === "all" ? "Todos" : 
+                             filterListingStatus === "active" ? "Activo" : "Inactivo"}
+                  </span>
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isListingStatusDropdownOpen && "rotate-180")} />
+                </div>
+              </div>
+              {isListingStatusDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsListingStatusDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-50 p-1 animate-in fade-in zoom-in-95 duration-100">
+                    {[
+                      { value: "all", label: "Todo" },
+                      { value: "active", label: "Activos" },
+                      { value: "inactive", label: "Inactivos" }
+                    ].map(option => (
+                      <button
+                        key={option.value}
+                        onClick={() => {
+                          setFilterListingStatus(option.value as any);
+                          setIsListingStatusDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-1.5 w-full px-1.5 py-1 hover:bg-gray-50 rounded transition-colors text-left"
+                      >
+                        {filterListingStatus === option.value ? <CheckSquare size={12} className="text-primary-600" /> : <Square size={12} className="text-gray-300" />}
+                        <span className="text-[10px] text-gray-700 font-medium">{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="relative min-w-0">
+              <div 
+                className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-btn border shadow-sm cursor-pointer select-none" 
+                onClick={() => setIsAssistantStatusDropdownOpen(!isAssistantStatusDropdownOpen)}
+              >
+                <Bot size={14} className="text-gray-400 shrink-0" />
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                  <span className="truncate">
+                    Asistente: {filterAssistantStatus === "all" ? "Todos" : 
+                               filterAssistantStatus === "active" ? "Activo" : "Off"}
+                  </span>
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isAssistantStatusDropdownOpen && "rotate-180")} />
+                </div>
+              </div>
+              {isAssistantStatusDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsAssistantStatusDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-50 p-1 animate-in fade-in zoom-in-95 duration-100">
+                    {[
+                      { value: "all", label: "Todo" },
+                      { value: "active", label: "Activo" },
+                      { value: "disabled", label: "Desactivado" }
+                    ].map(option => (
+                      <button
+                        key={option.value}
+                        onClick={() => {
+                          setFilterAssistantStatus(option.value as any);
+                          setIsAssistantStatusDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-1.5 w-full px-1.5 py-1 hover:bg-gray-50 rounded transition-colors text-left"
+                      >
+                        {filterAssistantStatus === option.value ? <CheckSquare size={12} className="text-primary-600" /> : <Square size={12} className="text-gray-300" />}
+                        <span className="text-[10px] text-gray-700 font-medium">{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="relative min-w-0">
+              <div 
+                className="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-btn border shadow-sm cursor-pointer select-none" 
+                onClick={() => setIsStatusDropdownOpen(!isStatusDropdownOpen)}
+              >
+                <MessageSquare size={14} className="text-gray-400 shrink-0" />
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                  <span className="truncate">
+                    Conversación: {filterStatus === "all" ? "Todos" : 
+                                   filterStatus === "active" ? "Activas" : "Finalizadas"}
+                  </span>
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isStatusDropdownOpen && "rotate-180")} />
+                </div>
+              </div>
+              {isStatusDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsStatusDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-1 w-36 bg-white rounded-lg shadow-xl border border-gray-100 z-50 p-1 animate-in fade-in zoom-in-95 duration-100">
+                    {[
+                      { value: "all", label: "Todo" },
+                      { value: "active", label: "Activas" },
+                      { value: "finished", label: "Finalizadas" }
+                    ].map(option => (
+                      <button
+                        key={option.value}
+                        onClick={() => {
+                          setFilterStatus(option.value as any);
+                          setIsStatusDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-1.5 w-full px-1.5 py-1 hover:bg-gray-50 rounded transition-colors text-left"
+                      >
+                        {filterStatus === option.value ? <CheckSquare size={12} className="text-primary-600" /> : <Square size={12} className="text-gray-300" />}
+                        <span className="text-[10px] text-gray-700 font-medium">{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Lista de conversaciones */}
@@ -229,16 +553,16 @@ export function Conversations() {
                       <h3 className="font-semibold text-gray-900 text-sm truncate">
                         {conv.name || (conv.phone ? formatPhoneWhatsApp(conv.phone) : conv.id)}
                       </h3>
-                      {conv.qualified !== null && conv.qualified !== undefined && (
+                      {(conv.qualified !== null && conv.qualified !== undefined || (conv as any).qualificationStatus !== undefined || qualifiedChatIds.has(conv.chatId)) && (
                         <span
                           className={cn(
                             "px-1.5 py-0.5 text-xs font-medium rounded",
-                            conv.qualified
-                              ? "bg-green-100 text-green-700"
-                              : "bg-red-100 text-red-700"
+                            (conv.qualified === true || (conv as any).qualificationStatus === true || qualifiedChatIds.has(conv.chatId))
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-rose-100 text-rose-700"
                           )}
                         >
-                          {conv.qualified ? "✓" : "✗"}
+                          {(conv.qualified === true || (conv as any).qualificationStatus === true || qualifiedChatIds.has(conv.chatId)) ? "✓" : "✗"}
                         </span>
                       )}
                     </div>
@@ -257,7 +581,7 @@ export function Conversations() {
                     </div>
                     <button
                       onClick={(e) => handleDeleteConversation(e, conv)}
-                      className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1.5 rounded transition-colors"
+                      className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1.5 rounded-btn transition-colors"
                       title="Eliminar conversación"
                     >
                       <Trash2 size={14} />
@@ -273,9 +597,9 @@ export function Conversations() {
                       key={tag}
                       className={cn(
                         "px-1.5 py-0.5 text-[10px] font-medium rounded border",
-                        tag === 'lead' ? "bg-green-50 text-green-700 border-green-100" :
-                          tag === 'non-lead' ? "bg-gray-50 text-gray-600 border-gray-100" :
-                            "bg-primary-50 text-primary-600 border-primary-100"
+                        tag === 'lead' ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                          tag === 'non-lead' ? "bg-slate-50 text-slate-600 border-slate-100" :
+                            "bg-amber-50 text-amber-700 border-amber-100"
                       )}
                     >
                       {tag}
@@ -290,7 +614,7 @@ export function Conversations() {
                   <span>{conv.messageCount || 0} mensajes</span>
                   {conv.botDisabled && (
                     <span className="flex items-center gap-1 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">
-                      <BotOff size={10} /> Bot Off
+                      <BotOff size={10} /> Asistente Off
                     </span>
                   )}
                 </div>
@@ -304,11 +628,11 @@ export function Conversations() {
       {selectedConversation ? (
         <div className="flex-1 flex flex-col">
           {/* Header del chat */}
-          <div className="p-3 sm:p-4 border-b border-gray-200 bg-gray-50">
+          <div className="p-3 sm:p-4 border-b border-gray-200 bg-white">
             <div className="flex items-center gap-2 sm:gap-3">
               <button
                 onClick={() => setSelectedConversation(null)}
-                className="md:hidden text-gray-600 hover:text-gray-900 p-1"
+                className="md:hidden text-gray-600 hover:text-gray-900 p-1.5 rounded-btn hover:bg-gray-100"
               >
                 <ArrowLeft size={20} />
               </button>
@@ -319,35 +643,35 @@ export function Conversations() {
                 <div className="flex items-center gap-2 text-xs text-gray-500">
                   <span className="truncate">{selectedConversation.listingCode}</span>
                   <span>•</span>
-                  <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} msjs</span>
+                  <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} mensajes</span>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={handleToggleBot}
+                  onClick={handleToggleAssistant}
                   className={cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors border",
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs font-medium transition-colors border",
                     selectedConversation.botDisabled
                       ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
-                      : "bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                      : "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
                   )}
-                  title={selectedConversation.botDisabled ? "Activar Bot" : "Desactivar Bot"}
+                  title={selectedConversation.botDisabled ? "Activar Asistente" : "Desactivar Asistente"}
                 >
                   {selectedConversation.botDisabled ? (
                     <>
                       <BotOff size={14} />
-                      Bot Desactivado
+                      Asistente Desactivado
                     </>
                   ) : (
                     <>
                       <Bot size={14} />
-                      Bot Activo
+                      Asistente Activo
                     </>
                   )}
                 </button>
                 <button
                   onClick={handleDownloadConversation}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm"
                   title="Descargar conversación"
                 >
                   <Download size={14} />
@@ -358,20 +682,20 @@ export function Conversations() {
             {/* Badges - on separate line on mobile */}
             <div className="flex items-center gap-2 mt-2 ml-0 md:ml-0">
               {selectedConversation.isFinished && (
-                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-gray-200 text-gray-600">
+                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-slate-200 text-slate-700">
                   Finalizada
                 </span>
               )}
-              {selectedConversation.qualified !== null && selectedConversation.qualified !== undefined && (
+              {(selectedConversation.qualified !== null && selectedConversation.qualified !== undefined || (selectedConversation as any).qualificationStatus !== undefined || qualifiedChatIds.has(selectedConversation.chatId)) && (
                 <span
                   className={cn(
                     "px-2 py-0.5 text-xs font-medium rounded-full",
-                    selectedConversation.qualified
-                      ? "bg-green-100 text-green-700"
-                      : "bg-red-100 text-red-700"
+                    (selectedConversation.qualified === true || (selectedConversation as any).qualificationStatus === true || qualifiedChatIds.has(selectedConversation.chatId))
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-rose-100 text-rose-700"
                   )}
                 >
-                  {selectedConversation.qualified ? "Cualificado" : "No interesado"}
+                  {(selectedConversation.qualified === true || (selectedConversation as any).qualificationStatus === true || qualifiedChatIds.has(selectedConversation.chatId)) ? "Cualificado" : "No interesado"}
                 </span>
               )}
             </div>
@@ -398,7 +722,7 @@ export function Conversations() {
                       "text-xs font-medium mb-1 block",
                       item.role === "assistant" ? "text-gray-400" : "text-primary-600"
                     )}>
-                      {item.role === "assistant" ? "Bot" : "Interesado"}
+                      {item.role === "assistant" ? "Asistente" : "Interesado"}
                     </span>
                     <p 
                       className="whitespace-pre-wrap break-words" 
@@ -433,13 +757,13 @@ export function Conversations() {
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
                     placeholder="Escribe un mensaje manual..."
-                    className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-full focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+                    className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-btn focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
                     disabled={sending}
                   />
                   <button
                     type="submit"
                     disabled={!newMessage.trim() || sending}
-                    className="p-2 bg-primary-600 text-white rounded-full hover:bg-primary-700 disabled:opacity-50 transition-colors"
+                    className="p-2 bg-primary-600 text-white rounded-btn hover:bg-primary-700 disabled:opacity-50 transition-colors"
                   >
                     {sending ? (
                       <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -449,7 +773,7 @@ export function Conversations() {
                   </button>
                 </form>
                 <p className="text-[10px] text-gray-400 mt-2 text-center italic">
-                  El bot está desactivado. Tus mensajes se enviarán directamente al cliente.
+                  El asistente está desactivado. Tus mensajes se enviarán directamente al cliente.
                 </p>
               </div>
             )
@@ -459,7 +783,7 @@ export function Conversations() {
           <div className="border-t border-gray-200 bg-white">
             <button 
               onClick={() => setShowDetailsMobile(!showDetailsMobile)}
-              className="w-full flex items-center justify-between p-3 text-sm font-medium text-gray-700 md:hidden hover:bg-gray-50 transition-colors"
+              className="w-full flex items-center justify-between p-3 text-sm font-medium text-gray-700 md:hidden hover:bg-gray-50 transition-colors rounded-btn"
             >
               <span>Detalles del Lead (Notas/Tags)</span>
               {showDetailsMobile ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -488,6 +812,6 @@ export function Conversations() {
         </div>
       )
       }
-    </div >
+    </InboxShell>
   );
 }

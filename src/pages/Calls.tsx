@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { PhoneIncoming, Search, ArrowLeft, Trash2, MessageSquare, Play } from "lucide-react";
+import { toast } from "sonner";
+import { PhoneIncoming, Search, ArrowLeft, Trash2, MessageSquare, Play, ChevronDown, CheckSquare, Square } from "lucide-react";
 import type { Call } from "../types";
 import { getCalls, deleteCall } from "../services/calls";
 import { formatDate, formatPhoneWhatsApp, cn } from "../lib/utils";
+import { InboxShell, PageLoading } from "../components/ui";
 
 export function Calls() {
     const [calls, setCalls] = useState<Call[]>([]);
@@ -10,6 +12,7 @@ export function Calls() {
     const [search, setSearch] = useState("");
     const [filterStatus, setFilterStatus] = useState<"all" | "qualified" | "rejected">("all");
     const [selectedCall, setSelectedCall] = useState<Call | null>(null);
+    const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
 
     useEffect(() => {
         loadCalls();
@@ -39,7 +42,7 @@ export function Calls() {
             }
         } catch (error) {
             console.error("Error deleting call:", error);
-            alert("Error al eliminar la llamada");
+            toast.error("Error al eliminar la llamada");
         }
     }
 
@@ -56,23 +59,19 @@ export function Calls() {
     });
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-64">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-            </div>
-        );
+        return <PageLoading className="h-64" />;
     }
 
     return (
-        <div className="h-[calc(100vh-8rem)] md:h-[calc(100vh-4rem)] flex bg-white rounded-lg shadow-sm overflow-hidden">
+        <InboxShell>
             {/* Panel izquierdo - Lista de llamadas */}
             <div className={cn(
                 "flex flex-col border-r border-gray-200 bg-white transition-all",
                 selectedCall ? "hidden md:flex md:w-[380px]" : "w-full md:w-[380px]"
             )}>
                 {/* Header */}
-                <div className="p-3 sm:p-4 border-b border-gray-200 bg-gray-50">
-                    <h1 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 text-center">Registro de Llamadas</h1>
+                <div className="space-y-3 border-b border-gray-200 bg-white p-3 sm:p-4">
+                    <h1 className="text-center text-lg font-bold text-gray-900 sm:text-xl">Registro de Llamadas</h1>
 
                     {/* Búsqueda */}
                     <div className="relative mb-3">
@@ -86,16 +85,45 @@ export function Calls() {
                         />
                     </div>
 
-                    {/* Filtros */}
-                    <select
-                        value={filterStatus}
-                        onChange={(e) => setFilterStatus(e.target.value as typeof filterStatus)}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white transition-shadow"
-                    >
-                        <option value="all">Todas las llamadas</option>
-                        <option value="qualified">Cualificadas</option>
-                        <option value="rejected">No cualificadas</option>
-                    </select>
+                    <div className="relative">
+                        <div 
+                            className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer" 
+                            onClick={() => setIsStatusDropdownOpen(!isStatusDropdownOpen)}
+                        >
+                            <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                                <span className="text-xs font-semibold text-gray-600">Llamadas:</span>
+                                <div className="flex items-center gap-1">
+                                    {filterStatus === "all" ? "Todas" : 
+                                     filterStatus === "qualified" ? "Cualificadas" : "No cualificadas"}
+                                    <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isStatusDropdownOpen && "rotate-180")} />
+                                </div>
+                            </div>
+                        </div>
+                        {isStatusDropdownOpen && (
+                            <>
+                                <div className="fixed inset-0 z-40" onClick={() => setIsStatusDropdownOpen(false)} />
+                                <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                                    {[
+                                        { value: "all", label: "Todas las llamadas" },
+                                        { value: "qualified", label: "Cualificadas" },
+                                        { value: "rejected", label: "No cualificadas" }
+                                    ].map(option => (
+                                        <button
+                                            key={option.value}
+                                            onClick={() => {
+                                                setFilterStatus(option.value as any);
+                                                setIsStatusDropdownOpen(false);
+                                            }}
+                                            className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                        >
+                                            {filterStatus === option.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                            <span className="text-xs text-gray-700 font-medium">{option.label}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
                 </div>
 
                 {/* Lista de llamadas */}
@@ -127,8 +155,8 @@ export function Calls() {
                                                 className={cn(
                                                     "px-1.5 py-0.5 text-[10px] font-medium rounded",
                                                     call.isQualified
-                                                        ? "bg-green-100 text-green-700"
-                                                        : "bg-red-100 text-red-700"
+                                                        ? "bg-emerald-100 text-emerald-700"
+                                                        : "bg-rose-100 text-rose-700"
                                                 )}
                                             >
                                                 {call.isQualified ? "Cualificado" : "Rechazado"}
@@ -143,7 +171,7 @@ export function Calls() {
                                     </div>
                                     <button
                                         onClick={(e) => handleDeleteCall(e, call)}
-                                        className="text-red-600 hover:text-red-800 p-1.5"
+                                        className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1.5 rounded-btn transition-colors"
                                     >
                                         <Trash2 size={14} />
                                     </button>
@@ -162,7 +190,7 @@ export function Calls() {
                         <div className="flex items-center gap-3">
                             <button
                                 onClick={() => setSelectedCall(null)}
-                                className="md:hidden p-1"
+                                className="md:hidden p-1.5 rounded-btn hover:bg-gray-100 text-gray-600"
                             >
                                 <ArrowLeft size={20} />
                             </button>
@@ -234,6 +262,6 @@ export function Calls() {
                     </div>
                 </div>
             )}
-        </div>
+        </InboxShell>
     );
 }

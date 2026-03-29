@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { CheckCircle, Lock, ArrowRight, Calendar, Mail, Clock, Coins } from "lucide-react";
+import { toast } from "sonner";
+import { CheckCircle, Lock, ArrowRight, Calendar, Mail, Clock, Coins, ChevronDown, CheckSquare, Square } from "lucide-react";
 import { getOrganizationSettings, updateOrganizationSettings } from "../services/organization";
 import type { OrganizationSettings } from "../services/organization";
 import { PopupModal, useCalendlyEventListener } from "react-calendly";
@@ -8,6 +9,7 @@ import { getUserCredits, getCreditPackages, createCheckoutSession, formatPrice }
 import type { CreditPackage } from "../types";
 import { CreditCard, Loader2, AlertCircle } from "lucide-react";
 import { cn } from "../lib/utils";
+import { PageLoading } from "../components/ui";
 
 export function Onboarding() {
   const [loading, setLoading] = useState(true);
@@ -19,6 +21,7 @@ export function Onboarding() {
   const [agencyName, setAgencyName] = useState("");
   const [employeesCount, setEmployeesCount] = useState("");
   const [whatsappPhone, setWhatsappPhone] = useState("");
+  const [isEmployeesDropdownOpen, setIsEmployeesDropdownOpen] = useState(false);
   
   // Form state for step 3
   const [forwardingEmail, setForwardingEmail] = useState("");
@@ -145,14 +148,18 @@ export function Onboarding() {
       window.location.href = checkoutUrl;
     } catch (error) {
       console.error("Error creating checkout session:", error);
-      alert("Error al iniciar el pago. Inténtalo de nuevo.");
+      toast.error("Error al iniciar el pago. Inténtalo de nuevo.");
     } finally {
       setPurchaseLoading(null);
     }
   }
 
   if (loading) {
-    return <div className="p-8 text-center text-gray-500 animate-pulse">Cargando...</div>;
+    return (
+      <div className="flex justify-center p-8">
+        <PageLoading message="Cargando..." />
+      </div>
+    );
   }
 
   const isCompleted = currentStep >= 6;
@@ -160,7 +167,7 @@ export function Onboarding() {
   return (
     <div className="max-w-3xl mx-auto py-8 px-4 sm:px-6">
       <div className="mb-10 text-center sm:text-left">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Configuración del Bot</h1>
+        <h1 className="mb-2 text-2xl font-bold text-gray-900 sm:text-3xl">Configuración del Asistente</h1>
         <p className="text-gray-600">Completa estos pasos para empezar a utilizar tu agente de inteligencia artificial.</p>
       </div>
 
@@ -197,20 +204,44 @@ export function Onboarding() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Número de Trabajadores</label>
-                    <select 
-                      required
-                      className="w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
-                      value={employeesCount} onChange={e => setEmployeesCount(e.target.value)}
-                      disabled={currentStep > 1 && !saving}
-                    >
-                      <option value="" disabled>Selecciona un rango</option>
-                      <option value="1">1</option>
-                      <option value="2-5">2-5</option>
-                      <option value="5-20">5-20</option>
-                      <option value="20-50">20-50</option>
-                      <option value="50-100">50-100</option>
-                      <option value="+100">+100</option>
-                    </select>
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setIsEmployeesDropdownOpen(!isEmployeesDropdownOpen)}
+                        disabled={currentStep > 1 && !saving}
+                        className={cn(
+                          "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
+                          isEmployeesDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400",
+                          currentStep > 1 && !saving && "bg-gray-50 opacity-80 cursor-not-allowed"
+                        )}
+                      >
+                        <span className={!employeesCount ? "text-gray-400" : "text-gray-900"}>
+                          {employeesCount || "Selecciona un rango"}
+                        </span>
+                        <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isEmployeesDropdownOpen && "rotate-180")} />
+                      </button>
+                      {isEmployeesDropdownOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setIsEmployeesDropdownOpen(false)} />
+                          <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                            {["1", "2-5", "5-20", "20-50", "50-100", "+100"].map((range) => (
+                              <button
+                                key={range}
+                                type="button"
+                                onClick={() => {
+                                  setEmployeesCount(range);
+                                  setIsEmployeesDropdownOpen(false);
+                                }}
+                                className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                              >
+                                {employeesCount === range ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                <span className="text-sm text-gray-700 font-medium">{range}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">WhatsApp para Resúmenes</label>
@@ -255,7 +286,7 @@ export function Onboarding() {
               </h2>
             </div>
             
-            <p className="text-gray-600 mb-6">Agenda una llamada corta de 15 minutos para conectar el bot a tu WhatsApp y ultimar detalles técnicos.</p>
+            <p className="text-gray-600 mb-6">Agenda una llamada corta de 15 minutos para conectar el asistente a tu WhatsApp y ultimar detalles técnicos.</p>
             
             {currentStep === 2 && (
               <button 
@@ -299,16 +330,16 @@ export function Onboarding() {
             
             {currentStep >= 3 && (
               <form onSubmit={handleSaveStep3} className={currentStep > 3 && !saving ? "pointer-events-none opacity-80" : ""}>
-                <div className="bg-blue-50 p-5 rounded-lg border border-blue-100 mb-6">
-                  <h3 className="font-bold text-blue-900 mb-3 flex items-center gap-2">
+                <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
+                  <h3 className="mb-3 flex items-center gap-2 font-bold text-primary-900">
                     <Mail size={18} />
                     Guía de reenvío de correos
                   </h3>
-                  <ol className="list-decimal list-inside text-sm text-blue-800 space-y-3 pl-2">
+                  <ol className="list-decimal list-inside space-y-3 pl-2 text-sm text-primary-800">
                     <li>Abre tu cuenta de correo electrónico de la Inmobiliaria.</li>
                     <li>Ve a los ajustes de <span className="font-bold">Filtros y direcciones bloqueadas</span>.</li>
                     <li>Crea un filtro para todos los correos que provengan de <code>idealista.com</code> con el asunto de nuevos contactos.</li>
-                    <li>Configura el reenvío automático a: <code className="bg-white px-2 py-1 inline-block rounded font-mono font-bold border border-blue-200 mt-1">optimea.es@gmail.com</code></li>
+                    <li>Configura el reenvío automático a: <code className="mt-1 inline-block rounded border border-primary-200 bg-white px-2 py-1 font-mono font-bold">optimea.es@gmail.com</code></li>
                   </ol>
                 </div>
 
@@ -374,15 +405,15 @@ export function Onboarding() {
             
             {currentStep >= 4 && (
               <div className={currentStep > 4 && !saving ? "pointer-events-none opacity-80" : ""}>
-                <div className="bg-blue-50 p-5 rounded-lg border border-blue-100 mb-6">
-                  <h3 className="font-bold text-blue-900 mb-3 flex items-center gap-2">
+                <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
+                  <h3 className="mb-3 flex items-center gap-2 font-bold text-primary-900">
                     <Coins size={18} />
                     Funciona con Créditos
                   </h3>
-                  <p className="text-sm text-blue-800 mb-3">
+                  <p className="mb-3 text-sm text-primary-800">
                     Cada conversación (hilo completo) generada con tus leads cuesta <strong>2 créditos</strong>.
                   </p>
-                  <p className="text-sm text-blue-800 bg-white p-3 rounded-lg border border-blue-200 shadow-sm">
+                  <p className="rounded-lg border border-primary-200 bg-white p-3 text-sm text-primary-800 shadow-sm">
                     <strong>Ejemplo práctico:</strong> Si para un anuncio recibes 100 personas interesadas que te escriben, se gestionarán 100 conversaciones automáticamente, usando <strong>200 créditos</strong>.
                   </p>
                 </div>
@@ -407,13 +438,13 @@ export function Onboarding() {
                 )}
 
                 <div className="mb-6">
-                  <h4 className="text-md font-bold text-gray-800 mb-3">Adquiere un paquete inicial para activar tu bot</h4>
+                  <h4 className="text-md font-bold text-gray-800 mb-3">Adquiere un paquete inicial para activar tu asistente</h4>
                   <div className="grid sm:grid-cols-3 gap-3">
                     {packages.map((pkg) => (
                       <div
                         key={pkg.id}
                         className={cn(
-                          "relative bg-white border-2 p-4 rounded-xl text-center transition-all cursor-pointer shadow-sm hover:shadow-md",
+                          "relative bg-white border-2 p-4 rounded-btn text-center transition-all cursor-pointer shadow-sm hover:shadow-md",
                           pkg.id === "credits_100" ? "border-primary-400" : "border-gray-100 hover:border-primary-300"
                         )}
                         onClick={() => { if(currentStep === 4) handlePurchase(pkg.id) }}
@@ -434,7 +465,7 @@ export function Onboarding() {
                         <button
                           disabled={purchaseLoading !== null || currentStep > 4}
                           className={cn(
-                            "w-full py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-colors border",
+                            "w-full py-1.5 px-3 rounded-btn text-xs font-semibold flex items-center justify-center gap-2 transition-colors border",
                             pkg.id === "credits_100"
                               ? "bg-primary-600 text-white border-primary-600 hover:bg-primary-700"
                               : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
@@ -502,7 +533,7 @@ export function Onboarding() {
           <div className={`card p-6 shadow-sm border ${currentStep === 5 ? 'border-orange-500 ring-1 ring-orange-500' : 'border-gray-100'}`}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold flex items-center gap-3">
-                Activación del Bot
+                Activación del Asistente
               </h2>
             </div>
             
@@ -510,7 +541,7 @@ export function Onboarding() {
                <div className="bg-orange-50 text-orange-800 p-5 rounded-lg border border-orange-200 animate-pulse">
                 <h3 className="font-bold mb-2 flex items-center gap-2">
                   <Clock size={18} />
-                  Estamos configurando tu bot
+                  Estamos configurando tu asistente
                 </h3>
                 <p className="text-sm">
                   Normalmente tardamos <strong>24 horas</strong> en conectar tu cuenta y probar que todo funciona correctamente. Te notificaremos en tu panel cuando esté activo, y este paso se completará automáticamente.
@@ -520,13 +551,13 @@ export function Onboarding() {
             
             {currentStep < 5 && (
               <div className="mt-2 text-sm text-gray-500 bg-gray-50 p-3 rounded border border-gray-100">
-                Paso bloqueado. Completa los anteriores para solicitar la activación de tu bot.
+                Paso bloqueado. Completa los anteriores para solicitar la activación de tu asistente.
               </div>
             )}
             {currentStep > 5 && (
                <div className="mt-4 bg-green-50 text-green-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-green-200">
                 <CheckCircle size={20} className="text-green-600" />
-                <span className="font-medium">¡Bot activado y funcionando!</span>
+                <span className="font-medium">¡Asistente activado y funcionando!</span>
               </div>
             )}
           </div>

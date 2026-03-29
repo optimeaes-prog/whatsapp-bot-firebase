@@ -28,6 +28,10 @@ let cachedProvider: MessagingProvider | null = null;
 let cacheExpiry = 0;
 const CACHE_TTL_MS = 60_000; // 1 minute cache
 
+import { getFirestore } from "firebase-admin/firestore";
+
+const DATABASE_ID = "realestate-whatsapp-bot";
+
 /**
  * Get the active messaging provider from Firestore (botConfig/config)
  */
@@ -38,7 +42,7 @@ export async function getActiveProvider(): Promise<MessagingProvider> {
   }
 
   try {
-    const db = admin.firestore();
+    const db = getFirestore(admin.app(), DATABASE_ID);
     const configDoc = await db
       .doc("organizations/org_paco_granados/botConfig/config")
       .get();

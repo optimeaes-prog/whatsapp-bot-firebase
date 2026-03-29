@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { History, Filter, Search, User, Bot, ChevronDown, ChevronUp } from "lucide-react";
+import { History, Filter, Search, User, Bot, ChevronDown, ChevronUp, CheckSquare, Square } from "lucide-react";
 import type { AuditLogEntry, AuditAction, AuditEntityType } from "../types";
 import { getAuditLogs } from "../services/auditLog";
 import { formatDate, cn } from "../lib/utils";
+import { PageHeader, FilterCard, PageLoading } from "../components/ui";
 
 export function AuditLog() {
     const [logs, setLogs] = useState<AuditLogEntry[]>([]);
@@ -12,6 +13,10 @@ export function AuditLog() {
     const [filterSource, setFilterSource] = useState<"all" | "user" | "system">("all");
     const [search, setSearch] = useState("");
     const [expandedLog, setExpandedLog] = useState<string | null>(null);
+
+    const [isEntityTypeDropdownOpen, setIsEntityTypeDropdownOpen] = useState(false);
+    const [isActionDropdownOpen, setIsActionDropdownOpen] = useState(false);
+    const [isSourceDropdownOpen, setIsSourceDropdownOpen] = useState(false);
 
     useEffect(() => {
         loadLogs();
@@ -53,7 +58,7 @@ export function AuditLog() {
             update: "Actualizado",
             delete: "Eliminado",
             status_change: "Cambio de Estado",
-            bot_toggle: "Bot Activado/Desactivado",
+            bot_toggle: "Asistente Activado/Desactivado",
             message_sent: "Mensaje Enviado",
             qualification_change: "Cambio de Cualificación",
         };
@@ -74,45 +79,38 @@ export function AuditLog() {
     const getActionColor = (action: AuditAction): string => {
         switch (action) {
             case "create":
-                return "bg-green-100 text-green-700";
+                return "bg-emerald-100 text-emerald-700";
             case "update":
-                return "bg-blue-100 text-blue-700";
+                return "bg-sky-100 text-sky-700";
             case "delete":
-                return "bg-red-100 text-red-700";
+                return "bg-rose-100 text-rose-700";
             case "status_change":
             case "qualification_change":
-                return "bg-purple-100 text-purple-700";
+                return "bg-violet-100 text-violet-700";
             case "bot_toggle":
                 return "bg-amber-100 text-amber-700";
             case "message_sent":
                 return "bg-cyan-100 text-cyan-700";
             default:
-                return "bg-gray-100 text-gray-700";
+                return "bg-slate-100 text-slate-700";
         }
     };
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-64">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-            </div>
-        );
+        return <PageLoading className="h-64" />;
     }
 
     return (
-        <div className="p-4 sm:p-6">
-            <div className="mb-6">
-                <div className="flex items-center gap-3 mb-4">
-                    <History className="text-primary-600" size={32} />
-                    <h1 className="text-2xl font-bold text-gray-900">Historial de Cambios</h1>
-                </div>
-                <p className="text-sm text-gray-600">
-                    Registro completo de todos los cambios realizados en la aplicación
-                </p>
-            </div>
+        <div>
+            <PageHeader
+                className="mb-6"
+                title="Historial de Cambios"
+                subtitle="Registro completo de todos los cambios realizados en la aplicación"
+                icon={<History className="text-primary-600" size={32} />}
+            />
 
             {/* Filters */}
-            <div className="bg-white rounded-lg shadow-sm p-4 mb-6">
+            <FilterCard className="mb-6">
                 <div className="flex items-center gap-2 mb-4">
                     <Filter size={18} className="text-gray-600" />
                     <h2 className="font-semibold text-gray-900">Filtros</h2>
@@ -132,50 +130,137 @@ export function AuditLog() {
                     </div>
 
                     {/* Entity Type */}
-                    <select
-                        value={filterEntityType}
-                        onChange={(e) => setFilterEntityType(e.target.value as AuditEntityType | "all")}
-                        className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                    >
-                        <option value="all">Todos los tipos</option>
-                        <option value="lead">Leads</option>
-                        <option value="conversation">Conversaciones</option>
-                        <option value="listing">Anuncios</option>
-                        <option value="qualified_lead">Leads Cualificados</option>
-                        <option value="system_config">Configuración</option>
-                    </select>
+                    <div className="relative">
+                        <div 
+                            className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer min-h-[42px]" 
+                            onClick={() => setIsEntityTypeDropdownOpen(!isEntityTypeDropdownOpen)}
+                        >
+                            <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                                <span className="text-xs font-semibold text-gray-600">Tipo:</span>
+                                <div className="flex items-center gap-1">
+                                    {filterEntityType === "all" ? "Todos" : getEntityTypeLabel(filterEntityType)}
+                                    <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isEntityTypeDropdownOpen && "rotate-180")} />
+                                </div>
+                            </div>
+                        </div>
+                        {isEntityTypeDropdownOpen && (
+                            <>
+                                <div className="fixed inset-0 z-40" onClick={() => setIsEntityTypeDropdownOpen(false)} />
+                                <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                                    {[
+                                        { value: "all", label: "Todos los tipos" },
+                                        { value: "lead", label: "Leads" },
+                                        { value: "conversation", label: "Conversaciones" },
+                                        { value: "listing", label: "Anuncios" },
+                                        { value: "qualified_lead", label: "Leads Cualificados" },
+                                        { value: "system_config", label: "Configuración" }
+                                    ].map(option => (
+                                        <button
+                                            key={option.value}
+                                            onClick={() => {
+                                                setFilterEntityType(option.value as any);
+                                                setIsEntityTypeDropdownOpen(false);
+                                            }}
+                                            className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                        >
+                                            {filterEntityType === option.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                            <span className="text-xs text-gray-700 font-medium">{option.label}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
 
                     {/* Action */}
-                    <select
-                        value={filterAction}
-                        onChange={(e) => setFilterAction(e.target.value as AuditAction | "all")}
-                        className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                    >
-                        <option value="all">Todas las acciones</option>
-                        <option value="create">Creado</option>
-                        <option value="update">Actualizado</option>
-                        <option value="delete">Eliminado</option>
-                        <option value="status_change">Cambio de Estado</option>
-                        <option value="bot_toggle">Bot Toggle</option>
-                        <option value="message_sent">Mensaje Enviado</option>
-                        <option value="qualification_change">Cambio Cualificación</option>
-                    </select>
+                    <div className="relative">
+                        <div 
+                            className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer min-h-[42px]" 
+                            onClick={() => setIsActionDropdownOpen(!isActionDropdownOpen)}
+                        >
+                            <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                                <span className="text-xs font-semibold text-gray-600">Acción:</span>
+                                <div className="flex items-center gap-1">
+                                    {filterAction === "all" ? "Todas" : getActionLabel(filterAction)}
+                                    <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isActionDropdownOpen && "rotate-180")} />
+                                </div>
+                            </div>
+                        </div>
+                        {isActionDropdownOpen && (
+                            <>
+                                <div className="fixed inset-0 z-40" onClick={() => setIsActionDropdownOpen(false)} />
+                                <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100 max-h-[300px] overflow-y-auto">
+                                    {[
+                                        { value: "all", label: "Todas las acciones" },
+                                        { value: "create", label: "Creado" },
+                                        { value: "update", label: "Actualizado" },
+                                        { value: "delete", label: "Eliminado" },
+                                        { value: "status_change", label: "Cambio de Estado" },
+                                        { value: "bot_toggle", label: "Asistente Toggle" },
+                                        { value: "message_sent", label: "Mensaje Enviado" },
+                                        { value: "qualification_change", label: "Cambio Cualificación" }
+                                    ].map(option => (
+                                        <button
+                                            key={option.value}
+                                            onClick={() => {
+                                                setFilterAction(option.value as any);
+                                                setIsActionDropdownOpen(false);
+                                            }}
+                                            className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                        >
+                                            {filterAction === option.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                            <span className="text-xs text-gray-700 font-medium">{option.label}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
 
                     {/* Source */}
-                    <select
-                        value={filterSource}
-                        onChange={(e) => setFilterSource(e.target.value as "all" | "user" | "system")}
-                        className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                    >
-                        <option value="all">Todos</option>
-                        <option value="user">Usuario</option>
-                        <option value="system">Sistema</option>
-                    </select>
+                    <div className="relative">
+                        <div 
+                            className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer min-h-[42px]" 
+                            onClick={() => setIsSourceDropdownOpen(!isSourceDropdownOpen)}
+                        >
+                            <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                                <span className="text-xs font-semibold text-gray-600">Origen:</span>
+                                <div className="flex items-center gap-1">
+                                    {filterSource === "all" ? "Todos" : filterSource === "user" ? "Usuario" : "Sistema"}
+                                    <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isSourceDropdownOpen && "rotate-180")} />
+                                </div>
+                            </div>
+                        </div>
+                        {isSourceDropdownOpen && (
+                            <>
+                                <div className="fixed inset-0 z-40" onClick={() => setIsSourceDropdownOpen(false)} />
+                                <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                                    {[
+                                        { value: "all", label: "Todos" },
+                                        { value: "user", label: "Usuario" },
+                                        { value: "system", label: "Sistema" }
+                                    ].map(option => (
+                                        <button
+                                            key={option.value}
+                                            onClick={() => {
+                                                setFilterSource(option.value as any);
+                                                setIsSourceDropdownOpen(false);
+                                            }}
+                                            className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                        >
+                                            {filterSource === option.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                            <span className="text-xs text-gray-700 font-medium">{option.label}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
                 </div>
-            </div>
+            </FilterCard>
 
             {/* Logs Table */}
-            <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+            <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
                 {filteredLogs.length === 0 ? (
                     <div className="flex flex-col items-center justify-center p-12 text-center">
                         <History className="text-gray-300 mb-3" size={48} />
@@ -300,13 +385,13 @@ export function AuditLog() {
                                                                     <div className="grid grid-cols-2 gap-4 text-xs">
                                                                         <div>
                                                                             <span className="text-gray-500">Antes:</span>
-                                                                            <div className="mt-1 p-2 bg-red-50 rounded font-mono text-red-700">
+                                                                            <div className="mt-1 p-2 bg-rose-50 rounded font-mono text-rose-700">
                                                                                 {JSON.stringify(change.oldValue, null, 2)}
                                                                             </div>
                                                                         </div>
                                                                         <div>
                                                                             <span className="text-gray-500">Después:</span>
-                                                                            <div className="mt-1 p-2 bg-green-50 rounded font-mono text-green-700">
+                                                                            <div className="mt-1 p-2 bg-emerald-50 rounded font-mono text-emerald-700">
                                                                                 {JSON.stringify(change.newValue, null, 2)}
                                                                             </div>
                                                                         </div>

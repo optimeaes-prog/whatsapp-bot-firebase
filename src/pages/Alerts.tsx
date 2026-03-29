@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Bell, Trash2, AlertTriangle, Info, AlertCircle, Calendar, CheckCircle, ShieldOff } from "lucide-react";
 import { getAlerts, deleteAlert, ignoreChat } from "../services/alerts";
 import type { SystemAlert, AlertSeverity } from "../types";
 import { formatDate, cn } from "../lib/utils";
+import { PageContainer, PageHeader, PageLoading } from "../components/ui";
 
 export function Alerts() {
     const [alerts, setAlerts] = useState<SystemAlert[]>([]);
@@ -37,7 +39,7 @@ export function Alerts() {
             }
         } catch (error) {
             console.error("Error deleting alert:", error);
-            alert("Error al eliminar la alerta");
+            toast.error("Error al eliminar la alerta");
         }
     }
 
@@ -47,10 +49,10 @@ export function Alerts() {
         }
         try {
             await ignoreChat(chatId);
-            alert("Chat ignorado correctamente. No recibirás más alertas de este número.");
+            toast.success("Chat ignorado correctamente. No recibirás más alertas de este número.");
         } catch (error) {
             console.error("Error ignoring chat:", error);
-            alert("Error al ignorar el chat");
+            toast.error("Error al ignorar el chat");
         }
     }
 
@@ -88,43 +90,39 @@ export function Alerts() {
             case "healthy":
                 return <CheckCircle className="text-green-500" size={20} />;
             default:
-                return <Info className="text-blue-500" size={20} />;
+                return <Info className="text-primary-600" size={20} />;
         }
     };
 
     const getSeverityStyles = (severity: AlertSeverity) => {
         switch (severity) {
             case "critical":
-                return "border-red-100 bg-red-50 text-red-700";
+                return "border-rose-100 bg-rose-50 text-rose-700";
             case "warning":
                 return "border-amber-100 bg-amber-50 text-amber-700";
             case "healthy":
-                return "border-green-100 bg-green-50 text-green-700";
+                return "border-emerald-100 bg-emerald-50 text-emerald-700";
             default:
-                return "border-blue-100 bg-blue-50 text-blue-700";
+                return "border-sky-100 bg-sky-50 text-sky-700";
         }
     };
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-64">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-            </div>
-        );
+        return <PageLoading className="h-64" />;
     }
 
     return (
-        <div className="max-w-6xl mx-auto space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Alertas del Sistema</h1>
-                    <p className="text-gray-500 text-sm">Monitoreo de sincronización y estado del bot</p>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-gray-500">
-                    <Bell size={18} />
-                    <span>{alerts.length} alertas recientes</span>
-                </div>
-            </div>
+        <PageContainer maxWidth="6xl">
+            <PageHeader
+                title="Alertas del Sistema"
+                subtitle="Monitoreo de sincronización y estado del asistente"
+                actions={
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                        <Bell size={18} />
+                        <span>{alerts.length} alertas recientes</span>
+                    </div>
+                }
+            />
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {/* Lista de alertas */}
@@ -141,7 +139,7 @@ export function Alerts() {
                                 key={alert.id}
                                 onClick={() => setSelectedAlert(alert)}
                                 className={cn(
-                                    "p-4 rounded-xl border transition-all cursor-pointer hover:shadow-md",
+                                    "p-4 rounded-btn border transition-all cursor-pointer hover:shadow-md",
                                     selectedAlert?.id === alert.id
                                         ? "border-primary-500 bg-primary-50 ring-1 ring-primary-500"
                                         : "border-gray-200 bg-white hover:border-gray-300"
@@ -162,7 +160,7 @@ export function Alerts() {
                                     </div>
                                     <button
                                         onClick={(e) => handleDeleteAlert(e, alert.id)}
-                                        className="text-gray-400 hover:text-red-500 p-1 rounded-md hover:bg-red-50 transition-colors"
+                                        className="text-gray-400 hover:text-red-500 p-1.5 rounded-btn hover:bg-red-50 transition-colors"
                                     >
                                         <Trash2 size={14} />
                                     </button>
@@ -219,7 +217,7 @@ export function Alerts() {
                                                                 <span className="font-mono text-xs text-gray-600 font-medium">{id}</span>
                                                                 <button
                                                                     onClick={() => handleIgnoreChat(id)}
-                                                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs font-bold hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-all shadow-sm"
+                                                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-btn text-xs font-bold hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-all shadow-sm"
                                                                 >
                                                                     <ShieldOff size={14} />
                                                                     Ignorar Alertas
@@ -245,7 +243,7 @@ export function Alerts() {
                     )}
                 </div>
             </div>
-        </div>
+        </PageContainer>
     );
 }
 

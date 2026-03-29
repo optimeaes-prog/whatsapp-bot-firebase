@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @theme {
+  /* Botones: casi rectangulares, un pelín menos redondeo que rounded-lg (8px) */
+  --radius-btn: 0.3125rem;
   --color-primary-50: #FFF9EB;
   --color-primary-100: #FEF0C7;
   --color-primary-200: #FEE08A;
@@ -30,11 +32,11 @@ body {
 
 /* Custom component classes */
 .btn-primary {
-  @apply bg-primary-500 hover:bg-primary-600 text-white font-medium py-2 px-4 rounded-lg transition-colors;
+  @apply bg-primary-500 hover:bg-primary-600 text-white font-medium py-2 px-4 rounded-btn transition-colors;
 }
 
 .btn-secondary {
-  @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-lg transition-colors;
+  @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-btn transition-colors;
 }
 
 .card {
@@ -43,4 +45,92 @@ body {
 
 .input {
   @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+}
+
+/* =====================================================
+   Landing Page: Conversation Bubble Animations
+   These are triggered on mount (key-based remount)
+   and use animation-fill-mode: both so they start
+   from the hidden state before the delay fires.
+   ===================================================== */
+
+/* Simple fade-in from below, one-shot (no loop) */
+@keyframes landMsgAppear {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.land-msg {
+  opacity: 0;
+  animation: landMsgAppear 0.5s ease-out forwards;
+}
+
+/* Staggered delays for the 3 messages per phase */
+.land-msg-1 { animation-delay: 0.3s; }
+.land-msg-2 { animation-delay: 4.0s; }
+.land-msg-3 { animation-delay: 8.5s; }
+
+/* Gentle floating bob — applied to the inner wrapper */
+@keyframes landFloatBob {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-7px); }
+}
+
+.land-float-bob {
+  animation: landFloatBob 4s ease-in-out infinite;
+}
+
+.land-float-bob-delayed {
+  animation: landFloatBob 4s ease-in-out infinite 1.5s;
+}
+
+/* Dual Range Slider Styles */
+.range-slider-container {
+  position: relative;
+  height: 24px;
+  width: 180px;
+  display: flex;
+  align-items: center;
+}
+
+.range-slider-track {
+  position: absolute;
+  height: 4px;
+  width: 100%;
+  background: #e2e8f0;
+  border-radius: 2px;
+  z-index: 1;
+}
+
+.range-slider-input {
+  position: absolute;
+  width: 100%;
+  background: none;
+  pointer-events: none;
+  appearance: none;
+  z-index: 2;
+  margin: 0;
+  height: 4px;
+}
+
+.range-slider-input::-webkit-slider-thumb {
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid #D98A06; /* primary-600 */
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  pointer-events: auto;
+  appearance: none;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.range-slider-input::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+.range-slider-input::-webkit-slider-thumb:active {
+  transform: scale(1.2);
+  background: #FEF0C7; /* primary-100 */
 }

@@ -1,11 +1,14 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Edit, Trash2, FileText, Power, PowerOff, CheckCircle, XCircle, User, Users, MapPin, ExternalLink, MessageCircle } from "lucide-react";
+import { toast } from "sonner";
+import { Plus, Edit, Trash2, Power, PowerOff, CheckCircle, XCircle, Users, MapPin, ExternalLink, ChevronDown, ChevronRight, MessageSquare, CheckSquare, Square, Filter, Search } from "lucide-react";
 import type { Listing, ListingFormData, OperationType, ListingClosureReason, QualifiedLead } from "../types";
 import { getListings, createListing, updateListing, deleteListing, deactivateListing, reactivateListing } from "../services/listings";
 import { getConversations } from "../services/conversations";
 import { getQualifiedLeadsByListingCode, getQualifiedLeads } from "../services/qualifiedLeads";
 import { cn } from "../lib/utils";
+import { PageHeader, PageLoading, Button, FilterCard } from "../components/ui";
+import { OperationTypeBadge } from "../components/StatusBadges";
 
 const emptyFormData: ListingFormData = {
   description: "",
@@ -32,6 +35,8 @@ const closureReasonLabels: Record<ListingClosureReason, string> = {
   other: "Otros motivos",
 };
 
+type ListingSortOption = "default" | "updated_desc" | "conversations_desc" | "qualified_desc" | "title_asc";
+
 export function Listings() {
   const navigate = useNavigate();
   const [listings, setListings] = useState<Listing[]>([]);
@@ -50,10 +55,17 @@ export function Listings() {
   const [isSelecting, setIsSelecting] = useState(false);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
-  // Estado para filtro activo/inactivo
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive">("active");
+  const [filterOperationType, setFilterOperationType] = useState<"all" | OperationType>("all");
+  const [listingSearch, setListingSearch] = useState("");
+  const [debouncedListingSearch, setDebouncedListingSearch] = useState("");
+  const [sortBy, setSortBy] = useState<ListingSortOption>("default");
+  const [isStatusFilterOpen, setIsStatusFilterOpen] = useState(false);
+  const [isListingTipoFilterOpen, setIsListingTipoFilterOpen] = useState(false);
+  const [isSortFilterOpen, setIsSortFilterOpen] = useState(false);
 
   const [conversationCounts, setConversationCounts] = useState<Record<string, number>>({});
+  const [respondedCounts, setRespondedCounts] = useState<Record<string, number>>({});
   const [qualifiedCounts, setQualifiedCounts] = useState<Record<string, number>>({});
 
   // Estado para modal de desactivación
@@ -65,6 +77,11 @@ export function Listings() {
   const [qualifiedLeadsForListing, setQualifiedLeadsForListing] = useState<QualifiedLead[]>([]);
   const [loadingQualifiedLeads, setLoadingQualifiedLeads] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
+  const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
+
+  const [isOperationTypeDropdownOpen, setIsOperationTypeDropdownOpen] = useState(false);
+  const [isClosureReasonDropdownOpen, setIsClosureReasonDropdownOpen] = useState(false);
+  const [isLeadDropdownOpen, setIsLeadDropdownOpen] = useState(false);
 
   // Helper to format price with suffix
   const formatPrice = (price: string | undefined, type: OperationType): string => {
@@ -83,6 +100,11 @@ export function Listings() {
   useEffect(() => {
     loadListings();
   }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedListingSearch(listingSearch), 300);
+    return () => clearTimeout(t);
+  }, [listingSearch]);
 
   // Cerrar sugerencias al hacer clic fuera
   useEffect(() => {
@@ -109,12 +131,18 @@ export function Listings() {
         ]);
         
         const cCounts: Record<string, number> = {};
+        const rCounts: Record<string, number> = {};
         conversations.forEach(conv => {
           if (conv.listingCode) {
             cCounts[conv.listingCode] = (cCounts[conv.listingCode] || 0) + 1;
+            const hasUserMessage = conv.history?.some(h => h.role === "user");
+            if (hasUserMessage) {
+              rCounts[conv.listingCode] = (rCounts[conv.listingCode] || 0) + 1;
+            }
           }
         });
         setConversationCounts(cCounts);
+        setRespondedCounts(rCounts);
 
         const qCounts: Record<string, number> = {};
         qualifieds.forEach(qual => {
@@ -193,7 +221,7 @@ export function Listings() {
     } catch (error) {
       console.error("Error saving listing:", error);
       const errorMessage = error instanceof Error ? error.message : "Error desconocido";
-      alert("Error al guardar: " + errorMessage);
+      toast.error("Error al guardar: " + errorMessage);
     } finally {
       setSaving(false);
     }
@@ -206,7 +234,7 @@ export function Listings() {
       loadListings();
     } catch (error) {
       console.error("Error deleting listing:", error);
-      alert("Error al eliminar el anuncio");
+      toast.error("Error al eliminar el anuncio");
     }
   }
 
@@ -232,7 +260,7 @@ export function Listings() {
     if (!deactivatingListing || !closureReason) return;
     const requiresLead = closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified";
     if (requiresLead && !selectedQualifiedLead) {
-      alert("Debes seleccionar el lead cualificado al que se vendió/alquiló");
+      toast.error("Debes seleccionar el lead cualificado al que se vendió/alquiló");
       return;
     }
 
@@ -250,7 +278,7 @@ export function Listings() {
       loadListings();
     } catch (error) {
       console.error("Error deactivating listing:", error);
-      alert("Error al desactivar el anuncio");
+      toast.error("Error al desactivar el anuncio");
     } finally {
       setDeactivating(false);
     }
@@ -262,7 +290,7 @@ export function Listings() {
       loadListings();
     } catch (error) {
       console.error("Error reactivating listing:", error);
-      alert("Error al reactivar el anuncio");
+      toast.error("Error al reactivar el anuncio");
     }
   }
 
@@ -326,20 +354,95 @@ export function Listings() {
     return () => clearTimeout(timer);
   }, [formData.address]);
 
-  const filteredListings = listings.filter(listing => {
-    const isActive = listing.isActive !== false;
-    if (filterStatus === "active") return isActive;
-    if (filterStatus === "inactive") return !isActive;
-    return true;
-  });
+  const filteredListings = useMemo(() => {
+    const q = debouncedListingSearch.trim().toLowerCase();
+    let rows = listings.filter((listing) => {
+      const isActive = listing.isActive !== false;
+      if (filterStatus === "active" && !isActive) return false;
+      if (filterStatus === "inactive" && isActive) return false;
+      if (filterOperationType !== "all" && listing.operationType !== filterOperationType) return false;
+      if (!q) return true;
+      const haystack = [
+        listing.description,
+        listing.listingCode,
+        listing.address,
+        listing.agentName,
+        listing.features,
+        listing.idealistaDescription,
+        listing.price,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+
+    if (sortBy === "default") return rows;
+
+    rows = [...rows];
+    const code = (l: Listing) => l.listingCode;
+    switch (sortBy) {
+      case "updated_desc":
+        rows.sort((a, b) => b.updatedAt.toMillis() - a.updatedAt.toMillis());
+        break;
+      case "conversations_desc":
+        rows.sort(
+          (a, b) =>
+            (conversationCounts[code(b)] || 0) - (conversationCounts[code(a)] || 0)
+        );
+        break;
+      case "qualified_desc":
+        rows.sort(
+          (a, b) =>
+            (qualifiedCounts[code(b)] || 0) - (qualifiedCounts[code(a)] || 0)
+        );
+        break;
+      case "title_asc":
+        rows.sort((a, b) =>
+          a.description.localeCompare(b.description, "es", { sensitivity: "base" })
+        );
+        break;
+      default:
+        break;
+    }
+    return rows;
+  }, [
+    listings,
+    filterStatus,
+    filterOperationType,
+    debouncedListingSearch,
+    sortBy,
+    conversationCounts,
+    qualifiedCounts,
+  ]);
+
+  const hasActiveFilters =
+    listingSearch.trim() !== "" ||
+    filterOperationType !== "all" ||
+    filterStatus !== "active" ||
+    sortBy !== "default";
+
+  function resetListingFilters() {
+    setListingSearch("");
+    setDebouncedListingSearch("");
+    setFilterOperationType("all");
+    setFilterStatus("active");
+    setSortBy("default");
+  }
+
+  const statusFilterLabel =
+    filterStatus === "all" ? "Todos" : filterStatus === "active" ? "Activos" : "Inactivos";
+
+  const sortOptionLabel: Record<ListingSortOption, string> = {
+    default: "Orden por defecto",
+    updated_desc: "Última actualización",
+    conversations_desc: "Más conversaciones",
+    qualified_desc: "Más cualificados",
+    title_asc: "Título (A–Z)",
+  };
 
   if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 gap-4">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-        <p className="text-gray-500">Cargando anuncios...</p>
-      </div>
-    );
+    return <PageLoading message="Cargando anuncios..." className="h-64" />;
   }
 
   if (loadError) {
@@ -349,180 +452,402 @@ export function Listings() {
           <p className="font-semibold mb-2">Error al cargar los anuncios</p>
           <p className="text-sm text-gray-600">{loadError}</p>
         </div>
-        <button onClick={loadListings} className="btn-primary">
-          Reintentar
-        </button>
+        <Button onClick={loadListings}>Reintentar</Button>
       </div>
     );
   }
 
   return (
     <div>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Anuncios</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Mostrando {filteredListings.length} de {listings.length} anuncios
-          </p>
-        </div>
-        <button onClick={openCreateModal} className="btn-primary flex items-center justify-center gap-2 w-full sm:w-auto">
-          <Plus size={20} />
-          <span>Nuevo Anuncio</span>
-        </button>
-      </div>
+      <PageHeader
+        className="mb-6"
+        title="Anuncios"
+        subtitle={`Mostrando ${filteredListings.length} de ${listings.length} anuncios`}
+        actions={
+          <Button onClick={openCreateModal} className="flex w-full items-center justify-center gap-2 sm:w-auto">
+            <Plus size={20} />
+            <span>Nuevo Anuncio</span>
+          </Button>
+        }
+      />
 
-      <div className="card mb-6 p-4">
-        <div className="flex flex-wrap gap-2 items-center">
-          <span className="text-sm text-gray-600">Filtrar por estado:</span>
-          <button
-            onClick={() => setFilterStatus("all")}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-sm transition-colors",
-              filterStatus === "all" ? "bg-primary-100 text-primary-700 font-medium" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            )}
-          >
-            Todos
-          </button>
-          <button
-            onClick={() => setFilterStatus("active")}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5 transition-colors",
-              filterStatus === "active" ? "bg-green-100 text-green-700 font-medium" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            )}
-          >
-            <CheckCircle size={14} />
-            Activos
-          </button>
-          <button
-            onClick={() => setFilterStatus("inactive")}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5 transition-colors",
-              filterStatus === "inactive" ? "bg-red-100 text-red-700 font-medium" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            )}
-          >
-            <XCircle size={14} />
-            Inactivos
-          </button>
+      <FilterCard className="mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <Filter size={18} className="text-gray-600" />
+            <h2 className="font-semibold text-gray-900">Filtros</h2>
+          </div>
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={resetListingFilters}
+              className="inline-flex items-center gap-2 rounded-btn border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 shadow-sm transition-colors hover:border-rose-100 hover:bg-rose-50 hover:text-rose-600"
+              title="Restablecer filtros"
+            >
+              <XCircle size={18} />
+              <span className="hidden sm:inline">Restablecer</span>
+            </button>
+          )}
         </div>
-      </div>
 
-      {filteredListings.length === 0 ? (
+        <div className="space-y-4">
+          <div className="relative min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+            <input
+              type="text"
+              placeholder="Buscar por título, ID Idealista, dirección, agente o descripción..."
+              value={listingSearch}
+              onChange={(e) => setListingSearch(e.target.value)}
+              className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow"
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-3 pt-3 border-t border-gray-100 items-stretch w-full">
+            {/* Estado */}
+            <div className="relative flex-1 min-w-[160px]">
+              <div
+                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full min-h-[42px]"
+                onClick={() => setIsStatusFilterOpen(!isStatusFilterOpen)}
+              >
+                <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                  <span className="text-xs font-semibold text-gray-600 shrink-0">Estado:</span>
+                  <div className="flex items-center gap-1 justify-end flex-1 min-w-0">
+                    <span className="truncate">{statusFilterLabel}</span>
+                    <ChevronDown
+                      size={14}
+                      className={cn("text-gray-400 transition-transform ml-1 shrink-0", isStatusFilterOpen && "rotate-180")}
+                    />
+                  </div>
+                </div>
+              </div>
+              {isStatusFilterOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsStatusFilterOpen(false)} />
+                  <div className="absolute left-0 mt-2 w-full min-w-[200px] bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                    {(
+                      [
+                        { value: "all" as const, label: "Todos" },
+                        { value: "active" as const, label: "Activos" },
+                        { value: "inactive" as const, label: "Inactivos" },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          setFilterStatus(opt.value);
+                          setIsStatusFilterOpen(false);
+                        }}
+                        className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                      >
+                        {filterStatus === opt.value ? (
+                          <CheckSquare size={16} className="text-primary-600 shrink-0" />
+                        ) : (
+                          <Square size={16} className="text-gray-300 shrink-0" />
+                        )}
+                        <span className="text-xs text-gray-700 font-medium">{opt.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Tipo operación */}
+            <div className="relative flex-1 min-w-[160px]">
+              <div
+                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full min-h-[42px]"
+                onClick={() => setIsListingTipoFilterOpen(!isListingTipoFilterOpen)}
+              >
+                <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                  <span className="text-xs font-semibold text-gray-600 shrink-0">Tipo:</span>
+                  <div className="flex items-center gap-1 justify-end flex-1">
+                    {filterOperationType === "all" ? "Todos" : filterOperationType}
+                    <ChevronDown
+                      size={14}
+                      className={cn("text-gray-400 transition-transform ml-1", isListingTipoFilterOpen && "rotate-180")}
+                    />
+                  </div>
+                </div>
+              </div>
+              {isListingTipoFilterOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsListingTipoFilterOpen(false)} />
+                  <div className="absolute left-0 mt-2 w-44 bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                    {(
+                      [
+                        { value: "all" as const, label: "Todos" },
+                        { value: "Venta" as OperationType, label: "Venta" },
+                        { value: "Alquiler" as OperationType, label: "Alquiler" },
+                      ] as const
+                    ).map((tipo) => (
+                      <button
+                        key={tipo.value}
+                        type="button"
+                        onClick={() => {
+                          setFilterOperationType(tipo.value);
+                          setIsListingTipoFilterOpen(false);
+                        }}
+                        className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                      >
+                        {filterOperationType === tipo.value ? (
+                          <CheckSquare size={16} className="text-primary-600" />
+                        ) : (
+                          <Square size={16} className="text-gray-300" />
+                        )}
+                        <span className="text-xs text-gray-700 font-medium">{tipo.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Orden */}
+            <div className="relative flex-1 min-w-[180px]">
+              <div
+                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full min-h-[42px]"
+                onClick={() => setIsSortFilterOpen(!isSortFilterOpen)}
+              >
+                <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
+                  <span className="text-xs font-semibold text-gray-600 shrink-0">Orden:</span>
+                  <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
+                    <span className="truncate text-right">{sortOptionLabel[sortBy]}</span>
+                    <ChevronDown
+                      size={14}
+                      className={cn("text-gray-400 transition-transform ml-1 shrink-0", isSortFilterOpen && "rotate-180")}
+                    />
+                  </div>
+                </div>
+              </div>
+              {isSortFilterOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsSortFilterOpen(false)} />
+                  <div className="absolute left-0 mt-2 w-[min(100%,280px)] bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                    {(Object.keys(sortOptionLabel) as ListingSortOption[]).map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => {
+                          setSortBy(key);
+                          setIsSortFilterOpen(false);
+                        }}
+                        className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                      >
+                        {sortBy === key ? (
+                          <CheckSquare size={16} className="text-primary-600 shrink-0" />
+                        ) : (
+                          <Square size={16} className="text-gray-300 shrink-0" />
+                        )}
+                        <span className="text-xs text-gray-700 font-medium">{sortOptionLabel[key]}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </FilterCard>
+
+      {listings.length === 0 ? (
         <div className="card text-center py-12">
           <Megaphone className="mx-auto text-gray-400 mb-4" size={48} />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No hay anuncios</h3>
           <p className="text-gray-500 mb-4">Comienza creando tu primer anuncio</p>
-          <button onClick={openCreateModal} className="btn-primary">
-            Crear anuncio
-          </button>
+          <Button onClick={openCreateModal}>Crear anuncio</Button>
+        </div>
+      ) : filteredListings.length === 0 ? (
+        <div className="card text-center py-12">
+          <Search className="mx-auto text-gray-400 mb-4" size={48} />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">Ningún anuncio coincide</h3>
+          <p className="text-gray-500 mb-4">Prueba a cambiar la búsqueda o los filtros.</p>
+          <Button variant="outline" onClick={resetListingFilters}>
+            Restablecer filtros
+          </Button>
         </div>
       ) : (
-        <div className="grid gap-4">
+        <div className="grid gap-2">
           {filteredListings.map((listing) => {
             const isActive = listing.isActive !== false;
+            const convCount = conversationCounts[listing.listingCode] || 0;
+            const qualCount = qualifiedCounts[listing.listingCode] || 0;
+            const respRate = convCount ? Math.round(((respondedCounts[listing.listingCode] || 0) / convCount) * 100) : 0;
+            const qualRate = convCount ? Math.round((qualCount / convCount) * 100) : 0;
             return (
-              <div key={listing.id} className={cn("card p-4 sm:p-6", !isActive && "bg-gray-50 border-gray-300")}>
-                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <h3 className={cn("font-semibold text-sm sm:text-base", isActive ? "text-gray-900" : "text-gray-500")}>
+              <div key={listing.id} className={cn("card relative transition-all hover:shadow-md", !isActive && "bg-gray-50/50 border-gray-200")}>
+                <div className="p-3 sm:p-4 flex flex-col md:flex-row gap-4 items-center">
+                  <div className="flex-1 min-w-0 flex flex-col gap-2.5">
+                    {/* Header: Title & Badges */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className={cn("font-bold text-lg leading-tight truncate", isActive ? "text-gray-900" : "text-gray-500")}>
                         {listing.description}
                       </h3>
-                    </div>
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span className={cn("px-2 py-0.5 text-xs font-medium rounded-full flex items-center gap-1", isActive ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700")}>
-                        {isActive ? <CheckCircle size={12} /> : <XCircle size={12} />}
-                        {isActive ? "Activo" : "Inactivo"}
-                      </span>
-                      <span className={cn("px-2 py-0.5 text-xs font-medium rounded-full", listing.operationType === "Venta" ? "bg-primary-100 text-primary-700" : "bg-green-100 text-green-700")}>
-                        {listing.operationType}
-                      </span>
-                      <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700 flex items-center gap-1">
-                        <MessageCircle size={12} />
-                        {conversationCounts[listing.listingCode] || 0} {(conversationCounts[listing.listingCode] === 1) ? "conversación" : "conversaciones"}
-                      </span>
-                      <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-purple-100 text-purple-700 flex items-center gap-1">
-                        <Users size={12} />
-                        {qualifiedCounts[listing.listingCode] || 0} {(qualifiedCounts[listing.listingCode] === 1) ? "cualificado" : "cualificados"}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 p-3 bg-gray-50 rounded-lg text-sm border border-gray-100">
-                      <div>
-                        <span className="text-gray-500 block text-xs mb-0.5">Precio</span>
-                        <span className="font-semibold text-gray-900">{listing.price || "N/A"}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500 block text-xs mb-0.5">Distribución</span>
-                        <span className="font-medium text-gray-800">
-                          {[listing.m2 && `${listing.m2} m²`, listing.rooms && `${listing.rooms} hab.`].filter(Boolean).join(" • ") || "N/A"}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <OperationTypeBadge type={listing.operationType} className="py-1 text-xs font-bold" />
+                        <span className={cn("px-2 py-1 text-xs font-bold rounded-full flex items-center gap-1", isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
+                          {isActive ? "Activo" : "Inactivo"}
                         </span>
                       </div>
-                      <div>
-                        <span className="text-gray-500 block text-xs mb-0.5">ID Anuncio</span>
-                        <div className="font-medium text-gray-800 flex items-center gap-1">
-                          {listing.listingCode}
-                          <a
-                            href={listing.link || `https://www.idealista.com/inmueble/${listing.listingCode}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-primary-600 hover:text-primary-700 transition-colors hover:bg-primary-50 rounded p-0.5"
-                            title="Ver en Idealista"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <ExternalLink size={12} />
-                          </a>
-                        </div>
+                    </div>
+
+                    {/* Primary Details: Price, Size, ID */}
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      <div className="flex items-center gap-2.5 text-gray-500 font-medium text-xs">
+                        <span className="text-sm font-bold text-gray-900">{listing.price || "—"}</span>
+                        {listing.m2 && (
+                          <>
+                            <span className="text-gray-300 w-1 h-1 bg-gray-300 rounded-full"></span>
+                            <span>{listing.m2} m²</span>
+                          </>
+                        )}
+                        {listing.rooms && (
+                          <>
+                            <span className="text-gray-300 w-1 h-1 bg-gray-300 rounded-full"></span>
+                            <span>{listing.rooms} hab.</span>
+                          </>
+                        )}
                       </div>
+
+                      <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm ml-auto sm:ml-0">
+                        <span className="text-gray-400 font-medium">ID</span>
+                        <span className="text-gray-700">{listing.listingCode}</span>
+                        <a
+                          href={listing.link || `https://www.idealista.com/inmueble/${listing.listingCode}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="text-gray-400 hover:text-primary-600 transition-colors ml-0.5"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Ver en Idealista"
+                        >
+                          <ExternalLink size={12} />
+                        </a>
+                      </div>
+                    </div>
+
+                    {/* Address & Description Toggle */}
+                    <div className="flex flex-col gap-1.5">
                       {listing.address && (
-                        <div className="col-span-2 sm:col-span-4 border-t border-gray-200/60 pt-2 mt-1">
-                          <span className="text-gray-500 block text-xs mb-0.5">Dirección</span>
-                          <span className="font-medium text-gray-800 flex items-start gap-1">
-                            <MapPin size={14} className="mt-0.5 flex-shrink-0 text-gray-500" />
-                            <span>{listing.address}</span>
-                          </span>
+                        <div className="flex items-start gap-1 text-xs text-gray-500/80 truncate">
+                          <MapPin size={14} className="text-gray-400 mt-0.5 flex-shrink-0" />
+                          <span className="hover:text-gray-700 transition-colors">{listing.address}</span>
+                        </div>
+                      )}
+
+                      {listing.idealistaDescription && (
+                        <div className="mt-0.5">
+                          <button
+                            type="button"
+                            aria-expanded={!!expandedDescriptions[listing.id]}
+                            onClick={() => setExpandedDescriptions(prev => ({ ...prev, [listing.id]: !prev[listing.id] }))}
+                            className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-primary-600 font-semibold tracking-tight transition-colors"
+                          >
+                            {expandedDescriptions[listing.id] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            <span>{expandedDescriptions[listing.id] ? "Ocultar descripción" : "Mostrar descripción"}</span>
+                            <span className="text-gray-400 font-normal">(Idealista)</span>
+                          </button>
+                          {expandedDescriptions[listing.id] && (
+                            <div className="mt-1.5 pl-3 border-l-2 border-primary-50">
+                              <p className="text-[11px] text-gray-500 leading-relaxed whitespace-pre-wrap">
+                                {listing.idealistaDescription}
+                              </p>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
 
-                    {listing.idealistaDescription && (
-                      <div className="mt-3">
-                        <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 mb-1">
-                          <FileText size={12} />
-                          <span>Descripción Idealista</span>
-                        </div>
-                        <p className="text-xs text-gray-600 line-clamp-3">
-                          {listing.idealistaDescription}
-                        </p>
-                      </div>
-                    )}
-
+                    {/* Closure info (inactive only) */}
                     {!isActive && listing.closureInfo && (
-                      <div className="mt-4 pt-4 border-t border-gray-200">
-                        <div className="text-sm">
-                          <p className="font-medium text-gray-700">Razón de cierre: {closureReasonLabels[listing.closureInfo.reason]}</p>
-                          {listing.closureInfo.qualifiedLeadName && <p className="text-gray-600 flex items-center gap-1 mt-1"><User size={14} /> Lead: {listing.closureInfo.qualifiedLeadName}</p>}
-                          {listing.closureInfo.notes && <p className="text-gray-500 mt-1">Notas: {listing.closureInfo.notes}</p>}
-                        </div>
+                      <div className="mt-1 text-[11px] font-bold text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full inline-block self-start border border-rose-100">
+                        {closureReasonLabels[listing.closureInfo.reason]}
+                        {listing.closureInfo.qualifiedLeadName && <> · {listing.closureInfo.qualifiedLeadName}</>}
                       </div>
                     )}
                   </div>
-                  <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 mt-4 sm:mt-0 justify-end">
-                    <button
-                      onClick={() => navigate(`/cualificados?ad=${listing.listingCode}`)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 hover:bg-primary-100 rounded-lg text-sm font-medium transition-colors mr-1 sm:mr-3"
-                      title="Ver cualificados"
-                    >
-                      <Users size={16} />
-                      <span className="whitespace-nowrap">Ver cualificados</span>
-                    </button>
-                    <div className="flex items-center gap-1">
-                      {isActive ? (
-                        <button onClick={() => openDeactivateModal(listing)} className="p-2 text-gray-400 hover:text-orange-600" title="Desactivar anuncio"><PowerOff size={18} /></button>
-                      ) : (
-                        <button onClick={() => handleReactivate(listing.id)} className="p-2 text-gray-400 hover:text-green-600" title="Reactivar anuncio"><Power size={18} /></button>
-                      )}
-                      <button onClick={() => openEditModal(listing)} className="p-2 text-gray-400 hover:text-primary-600" title="Editar anuncio"><Edit size={18} /></button>
-                      <button onClick={() => setDeleteConfirm(listing.id)} className="p-2 text-gray-400 hover:text-red-600" title="Eliminar anuncio"><Trash2 size={18} /></button>
+
+                  {/* Right Column: Metrics & Actions */}
+                  <div className="flex flex-col justify-end gap-2 md:items-end">
+                    {/* Metrics Grid */}
+                    <div className="flex items-center justify-center sm:justify-end w-full md:w-auto border-t border-gray-100 mt-2 pt-3 sm:border-0 sm:mt-0 sm:pt-0 gap-3 sm:gap-6 md:pr-4">
+                      
+                      {/* Counts Group */}
+                      <div className="flex gap-5 sm:gap-6">
+                        <div className="flex flex-col items-center md:items-end min-w-fit" title="Conversaciones">
+                          <div className="flex items-baseline gap-1.5">
+                            <MessageSquare size={20} className="text-gray-500" />
+                            <span className="text-xl font-bold text-gray-900 tracking-tight">{convCount}</span>
+                          </div>
+                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">Conversaciones</span>
+                        </div>
+                        <div className="flex flex-col items-center md:items-end min-w-fit" title="Cualificados">
+                          <div className="flex items-baseline gap-1.5">
+                            <CheckCircle size={20} className="text-emerald-500" />
+                            <span className="text-xl font-bold text-emerald-700 tracking-tight">{qualCount}</span>
+                          </div>
+                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">Cualificados</span>
+                        </div>
+                      </div>
+
+                      {/* Divider */}
+                      <div className="w-px h-10 bg-gray-200/80 mx-1"></div>
+
+                      {/* Percentages Group */}
+                      <div className="flex gap-5 sm:gap-6">
+                        <div className="flex flex-col items-center md:items-end min-w-fit" title="% Respuesta">
+                          <div className="flex items-baseline gap-1">
+                            <div className="flex items-center">
+                              <MessageSquare size={20} className="text-gray-500" />
+                              <span className="text-[10px] font-semibold text-gray-500 ml-0.5">%</span>
+                            </div>
+                            <span className="text-xl font-bold text-gray-900 tracking-tight ml-1">{respRate}%</span>
+                          </div>
+                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">% Respuesta</span>
+                        </div>
+                        <div className="flex flex-col items-center md:items-end min-w-fit" title="% Cualificación">
+                          <div className="flex items-baseline gap-1">
+                            <div className="flex items-center">
+                              <CheckCircle size={20} className="text-emerald-500" />
+                              <span className="text-[10px] font-semibold text-emerald-600 ml-0.5">%</span>
+                            </div>
+                            <span className="text-xl font-bold text-emerald-700 tracking-tight ml-1">{qualRate}%</span>
+                          </div>
+                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">% Cualificación</span>
+                        </div>
+                      </div>
+
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end border-t border-gray-50/50 md:border-0 pt-2 mt-1 sm:mt-2">
+                      <div className="flex items-center gap-1.5 mr-2">
+                        {isActive ? (
+                          <button onClick={(e) => { e.stopPropagation(); openDeactivateModal(listing); }} className="p-2 text-gray-400 hover:text-primary-600 rounded-btn hover:bg-primary-50 transition-all active:scale-90" title="Desactivar"><PowerOff size={18} /></button>
+                        ) : (
+                          <button onClick={(e) => { e.stopPropagation(); handleReactivate(listing.id); }} className="p-2 text-gray-400 hover:text-emerald-600 rounded-btn hover:bg-emerald-50 transition-all active:scale-90" title="Reactivar"><Power size={18} /></button>
+                        )}
+                        <button onClick={(e) => { e.stopPropagation(); openEditModal(listing); }} className="p-2 text-gray-400 hover:text-primary-600 rounded-btn hover:bg-primary-50 transition-all active:scale-90" title="Editar"><Edit size={18} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setDeleteConfirm(listing.id); }} className="p-2 text-gray-400 hover:text-red-500 rounded-btn hover:bg-red-50 transition-all active:scale-90" title="Eliminar"><Trash2 size={18} /></button>
+                      </div>
+
+                      <div className="flex items-center gap-3 flex-wrap justify-end">
+                        <Button
+                          variant="outline"
+                          type="button"
+                          onClick={() => navigate(`/leads?ad=${listing.listingCode}&status=non_qualified_all`)}
+                          className="px-5 py-2.5 text-sm font-bold active:scale-95 flex items-center justify-center gap-2 border-gray-300 text-gray-700 hover:bg-gray-50"
+                        >
+                          <Users size={18} className="text-gray-500" />
+                          <span>No cualificados</span>
+                        </Button>
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/cualificados?ad=${listing.listingCode}`)}
+                          className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700/30 rounded-btn text-sm font-bold transition-all active:scale-95 flex items-center justify-center gap-2"
+                        >
+                          <span>Cualificados</span>
+                          <ChevronRight size={20} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -543,7 +868,7 @@ export function Listings() {
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre anuncio</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Identificador Anuncio</label>
                 <input type="text" required value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="input" placeholder="Ej: Piso 2 habitaciones en Fuengirola" />
               </div>
 
@@ -598,7 +923,7 @@ export function Listings() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">ID del Anuncio en Idealista</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">ID Idealista</label>
                   <input type="text" required value={formData.listingCode} onChange={(e) => setFormData({ ...formData, listingCode: e.target.value })} className="input" placeholder="Ej: 110595991" />
                 </div>
                 <div>
@@ -607,21 +932,45 @@ export function Listings() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Operación</label>
-                  <select
-                    value={formData.operationType}
-                    onChange={(e) => {
-                      const newType = e.target.value as OperationType;
-                      setFormData({
-                        ...formData,
-                        operationType: newType,
-                        price: formData.price ? formatPrice(formData.price, newType) : ""
-                      });
-                    }}
-                    className="input"
-                  >
-                    <option value="Venta">Venta</option>
-                    <option value="Alquiler">Alquiler</option>
-                  </select>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setIsOperationTypeDropdownOpen(!isOperationTypeDropdownOpen)}
+                      className={cn(
+                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
+                        isOperationTypeDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                      )}
+                    >
+                      <span>{formData.operationType}</span>
+                      <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isOperationTypeDropdownOpen && "rotate-180")} />
+                    </button>
+                    {isOperationTypeDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setIsOperationTypeDropdownOpen(false)} />
+                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                          {["Venta", "Alquiler"].map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => {
+                                const newType = type as OperationType;
+                                setFormData({
+                                  ...formData,
+                                  operationType: newType,
+                                  price: formData.price ? formatPrice(formData.price, newType) : ""
+                                });
+                                setIsOperationTypeDropdownOpen(false);
+                              }}
+                              className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                            >
+                              {formData.operationType === type ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                              <span className="text-sm text-gray-700 font-medium">{type}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
               <div>
@@ -691,7 +1040,7 @@ export function Listings() {
             <p className="text-gray-600 mb-6 font-normal">¿Estás seguro de que quieres eliminar este anuncio? Esta acción no se puede deshacer.</p>
             <div className="flex justify-end gap-3">
               <button onClick={() => setDeleteConfirm(null)} className="btn-secondary">Cancelar</button>
-              <button onClick={() => handleDelete(deleteConfirm)} className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">Eliminar</button>
+              <Button variant="danger" onClick={() => handleDelete(deleteConfirm)}>Eliminar</Button>
             </div>
           </div>
         </div>
@@ -709,21 +1058,51 @@ export function Listings() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">¿Por qué se desactiva este anuncio?</label>
                 <div className="space-y-2">
-                  <select value={closureReason} onChange={(e) => setClosureReason(e.target.value as ListingClosureReason)} className="input">
-                    <option value="">Selecciona una razón...</option>
-                    {deactivatingListing.operationType === "Venta" ? (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setIsClosureReasonDropdownOpen(!isClosureReasonDropdownOpen)}
+                      className={cn(
+                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white text-left",
+                        isClosureReasonDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                      )}
+                    >
+                      <span className="truncate">
+                        {closureReason ? closureReasonLabels[closureReason as ListingClosureReason] : "Selecciona una razón..."}
+                      </span>
+                      <ChevronDown size={16} className={cn("text-gray-400 transition-transform flex-shrink-0 ml-2", isClosureReasonDropdownOpen && "rotate-180")} />
+                    </button>
+                    {isClosureReasonDropdownOpen && (
                       <>
-                        <option value="sold_to_qualified">Vendido a un lead cualificado</option>
-                        <option value="sold_to_other">Vendido a otra persona (externa)</option>
-                      </>
-                    ) : (
-                      <>
-                        <option value="rented_to_qualified">Alquilado a un lead cualificado</option>
-                        <option value="rented_to_other">Alquilado a otra persona (externa)</option>
+                        <div className="fixed inset-0 z-40" onClick={() => setIsClosureReasonDropdownOpen(false)} />
+                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100 max-h-[300px] overflow-y-auto">
+                          {[
+                            ...(deactivatingListing.operationType === "Venta" ? [
+                              { value: "sold_to_qualified", label: "Vendido a un lead cualificado" },
+                              { value: "sold_to_other", label: "Vendido a otra persona (externa)" }
+                            ] : [
+                              { value: "rented_to_qualified", label: "Alquilado a un lead cualificado" },
+                              { value: "rented_to_other", label: "Alquilado a otra persona (externa)" }
+                            ]),
+                            { value: "other", label: "Otros motivos" }
+                          ].map((opt) => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => {
+                                setClosureReason(opt.value as ListingClosureReason);
+                                setIsClosureReasonDropdownOpen(false);
+                              }}
+                              className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                            >
+                              {closureReason === opt.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                              <span className="text-xs text-gray-700 font-medium">{opt.label}</span>
+                            </button>
+                          ))}
+                        </div>
                       </>
                     )}
-                    <option value="other">Otros motivos</option>
-                  </select>
+                  </div>
                 </div>
               </div>
 
@@ -735,12 +1114,42 @@ export function Listings() {
                   ) : qualifiedLeadsForListing.length === 0 ? (
                     <div className="p-4 bg-yellow-50 text-yellow-700 text-sm rounded-lg">No hay leads cualificados para este anuncio.</div>
                   ) : (
-                    <select className="input" onChange={(e) => setSelectedQualifiedLead(qualifiedLeadsForListing.find(l => l.id === e.target.value) || null)}>
-                      <option value="">Selecciona un lead...</option>
-                      {qualifiedLeadsForListing.map(lead => (
-                        <option key={lead.id} value={lead.id}>{lead.name} ({lead.phone})</option>
-                      ))}
-                    </select>
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setIsLeadDropdownOpen(!isLeadDropdownOpen)}
+                        className={cn(
+                          "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white text-left",
+                          isLeadDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                        )}
+                      >
+                        <span className="truncate">
+                          {selectedQualifiedLead ? `${selectedQualifiedLead.name} (${selectedQualifiedLead.phone})` : "Selecciona un lead..."}
+                        </span>
+                        <ChevronDown size={16} className={cn("text-gray-400 transition-transform flex-shrink-0 ml-2", isLeadDropdownOpen && "rotate-180")} />
+                      </button>
+                      {isLeadDropdownOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setIsLeadDropdownOpen(false)} />
+                          <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100 max-h-[250px] overflow-y-auto">
+                            {qualifiedLeadsForListing.map(lead => (
+                              <button
+                                key={lead.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedQualifiedLead(lead);
+                                  setIsLeadDropdownOpen(false);
+                                }}
+                                className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                              >
+                                {selectedQualifiedLead?.id === lead.id ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                <span className="text-xs text-gray-700 font-medium">{lead.name} ({lead.phone})</span>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -753,13 +1162,12 @@ export function Listings() {
 
             <div className="flex justify-end gap-3 p-6 border-t border-gray-200">
               <button onClick={() => { setDeactivateModalOpen(false); setDeactivatingListing(null); }} className="btn-secondary">Cancelar</button>
-              <button
+              <Button
                 onClick={handleDeactivate}
                 disabled={!closureReason || deactivating || ((closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified") && !selectedQualifiedLead)}
-                className="bg-orange-600 hover:bg-orange-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50"
               >
                 {deactivating ? "Desactivando..." : "Desactivar"}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

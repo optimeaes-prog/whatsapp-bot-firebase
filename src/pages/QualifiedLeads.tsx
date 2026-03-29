@@ -1,12 +1,15 @@
 import { useEffect, useState, Fragment } from "react";
 import { useSearchParams } from "react-router-dom";
-import { CheckCircle, User, Phone, FileText, Clock, Search, ArrowUpDown, ExternalLink, MessageSquare, Trash2, Send, CheckSquare, Square, XCircle, Users, ArrowUp, ArrowDown, X, Download, Filter } from "lucide-react";
+import { toast } from "sonner";
+import { CheckCircle, User, Phone, FileText, Clock, Search, ArrowUpDown, ExternalLink, MessageSquare, Trash2, Send, CheckSquare, Square, XCircle, Users, ArrowUp, ArrowDown, X, Download, Calendar, ChevronDown } from "lucide-react";
 import type { QualifiedLead, Conversation } from "../types";
 import { getQualifiedLeads, deleteQualifiedLead } from "../services/qualifiedLeads";
 import { getListings } from "../services/listings";
 import { getConversationByChatId, sendMassMessageToWhatsApp } from "../services/conversations";
 import { formatDate, formatPhone, cn, formatMessageTime } from "../lib/utils";
 import { downloadConversation } from "../lib/export";
+import { PageHeader, PageLoading } from "../components/ui";
+import { OperationTypeBadge } from "../components/StatusBadges";
 
 type SortField = "name" | "phone" | "listingCode" | "listingDescription" | "createdAt" | "messageCount";
 type SortDirection = "asc" | "desc";
@@ -27,7 +30,9 @@ export function QualifiedLeads() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterTipo, setFilterTipo] = useState<"all" | "Venta" | "Alquiler">("all");
-  const [filterAnuncio, setFilterAnuncio] = useState<string>(adFromUrl || "all");
+  const [filterAnuncio, setFilterAnuncio] = useState<string[]>(adFromUrl ? [adFromUrl] : []);
+  const [isTipoDropdownOpen, setIsTipoDropdownOpen] = useState(false);
+  const [isAnuncioDropdownOpen, setIsAnuncioDropdownOpen] = useState(false);
   const [sortField, setSortField] = useState<SortField>("createdAt");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set());
@@ -41,7 +46,7 @@ export function QualifiedLeads() {
 
   useEffect(() => {
     if (adFromUrl) {
-      setFilterAnuncio(adFromUrl);
+      setFilterAnuncio([adFromUrl]);
     }
   }, [adFromUrl]);
 
@@ -57,7 +62,7 @@ export function QualifiedLeads() {
       ]);
 
       const listingsMap = new Map(
-        listingsData.map(l => [l.listingCode, l.description])
+        listingsData.map(l => [l.listingCode, { description: l.description, operationType: l.operationType }])
       );
 
       const leadsWithListingsAndMessages = await Promise.all(
@@ -70,16 +75,19 @@ export function QualifiedLeads() {
                 messageCount: conversation.messageCount,
                 tags: conversation.tags,
                 notes: conversation.notes,
-                operationType: (lead as any).operationType || "Venta",
               };
             }
           } catch (e) {
             console.error(e);
           }
+          
+          const listingInfo = listingsMap.get(lead.listingCode);
+          
           return {
             ...lead,
             ...extra,
-            listingDescription: listingsMap.get(lead.listingCode)
+            listingDescription: listingInfo?.description,
+            operationType: listingInfo?.operationType || (lead as any).operationType || "Venta"
           };
         })
       );
@@ -97,13 +105,13 @@ export function QualifiedLeads() {
     try {
       const conversation = await getConversationByChatId(lead.chatId);
       if (!conversation) {
-        alert("No hay conversación disponible para este lead.");
+        toast.error("No hay conversación disponible para este lead.");
         return;
       }
       setSelectedConversation(conversation);
     } catch (error) {
       console.error("Error loading conversation:", error);
-      alert("Error al cargar la conversación");
+      toast.error("Error al cargar la conversación");
     } finally {
       setLoadingConversation(false);
     }
@@ -131,7 +139,7 @@ export function QualifiedLeads() {
       });
     } catch (error) {
       console.error("Error deleting qualified lead:", error);
-      alert("Error al eliminar el lead cualificado");
+      toast.error("Error al eliminar el lead cualificado");
     }
   }
 
@@ -157,7 +165,7 @@ export function QualifiedLeads() {
 
   async function handleSendMassMessage() {
     if (!massMessageText.trim()) {
-      alert("Por favor introduce un mensaje");
+      toast.error("Por favor introduce un mensaje");
       return;
     }
 
@@ -170,14 +178,14 @@ export function QualifiedLeads() {
     setSendingMassMessage(true);
     try {
       const result = await sendMassMessageToWhatsApp(selectedChatIds, massMessageText);
-      alert(`Mensaje enviado correctamente: ${result.summary.sent} éxitos, ${result.summary.failed} errores.`);
+      toast.success(`Mensaje enviado correctamente: ${result.summary.sent} éxitos, ${result.summary.failed} errores.`);
       setIsMassMessageModalOpen(false);
       setMassMessageText("");
       setSelectedLeadIds(new Set());
       loadQualifiedLeads();
     } catch (error) {
       console.error("Error sending mass message:", error);
-      alert("Error al enviar el mensaje masivo");
+      toast.error("Error al enviar el mensaje masivo");
     } finally {
       setSendingMassMessage(false);
     }
@@ -211,7 +219,7 @@ export function QualifiedLeads() {
         (lead.name || "").toLowerCase().includes(search.toLowerCase()) ||
         (lead.listingDescription || "").toLowerCase().includes(search.toLowerCase());
       const matchesTipo = filterTipo === "all" || lead.operationType === filterTipo || (lead as any).operationType === filterTipo;
-      const matchesAnuncio = filterAnuncio === "all" || lead.listingCode === filterAnuncio;
+      const matchesAnuncio = filterAnuncio.length === 0 || (lead.listingCode && filterAnuncio.includes(lead.listingCode));
       return matchesSearch && matchesTipo && matchesAnuncio;
     })
     .sort((a, b) => {
@@ -253,39 +261,33 @@ export function QualifiedLeads() {
     });
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    );
+    return <PageLoading className="h-64" />;
   }
 
   return (
     <div>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Leads Cualificados</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Mostrando {filteredAndSortedLeads.length} de {qualifiedLeads.length} leads cualificados
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {(search || filterTipo !== "all" || filterAnuncio !== "all" || selectedLeadIds.size > 0) && (
+      <PageHeader
+        className="mb-6"
+        title="Leads Cualificados"
+        subtitle={`Mostrando ${filteredAndSortedLeads.length} de ${qualifiedLeads.length} leads cualificados`}
+        actions={
+          (search || filterTipo !== "all" || filterAnuncio.length > 0 || selectedLeadIds.size > 0) ? (
             <button
+              type="button"
               onClick={() => {
                 setSearch("");
                 setFilterTipo("all");
-                setFilterAnuncio("all");
+                setFilterAnuncio([]);
                 setSelectedLeadIds(new Set());
                 setSearchParams({});
               }}
-              className="text-sm text-gray-600 hover:text-gray-900 underline"
+              className="text-sm text-gray-600 underline hover:text-gray-900"
             >
               Limpiar filtros
             </button>
-          )}
-        </div>
-      </div>
+          ) : undefined
+        }
+      />
 
       {/* Floating Action Bar for Mass Messaging */}
       {selectedLeadIds.size > 0 && (
@@ -307,7 +309,7 @@ export function QualifiedLeads() {
             </div>
             <button
               onClick={() => setIsMassMessageModalOpen(true)}
-              className="px-5 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-bold hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/20 active:scale-95 flex items-center gap-2"
+              className="px-5 py-2.5 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/20 active:scale-95 flex items-center gap-2"
             >
               <Send size={16} />
               <span>Enviar Mensaje</span>
@@ -330,51 +332,107 @@ export function QualifiedLeads() {
                 className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow"
               />
             </div>
-            <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border shadow-sm">
-              <Filter size={18} className="text-gray-500 flex-shrink-0" />
-              <select
-                value={filterTipo}
-                onChange={(e) => setFilterTipo(e.target.value as typeof filterTipo)}
-                className="bg-transparent text-sm focus:outline-none focus:ring-0 text-gray-700 font-medium w-full sm:w-auto"
-              >
-                <option value="all">Todos los tipos</option>
-                <option value="Venta">Venta</option>
-                <option value="Alquiler">Alquiler</option>
-              </select>
+          </div>
+
+          <div className="flex flex-wrap gap-3 pt-3 border-t border-gray-100 items-center w-full">
+            <div className="relative flex-1">
+              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full" onClick={() => setIsAnuncioDropdownOpen(!isAnuncioDropdownOpen)}>
+                <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
+                  <span className="text-xs font-semibold text-gray-600 shrink-0">Anuncio:</span>
+                  <div className="flex items-center gap-1 flex-1 overflow-hidden justify-end">
+                    <span className="truncate">
+                      {filterAnuncio.length === 0 ? "Todos" : `${filterAnuncio.length} seleccionados`}
+                    </span>
+                    <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-2", isAnuncioDropdownOpen && "rotate-180")} />
+                  </div>
+                </div>
+              </div>
+              {isAnuncioDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsAnuncioDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-2 w-full min-w-[300px] bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="space-y-1 max-h-[280px] overflow-y-auto">
+                      <button
+                        onClick={() => setFilterAnuncio([])}
+                        className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                      >
+                        {filterAnuncio.length === 0 ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                        <span className="text-xs text-gray-700 font-medium">Todos</span>
+                      </button>
+                      {Array.from(
+                        qualifiedLeads.reduce((map, lead) => {
+                          if (lead.listingCode && !map.has(lead.listingCode)) {
+                            map.set(lead.listingCode, lead.listingDescription || lead.listingCode);
+                          }
+                          return map;
+                        }, new Map<string, string>())
+                      )
+                        .sort((a, b) => a[0].localeCompare(b[0]))
+                        .map(([code, description]) => (
+                          <button
+                            key={code}
+                            onClick={() => {
+                              const newValue = filterAnuncio.includes(code)
+                                ? filterAnuncio.filter(v => v !== code)
+                                : [...filterAnuncio, code];
+                              setFilterAnuncio(newValue);
+                            }}
+                            className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                          >
+                            {filterAnuncio.includes(code) ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                            <span className="text-xs text-gray-700 font-medium whitespace-normal">
+                              {description === code ? code : `${code} - ${description}`}
+                            </span>
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
-            <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border shadow-sm">
-              <Filter size={18} className="text-gray-500 flex-shrink-0" />
-              <select
-                value={filterAnuncio}
-                onChange={(e) => {
-                  const newValue = e.target.value;
-                  setFilterAnuncio(newValue);
-                  if (newValue === "all") {
-                    searchParams.delete("ad");
-                    setSearchParams(searchParams);
-                  } else {
-                    setSearchParams({ ...Object.fromEntries(searchParams.entries()), ad: newValue });
-                  }
-                }}
-                className="bg-transparent text-sm focus:outline-none focus:ring-0 text-gray-700 font-medium w-full sm:w-[140px] max-w-[200px] truncate"
+
+            <div className="relative flex-1">
+              <div 
+                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full" 
+                onClick={() => setIsTipoDropdownOpen(!isTipoDropdownOpen)}
               >
-                <option value="all">Todos los anuncios</option>
-                {Array.from(
-                  qualifiedLeads.reduce((map, lead) => {
-                    if (lead.listingCode && !map.has(lead.listingCode)) {
-                      map.set(lead.listingCode, lead.listingDescription || lead.listingCode);
-                    }
-                    return map;
-                  }, new Map<string, string>())
-                )
-                  .sort((a, b) => a[0].localeCompare(b[0]))
-                  .map(([code, description]) => (
-                    <option key={code} value={code}>
-                      {description === code ? code : `${code} - ${description.substring(0, 30)}${description.length > 30 ? "..." : ""}`}
-                    </option>
-                  ))}
-              </select>
+                <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                  <span className="text-xs font-semibold text-gray-600">Tipo:</span>
+                  <div className="flex items-center gap-1 justify-end flex-1">
+                    {filterTipo === "all" ? "Todos" : filterTipo}
+                    <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isTipoDropdownOpen && "rotate-180")} />
+                  </div>
+                </div>
+              </div>
+              {isTipoDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsTipoDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-2 w-40 bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="space-y-1">
+                    {[
+                      { value: "all", label: "Todos" },
+                      { value: "Venta", label: "Venta" },
+                      { value: "Alquiler", label: "Alquiler" }
+                    ].map(tipo => (
+                      <button
+                        key={tipo.value}
+                        onClick={() => {
+                          setFilterTipo(tipo.value as any);
+                          setIsTipoDropdownOpen(false);
+                        }}
+                        className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                      >
+                        {filterTipo === tipo.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                        <span className="text-xs text-gray-700 font-medium">{tipo.label}</span>
+                      </button>
+                    ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
+
+
           </div>
         </div>
       </div>
@@ -393,7 +451,7 @@ export function QualifiedLeads() {
           <div className="md:hidden flex justify-start mb-3">
             <button
               onClick={toggleAllSelection}
-              className="text-sm font-medium text-primary-600 hover:text-primary-700 flex items-center gap-2 bg-primary-50 px-3 py-1.5 rounded-lg border border-primary-100"
+              className="text-sm font-medium text-primary-600 hover:text-primary-700 flex items-center gap-2 bg-primary-50 px-3 py-1.5 rounded-btn border border-primary-100"
             >
               {selectedLeadIds.size === filteredAndSortedLeads.length && filteredAndSortedLeads.length > 0 ? (
                 <>
@@ -441,29 +499,19 @@ export function QualifiedLeads() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 mb-3">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-100 text-emerald-700">
                     <CheckCircle size={12} /> Cualificado
                   </span>
-                  {lead.operationType && (
-                    <span
-                      className={cn(
-                        "px-2 py-0.5 text-xs font-medium rounded-full",
-                        lead.operationType === "Venta"
-                          ? "bg-primary-100 text-primary-700"
-                          : "bg-green-100 text-green-700"
-                      )}
-                    >
-                      {lead.operationType}
-                    </span>
-                  )}
+                  {lead.operationType ? <OperationTypeBadge type={lead.operationType} /> : null}
                   <div className="flex flex-col gap-1">
-                    <div className="flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 w-fit">
+                    <div className="flex items-center gap-1 bg-gray-100 px-2 py-0.5 rounded text-[11px] font-bold text-gray-600 border border-gray-200 shadow-sm w-fit">
+                      <span className="text-gray-400 font-medium">ID</span>
                       <span>{lead.listingCode}</span>
                       <a
                         href={`https://www.idealista.com/inmueble/${lead.listingCode}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-primary-600 hover:text-primary-700 transition-colors p-0.5 rounded-sm hover:bg-gray-200"
+                        className="text-gray-400 hover:text-primary-600 transition-colors ml-0.5"
                         title="Ver en Idealista"
                         onClick={(e) => e.stopPropagation()}
                       >
@@ -506,14 +554,14 @@ export function QualifiedLeads() {
                 <div className="mt-3 flex justify-between items-center z-10">
                   <button
                     onClick={(e) => { e.stopPropagation(); openConversation(lead); }}
-                    className="text-primary-600 hover:text-primary-800 hover:bg-primary-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 text-sm font-medium"
+                    className="text-primary-600 hover:text-primary-800 hover:bg-primary-50 px-3 py-1.5 rounded-btn transition-colors flex items-center gap-1 text-sm font-medium"
                     title="Ver Chat"
                   >
                     <MessageSquare size={16} /> Ver Chat
                   </button>
                   <button
                     onClick={(e) => handleDeleteLead(e, lead)}
-                    className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-lg transition-colors flex-shrink-0"
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-btn transition-colors flex-shrink-0"
                     title="Eliminar lead"
                   >
                     <Trash2 size={16} />
@@ -561,7 +609,7 @@ export function QualifiedLeads() {
                       onClick={() => handleSort("listingCode")}
                     >
                       <div className="flex items-center gap-1">
-                        Anuncio
+                        ID Idealista
                         {getSortIcon("listingCode")}
                       </div>
                     </th>
@@ -570,7 +618,7 @@ export function QualifiedLeads() {
                       onClick={() => handleSort("listingDescription")}
                     >
                       <div className="flex items-center gap-1">
-                        Nombre Anuncio
+                        Identificador Anuncio
                         {getSortIcon("listingDescription")}
                       </div>
                     </th>
@@ -585,7 +633,8 @@ export function QualifiedLeads() {
                       onClick={() => handleSort("createdAt")}
                     >
                       <div className="flex items-center gap-1">
-                        Fecha
+                        <Calendar size={13} className="text-gray-400" />
+                        Cualificacion
                         {getSortIcon("createdAt")}
                       </div>
                     </th>
@@ -594,7 +643,7 @@ export function QualifiedLeads() {
                       onClick={() => handleSort("messageCount")}
                     >
                       <div className="flex items-center justify-center gap-1">
-                        Msjs
+                        Mensajes
                         {getSortIcon("messageCount")}
                       </div>
                     </th>
@@ -611,7 +660,7 @@ export function QualifiedLeads() {
                       Tags
                     </th>
                     <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Acción
+                      Acciones
                     </th>
                   </tr>
                 </thead>
@@ -655,17 +704,18 @@ export function QualifiedLeads() {
                         </div>
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-900 font-medium">{lead.listingCode}</span>
+                        <div className="flex items-center gap-1 bg-gray-100 px-2 py-0.5 rounded text-[11px] font-bold text-gray-600 border border-gray-200 shadow-sm w-fit">
+                          <span className="text-gray-400 font-medium">ID</span>
+                          <span>{lead.listingCode}</span>
                           <a
                             href={`https://www.idealista.com/inmueble/${lead.listingCode}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-primary-600 hover:text-primary-700 transition-colors p-1 rounded-md hover:bg-primary-50"
+                            className="text-gray-400 hover:text-primary-600 transition-colors ml-0.5"
                             title="Ver en Idealista"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <ExternalLink size={12} />
+                            <ExternalLink size={10} />
                           </a>
                         </div>
                       </td>
@@ -679,21 +729,10 @@ export function QualifiedLeads() {
                         )}
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap">
-                        {lead.operationType && (
-                          <span
-                            className={cn(
-                              "px-2 py-0.5 text-xs font-medium rounded-full",
-                              lead.operationType === "Venta"
-                                ? "bg-primary-100 text-primary-700"
-                                : "bg-green-100 text-green-700"
-                            )}
-                          >
-                            {lead.operationType}
-                          </span>
-                        )}
+                        {lead.operationType ? <OperationTypeBadge type={lead.operationType} /> : null}
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap">
-                        <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700 inline-flex items-center gap-1">
+                        <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-100 text-emerald-700 inline-flex items-center gap-1">
                           <CheckCircle size={10} /> Cualificado
                         </span>
                       </td>
@@ -737,7 +776,7 @@ export function QualifiedLeads() {
                         )}
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap text-center">
-                        <button onClick={(e) => { e.stopPropagation(); openConversation(lead); }} className="text-primary-600 hover:text-primary-800 p-1.5 hover:bg-primary-50 rounded" title="Ver Conversación">
+                        <button onClick={(e) => { e.stopPropagation(); openConversation(lead); }} className="text-primary-600 hover:text-primary-800 p-1.5 hover:bg-primary-50 rounded-btn" title="Ver Conversación">
                           <MessageSquare size={16} className="mx-auto" />
                         </button>
                       </td>
@@ -753,7 +792,7 @@ export function QualifiedLeads() {
                       </td>                      <td className="px-3 py-3 whitespace-nowrap text-center">
                         <button
                           onClick={(e) => handleDeleteLead(e, lead)}
-                          className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1.5 rounded transition-colors inline-flex items-center justify-center"
+                          className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1.5 rounded-btn transition-colors inline-flex items-center justify-center"
                           title="Eliminar lead"
                         >
                           <Trash2 size={14} />
@@ -785,11 +824,11 @@ export function QualifiedLeads() {
       {selectedConversation && (
         <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-0 sm:p-4">
           <div className="bg-white sm:rounded-lg shadow-xl max-w-4xl w-full h-full sm:h-auto sm:max-h-[90vh] flex flex-col overflow-hidden">
-            <div className="p-3 sm:p-4 border-b border-gray-200 bg-gray-50 flex flex-col">
+            <div className="p-3 sm:p-4 border-b border-gray-200 bg-white flex flex-col">
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setSelectedConversation(null)}
-                  className="sm:hidden text-gray-600 hover:text-gray-900 p-1"
+                  className="sm:hidden text-gray-600 hover:text-gray-900 p-1.5 rounded-btn hover:bg-gray-100"
                 >
                   <X size={20} />
                 </button>
@@ -800,12 +839,12 @@ export function QualifiedLeads() {
                   <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
                     <span className="truncate">{selectedConversation.listingCode}</span>
                     <span>•</span>
-                    <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} msjs</span>
+                    <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} mensajes</span>
                   </div>
                 </div>
                 <button
                   onClick={() => downloadConversation(selectedConversation)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm ml-2"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm ml-2"
                   title="Descargar conversación"
                 >
                   <Download size={14} />
@@ -813,7 +852,7 @@ export function QualifiedLeads() {
                 </button>
                 <button
                   onClick={() => setSelectedConversation(null)}
-                  className="hidden sm:block text-gray-400 hover:text-gray-600 transition-colors ml-2"
+                  className="hidden sm:block text-gray-400 hover:text-gray-600 transition-colors ml-2 p-1.5 rounded-btn hover:bg-gray-100"
                 >
                   <X size={24} />
                 </button>
@@ -843,7 +882,7 @@ export function QualifiedLeads() {
                         "text-xs font-medium mb-1 block",
                         item.role === "assistant" ? "text-gray-400" : "text-primary-600"
                       )}>
-                        {item.role === "assistant" ? "Bot" : "Interesado"}
+                        {item.role === "assistant" ? "Asistente" : "Interesado"}
                       </span>
                       <p 
                         className="whitespace-pre-wrap break-words" 
@@ -898,7 +937,7 @@ export function QualifiedLeads() {
               </div>
               <button
                 onClick={() => setIsMassMessageModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-btn transition-colors"
               >
                 <XCircle size={20} />
               </button>
@@ -928,14 +967,14 @@ export function QualifiedLeads() {
             <div className="p-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-2">
               <button
                 onClick={() => setIsMassMessageModalOpen(false)}
-                className="flex-1 px-4 py-2.5 text-sm font-bold text-gray-600 hover:bg-gray-200 rounded-xl transition-colors"
+                className="flex-1 px-4 py-2.5 text-sm font-bold text-gray-600 hover:bg-gray-200 rounded-btn transition-colors"
               >
                 Cancelar
               </button>
               <button
                 onClick={handleSendMassMessage}
                 disabled={sendingMassMessage || !massMessageText.trim()}
-                className="flex-[2] px-4 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-bold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary-500/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+                className="flex-[2] px-4 py-2.5 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary-500/20 transition-all active:scale-95 flex items-center justify-center gap-2"
               >
                 {sendingMassMessage ? (
                   <>

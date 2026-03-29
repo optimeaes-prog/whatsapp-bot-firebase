@@ -116,7 +116,7 @@ export function Login() {
             <button
               onClick={handleGoogleSignIn}
               disabled={loading}
-              className="mt-4 w-full flex items-center justify-center gap-3 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+              className="mt-4 w-full flex items-center justify-center gap-3 px-4 py-2 border border-gray-300 rounded-btn hover:bg-gray-50 transition-colors disabled:opacity-50"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
                 <path

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink } from "lucide-react";
+import { toast } from "sonner";
+import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink, ChevronDown, CheckSquare, Square } from "lucide-react";
 import type { Lead, QualificationStatus, OperationType } from "../types";
 import { updateLead } from "../services/leads";
 import { updateConversation } from "../services/conversations";
-import { formatPhone } from "../lib/utils";
+import { formatPhone, cn } from "../lib/utils";
 
 interface LeadEditModalProps {
     lead: Lead;
@@ -17,16 +18,27 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
     const [listingCode, setListingCode] = useState(lead.listingCode || "");
     const [operationType, setOperationType] = useState<OperationType>(lead.operationType || "Venta");
     const [status, setStatus] = useState<QualificationStatus>(lead.qualificationStatus || "not_qualified");
+    const [pets, setPets] = useState<boolean | undefined>(lead.pets);
+    const [income, setIncome] = useState<number | "">(lead.income ?? "");
+    const [paymentMethod, setPaymentMethod] = useState<"Contado" | "Hipoteca" | "">(lead.paymentMethod ?? "");
     const [notes, setNotes] = useState(lead.notes || "");
     const [tags, setTags] = useState<string[]>(lead.tags || []);
     const [newTag, setNewTag] = useState("");
     const [saving, setSaving] = useState(false);
+
+    const [isOperationTypeDropdownOpen, setIsOperationTypeDropdownOpen] = useState(false);
+    const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
+    const [isPetsDropdownOpen, setIsPetsDropdownOpen] = useState(false);
+    const [isPaymentMethodDropdownOpen, setIsPaymentMethodDropdownOpen] = useState(false);
 
     useEffect(() => {
         setName(lead.name || "");
         setListingCode(lead.listingCode || "");
         setOperationType(lead.operationType || "Venta");
         setStatus(lead.qualificationStatus || "not_qualified");
+        setPets(lead.pets);
+        setIncome(lead.income ?? "");
+        setPaymentMethod(lead.paymentMethod ?? "");
         setNotes(lead.notes || "");
         setTags(lead.tags || []);
     }, [lead]);
@@ -51,6 +63,9 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                 listingCode,
                 operationType,
                 qualificationStatus: status,
+                pets: pets !== undefined ? pets : undefined,
+                income: income !== "" ? Number(income) : undefined,
+                paymentMethod: paymentMethod !== "" ? (paymentMethod as "Contado" | "Hipoteca") : undefined,
                 notes,
                 tags
             };
@@ -74,14 +89,14 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
             onClose();
         } catch (error) {
             console.error("Error updating lead:", error);
-            alert("Error al actualizar el lead");
+            toast.error("Error al actualizar el lead");
         } finally {
             setSaving(false);
         }
     };
 
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden">
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
@@ -94,7 +109,7 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                             <p className="text-sm text-gray-500">{formatPhone(lead.phone)}</p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors p-1.5 rounded-btn hover:bg-gray-100">
                         <X size={24} />
                     </button>
                 </div>
@@ -152,14 +167,40 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                                 <ListFilter size={16} className="text-primary-500" />
                                 Tipo de operación
                             </label>
-                            <select
-                                value={operationType}
-                                onChange={(e) => setOperationType(e.target.value as OperationType)}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none bg-white"
-                            >
-                                <option value="Venta">Venta</option>
-                                <option value="Alquiler">Alquiler</option>
-                            </select>
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsOperationTypeDropdownOpen(!isOperationTypeDropdownOpen)}
+                                    className={cn(
+                                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
+                                        isOperationTypeDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                                    )}
+                                >
+                                    <span>{operationType}</span>
+                                    <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isOperationTypeDropdownOpen && "rotate-180")} />
+                                </button>
+                                {isOperationTypeDropdownOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setIsOperationTypeDropdownOpen(false)} />
+                                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                                            {["Venta", "Alquiler"].map((type) => (
+                                                <button
+                                                    key={type}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setOperationType(type as OperationType);
+                                                        setIsOperationTypeDropdownOpen(false);
+                                                    }}
+                                                    className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                                >
+                                                    {operationType === type ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                                    <span className="text-sm text-gray-700 font-medium">{type}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
                         </div>
 
                         {/* Status */}
@@ -168,15 +209,159 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                                 <Tag size={16} className="text-primary-500" />
                                 Estado de cualificación
                             </label>
-                            <select
-                                value={status}
-                                onChange={(e) => setStatus(e.target.value as QualificationStatus)}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none bg-white"
-                            >
-                                <option value="not_qualified">No cualificado</option>
-                                <option value="qualified">Cualificado</option>
-                                <option value="rejected">Rechazado</option>
-                            </select>
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsStatusDropdownOpen(!isStatusDropdownOpen)}
+                                    className={cn(
+                                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
+                                        isStatusDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                                    )}
+                                >
+                                    <span>
+                                        {status === "not_qualified" ? "No cualificado" :
+                                         status === "qualified" ? "Cualificado" :
+                                         status === "rejected" ? "Rechazado" : "Sin respuesta"}
+                                    </span>
+                                    <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isStatusDropdownOpen && "rotate-180")} />
+                                </button>
+                                {isStatusDropdownOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setIsStatusDropdownOpen(false)} />
+                                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                                            {[
+                                                { id: "not_qualified", label: "No cualificado" },
+                                                { id: "qualified", label: "Cualificado" },
+                                                { id: "rejected", label: "Rechazado" },
+                                                { id: "no_response", label: "Sin respuesta" }
+                                            ].map((opt) => (
+                                                <button
+                                                    key={opt.id}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setStatus(opt.id as QualificationStatus);
+                                                        setIsStatusDropdownOpen(false);
+                                                    }}
+                                                    className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                                >
+                                                    {status === opt.id ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                                    <span className="text-sm text-gray-700 font-medium">{opt.label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Mascotas */}
+                        <div className="space-y-2">
+                            <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                Mascotas
+                            </label>
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsPetsDropdownOpen(!isPetsDropdownOpen)}
+                                    className={cn(
+                                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
+                                        isPetsDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                                    )}
+                                >
+                                    <span>{pets === undefined ? "No especificado" : pets ? "Sí" : "No"}</span>
+                                    <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isPetsDropdownOpen && "rotate-180")} />
+                                </button>
+                                {isPetsDropdownOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setIsPetsDropdownOpen(false)} />
+                                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                                            {[
+                                                { value: "", label: "No especificado" },
+                                                { value: "true", label: "Sí" },
+                                                { value: "false", label: "No" }
+                                            ].map((opt) => (
+                                                <button
+                                                    key={opt.value}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const val = opt.value;
+                                                        setPets(val === "" ? undefined : val === "true");
+                                                        setIsPetsDropdownOpen(false);
+                                                    }}
+                                                    className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                                >
+                                                    {(opt.value === "" && pets === undefined) || (opt.value === "true" && pets === true) || (opt.value === "false" && pets === false) ? 
+                                                        <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                                    <span className="text-sm text-gray-700 font-medium">{opt.label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Ingresos mensuales */}
+                        <div className="space-y-2">
+                            <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                Ingresos mensuales (€)
+                            </label>
+                            <input
+                                type="number"
+                                min="0"
+                                step="100"
+                                value={income}
+                                onChange={(e) => setIncome(e.target.value ? Number(e.target.value) : "")}
+                                placeholder="Ej: 2500"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                            />
+                        </div>
+
+                        {/* Forma de Pago */}
+                        <div className="space-y-2">
+                            <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                Pago
+                            </label>
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsPaymentMethodDropdownOpen(!isPaymentMethodDropdownOpen)}
+                                    className={cn(
+                                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
+                                        isPaymentMethodDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                                    )}
+                                >
+                                    <span>{paymentMethod || "No especificado"}</span>
+                                    <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isPaymentMethodDropdownOpen && "rotate-180")} />
+                                </button>
+                                {isPaymentMethodDropdownOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setIsPaymentMethodDropdownOpen(false)} />
+                                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                                            {[
+                                                { value: "", label: "No especificado" },
+                                                { value: "Contado", label: "Contado" },
+                                                { value: "Hipoteca", label: "Hipoteca" }
+                                            ].map((opt) => (
+                                                <button
+                                                    key={opt.value}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setPaymentMethod(opt.value as any);
+                                                        setIsPaymentMethodDropdownOpen(false);
+                                                    }}
+                                                    className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                                                >
+                                                    {paymentMethod === opt.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                                                    <span className="text-sm text-gray-700 font-medium">{opt.label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
                         </div>
                     </div>
 
@@ -189,15 +374,15 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                         <div className="flex flex-wrap gap-2 min-h-[40px] p-3 border border-dashed border-gray-300 rounded-lg bg-gray-50">
                             {tags.length === 0 && <span className="text-gray-400 text-sm italic">Sin etiquetas</span>}
                             {tags.map((tag) => (
-                                <span
-                                    key={tag}
-                                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-100 text-primary-700 text-xs font-bold ring-1 ring-primary-200"
-                                >
-                                    {tag}
-                                    <button onClick={() => handleRemoveTag(tag)} className="hover:text-primary-900">
-                                        <X size={14} />
-                                    </button>
-                                </span>
+                                 <span
+                                     key={tag}
+                                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-bold border border-amber-100"
+                                 >
+                                     {tag}
+                                     <button onClick={() => handleRemoveTag(tag)} className="hover:text-amber-900">
+                                         <X size={14} />
+                                     </button>
+                                 </span>
                             ))}
                         </div>
                         <form onSubmit={handleAddTag} className="flex gap-2">
@@ -211,7 +396,7 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                             <button
                                 type="submit"
                                 disabled={!newTag.trim()}
-                                className="px-4 py-2 bg-primary-50 text-primary-600 hover:bg-primary-100 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
+                                className="px-4 py-2 bg-primary-50 text-primary-600 hover:bg-primary-100 rounded-btn font-semibold text-sm transition-colors disabled:opacity-50"
                             >
                                 Añadir
                             </button>
@@ -237,7 +422,7 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                 <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-between">
                     <button
                         onClick={() => onViewConversation(lead)}
-                        className="flex items-center gap-2 px-4 py-2 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors text-sm font-semibold border border-primary-200"
+                        className="flex items-center gap-2 px-4 py-2 text-primary-600 hover:bg-primary-50 rounded-btn transition-colors text-sm font-semibold border border-primary-200"
                     >
                         <MessageSquare size={18} />
                         Ver conversación
@@ -246,14 +431,14 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                     <div className="flex gap-3">
                         <button
                             onClick={onClose}
-                            className="px-6 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors text-sm font-semibold"
+                            className="px-6 py-2 text-gray-700 hover:bg-gray-200 rounded-btn transition-colors text-sm font-semibold"
                         >
                             Cancelar
                         </button>
                         <button
                             onClick={handleSave}
                             disabled={saving}
-                            className="flex items-center gap-2 px-8 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-all text-sm font-bold shadow-lg shadow-primary-200 disabled:opacity-50"
+                            className="flex items-center gap-2 px-8 py-2 bg-primary-600 text-white rounded-btn hover:bg-primary-700 transition-all text-sm font-bold shadow-lg shadow-primary-200 disabled:opacity-50"
                         >
                             {saving ? (
                                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />

@@ -35,10 +35,49 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
         errors: [],
     };
 
-    console.log("Starting conversation sync with Whapi...");
+    console.log("Starting conversation sync...");
 
     try {
-        // Calculate lookback time
+        const { getActiveProvider } = await import("./messagingProvider");
+        const activeProvider = await getActiveProvider();
+        
+        const discrepancies: SyncDiscrepancy[] = [];
+
+        if (activeProvider === "twilio") {
+            console.log("Twilio is active - skipping Whapi chat sync (Twilio does not support listing chats)");
+            
+            // Still perform essential maintenance tasks
+            const failedStats = await retryFailedMessages();
+            result.failedMessagesRetried = failedStats.retried;
+            
+            // Check stale buffers
+            const staleBuffers = await getStaleBuffers(STALE_BUFFER_THRESHOLD_MINUTES);
+            for (const conv of staleBuffers) {
+                discrepancies.push({
+                    chatId: conv.chatId,
+                    type: "stale_buffer",
+                    details: `Conversation has ${conv.pendingUserMessages?.length || 0} messages stuck in buffer for more than ${STALE_BUFFER_THRESHOLD_MINUTES} minutes`,
+                    firestoreTimestamp: conv.bufferExpiresAt,
+                });
+            }
+            
+            result.discrepanciesFound = discrepancies.length;
+
+            // Handle discrepancies (alerts)
+            if (discrepancies.length > 0 && !silent) {
+                await sendAlert(
+                    "Mantenimiento de Twilio",
+                    `Se detectaron ${discrepancies.length} temas pendientes (buffers atascados)`,
+                    { examples: discrepancies.slice(0, 5) },
+                    "warning"
+                );
+            }
+
+            await logSyncResult(result);
+            return result;
+        }
+
+        // Calculate lookback time for Whapi
         const since = new Date();
         since.setHours(since.getHours() - SYNC_LOOKBACK_HOURS);
         const sinceTimestamp = Math.floor(since.getTime() / 1000);
@@ -57,14 +96,11 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
         }
 
         // Filter to only include personal chats (not groups) from the last 72 hours
-        // And deduplicate by chat ID in case the API returns duplicates
         const seenChatIds = new Set<string>();
         const recentChats = whapiChats.filter(chat => {
             if (seenChatIds.has(chat.id)) return false;
-            
             const isPersonalChat = chat.type === "contact" || chat.id.includes("@c.us") || chat.id.includes("@s.whatsapp.net");
             const isRecent = chat.timestamp >= sinceTimestamp;
-            
             if (isPersonalChat && isRecent) {
                 seenChatIds.add(chat.id);
                 return true;
@@ -76,16 +112,10 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
         result.chatsChecked = recentChats.length;
 
         // 2. Check each chat against Firestore
-        const discrepancies: SyncDiscrepancy[] = [];
-
         for (const whapiChat of recentChats) {
             try {
-                // Skip if chat is ignored
-                if (await isChatIgnored(whapiChat.id)) {
-                    continue;
-                }
+                if (await isChatIgnored(whapiChat.id)) continue;
 
-                // Check all possible ID variants in Firestore
                 const variants = getChatIdVariants(whapiChat.id);
                 let firestoreLastMessageTime = 0;
                 let foundAny = false;
@@ -96,49 +126,33 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
                     if (conv) {
                         foundAny = true;
                         if (conv.isFinished) isFinished = true;
-
                         const historyLength = conv.history?.length || 0;
                         if (historyLength > 0) {
                             const lastTimestamp = conv.history[historyLength - 1].timestamp;
-                            if (lastTimestamp > firestoreLastMessageTime) {
-                                firestoreLastMessageTime = lastTimestamp;
-                            }
+                            if (lastTimestamp > firestoreLastMessageTime) firestoreLastMessageTime = lastTimestamp;
                         }
-
-                        // Also check pending messages which might not be in history yet
                         const pendingLength = conv.pendingUserMessages?.length || 0;
                         if (pendingLength > 0) {
                             const lastPendingTimestamp = conv.pendingUserMessages[pendingLength - 1].timestamp;
-                            if (lastPendingTimestamp > firestoreLastMessageTime) {
-                                firestoreLastMessageTime = lastPendingTimestamp;
-                            }
+                            if (lastPendingTimestamp > firestoreLastMessageTime) firestoreLastMessageTime = lastPendingTimestamp;
                         }
                     }
                 }
 
                 if (!foundAny) {
-                    // Chat exists in Whapi but not in Firestore - might be a new unknown chat
-                    // Only flag if it has messages from us (meaning we initiated but lost track)
                     if (whapiChat.last_message?.from_me) {
                         discrepancies.push({
                             chatId: whapiChat.id,
                             type: "missing_in_firestore",
-                            details: `Chat exists in Whapi with our last message but not found in Firestore (checked ${variants.join(', ')})`,
+                            details: `Chat exists in Whapi with our last message but not found in Firestore`,
                             whapiTimestamp: whapiChat.timestamp,
                         });
                     }
                     continue;
                 }
 
-                // Check for message timing discrepancies
-                // Use last_message timestamp if available, fallback to chat timestamp
                 const whapiLastMessageTime = (whapiChat.last_message?.timestamp || whapiChat.timestamp) * 1000;
-
-                // If Whapi shows a message much more recent than Firestore (> 5 min difference)
-                // and the conversation isn't finished, there might be a missed message.
-                // We ignore messages from us (from_me === true) as they might be human agents intervening
                 const timeDiffMinutes = (whapiLastMessageTime - firestoreLastMessageTime) / (1000 * 60);
-
                 const isSystemMessage = whapiChat.last_message?.type === 'action' || whapiChat.last_message?.source === 'system';
 
                 if (timeDiffMinutes > 5 && !isFinished && whapiChat.last_message?.from_me !== true && !isSystemMessage) {
@@ -157,7 +171,7 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
 
         result.discrepanciesFound = discrepancies.length;
 
-        // 3. Check for stale buffers (messages stuck in pending)
+        // 3. Check for stale buffers
         const staleBuffers = await getStaleBuffers(STALE_BUFFER_THRESHOLD_MINUTES);
         for (const conv of staleBuffers) {
             discrepancies.push({
@@ -171,40 +185,19 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
         // 4. Handle discrepancies
         if (discrepancies.length > 0) {
             console.log(`Found ${discrepancies.length} discrepancies`);
-
-            // Group by type for the alert
-            const byType: Record<string, SyncDiscrepancy[]> = {};
-            for (const d of discrepancies) {
-                if (!byType[d.type]) byType[d.type] = [];
-                byType[d.type].push(d);
-            }
-
             if (!silent) {
-                // Send alert with summary
-                const alertDetails = {
-                    totalDiscrepancies: discrepancies.length,
-                    byType: Object.fromEntries(
-                        Object.entries(byType).map(([type, items]) => [type, items.length])
-                    ),
-                    examples: discrepancies.slice(0, 5), // First 5 examples
-                };
-
                 const severity = discrepancies.length > 10 ? "critical" : discrepancies.length > 3 ? "warning" : "info";
                 await sendAlert(
                     "Discrepancias de Sincronización Detectadas",
-                    `Se encontraron ${discrepancies.length} discrepancias entre Whapi y Firestore`,
-                    alertDetails,
+                    `Se encontraron ${discrepancies.length} temas pendientes entre Whapi y Firestore`,
+                    { total: discrepancies.length, examples: discrepancies.slice(0, 5) },
                     severity
                 );
             }
-
-            // TODO: Implement auto-recovery for each discrepancy type
-            // For now, we just log them
         } else {
             console.log("No discrepancies found - all good!");
         }
 
-        // Log sync result
         await logSyncResult(result);
 
     } catch (error: any) {

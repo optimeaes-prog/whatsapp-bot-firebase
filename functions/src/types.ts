@@ -46,15 +46,15 @@ export type ConversationState = {
 export type LeadSummary = {
   name?: string;
   people?: string;
-  income?: string;
-  pets?: string;
-  paymentMethod?: string;
+  income?: number;
+  pets?: boolean;
+  paymentMethod?: "Contado" | "Hipoteca";
   dates?: string;
   visitAvailability?: string;
   notes?: string;
 };
 
-export type QualificationStatus = "not_qualified" | "qualified" | "rejected";
+export type QualificationStatus = "not_qualified" | "qualified" | "rejected" | "no_response";
 
 export type LeadRow = {
   phone: string;
@@ -68,6 +68,11 @@ export type LeadRow = {
   tags?: string[];
   hasResponse?: boolean;
   recordings?: string[];
+  pets?: boolean;
+  income?: number;
+  paymentMethod?: "Contado" | "Hipoteca";
+  notes?: string;
+  lastAnalyzedAt?: FirebaseFirestore.Timestamp;
 };
 
 export type Call = {

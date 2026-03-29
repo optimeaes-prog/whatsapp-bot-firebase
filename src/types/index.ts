@@ -39,7 +39,7 @@ export type Listing = {
   updatedAt: Timestamp;
 };
 
-export type QualificationStatus = "not_qualified" | "qualified" | "rejected";
+export type QualificationStatus = "not_qualified" | "qualified" | "rejected" | "no_response";
 
 export type Lead = {
   id: string;
@@ -53,7 +53,12 @@ export type Lead = {
   lastMessageDate?: Timestamp;
   qualificationStatus?: QualificationStatus;
   notes?: string;
+  pets?: boolean;
+  income?: number;
+  paymentMethod?: "Contado" | "Hipoteca";
   tags?: string[];
+  lastAnalyzedAt?: Timestamp;
+  conversationSummary?: string;
 };
 
 export type HistoryItem = {

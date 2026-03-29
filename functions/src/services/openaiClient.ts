@@ -311,25 +311,25 @@ Actúas como analista que prepara un briefing para un agente inmobiliario tras r
 
 Tu misión es extraer SOLO la información que el cliente ya proporcionó. No inventes datos.
 
-Debes responder EXCLUSIVAMENTE con un JSON válido (sin texto extra ni comentarios) con exactamente estas claves string:
+Debes responder EXCLUSIVAMENTE con un JSON válido (sin texto extra ni comentarios) con exactamente estas claves y los tipos indicados:
 {
   "name": "",
   "people": "",
-  "income": "",
-  "pets": "",
-  "paymentMethod": "",
+  "income": 0, // número entero, suma total de ingresos familiares. Si no se menciona o no hay un valor claro, usa null
+  "pets": true, // booleano. true si tiene, false si dijo expresamente que no. null si no se menciona.
+  "paymentMethod": "Contado", // EXACTAMENTE "Contado" o "Hipoteca". null si no se menciona.
   "dates": "",
   "visitAvailability": "",
   "notes": ""
 }
 
 Reglas:
-- Escribe todos los valores en español y en estilo breve.
-- Si un dato no se mencionó, deja la cadena vacía "".
+- Escribe todos los valores de texto en español y en estilo breve.
+- Si un dato no se mencionó, usa "" o null según el tipo.
 - "people" debe describir cuántas vivirán o su composición familiar.
-- "income" debe indicar ingresos netos/forma de sustento.
-- "pets" indica sí/no y tipo.
-- "paymentMethod" describe cómo pagará (hipoteca, contado, etc.).
+- "income" debe ser la suma de todos los ingresos en la unidad familiar (SOLO un número). Ej: si dice 1200 y 1300, devuelve 2500.
+- "pets" debe ser estrictamente un valor booleano (true/false) o null.
+- "paymentMethod" debe ser estrictamente "Contado" o "Hipoteca" o null.
 - "dates" resume fecha de entrada y, si aplica, salida.
 - "visitAvailability" indica la preferencia del cliente para visitar (mañanas, tardes, indiferente, etc.).
 - "notes" recoge cualquier contexto adicional útil (motivaciones, urgencias, etc.).
@@ -347,7 +347,6 @@ function buildLeadSummaryInstructions(state: ConversationState): string {
     LEAD_SUMMARY_PROMPT,
     "",
     `Tipo de operación actual: ${state.operationType || "Venta"}. ${focusText}`,
-    'Si el lead confirmó que no tiene una mascota, escribe "Sin mascotas" en lugar de dejarlo vacío.',
   ].join("\n");
 }
 
@@ -357,6 +356,30 @@ function parseLeadSummaryValue(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function parseLeadSummaryNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const num = parseFloat(value.replace(/[^\d.-]/g, ""));
+    return isNaN(num) ? undefined : num;
+  }
+  return undefined;
+}
+
+function parseLeadSummaryBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return undefined;
+}
+
+function parseLeadSummaryPaymentMethod(value: unknown): "Contado" | "Hipoteca" | undefined {
+  if (typeof value !== "string") return undefined;
+  const str = value.toLowerCase();
+  if (str.includes("contado")) return "Contado";
+  if (str.includes("hipoteca")) return "Hipoteca";
+  return undefined;
 }
 
 function parseLeadSummaryResponse(output: string): LeadSummary {
@@ -370,9 +393,9 @@ function parseLeadSummaryResponse(output: string): LeadSummary {
     return {
       name: parseLeadSummaryValue(parsed.name),
       people: parseLeadSummaryValue(parsed.people),
-      income: parseLeadSummaryValue(parsed.income),
-      pets: parseLeadSummaryValue(parsed.pets),
-      paymentMethod: parseLeadSummaryValue(parsed.paymentMethod),
+      income: parseLeadSummaryNumber(parsed.income),
+      pets: parseLeadSummaryBoolean(parsed.pets),
+      paymentMethod: parseLeadSummaryPaymentMethod(parsed.paymentMethod),
       dates: parseLeadSummaryValue(parsed.dates),
       visitAvailability: parseLeadSummaryValue(parsed.visitAvailability),
       notes: parseLeadSummaryValue(parsed.notes),

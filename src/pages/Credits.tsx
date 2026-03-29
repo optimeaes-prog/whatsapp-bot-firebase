@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { Coins, CreditCard, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import type { CreditPackage } from "../types";
 import { getUserCredits, getCreditPackages, createCheckoutSession, formatPrice } from "../services/credits";
-import { cn } from "../lib/utils";
+import { PageHeader, Button } from "../components/ui";
 
 export function Credits() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -67,7 +68,7 @@ export function Credits() {
       window.location.href = checkoutUrl;
     } catch (error) {
       console.error("Error creating checkout session:", error);
-      alert("Error al crear la sesión de pago. Por favor, inténtalo de nuevo.");
+      toast.error("Error al crear la sesión de pago. Por favor, inténtalo de nuevo.");
     } finally {
       setPurchaseLoading(null);
     }
@@ -75,10 +76,7 @@ export function Credits() {
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-6">
-        <Coins className="text-amber-500" size={28} />
-        <h1 className="text-2xl font-bold text-gray-900">Créditos</h1>
-      </div>
+      <PageHeader className="mb-6" title="Créditos" icon={<Coins className="text-primary-500" size={28} />} />
 
       {/* Payment status banners */}
       {paymentStatus === "success" && (
@@ -151,15 +149,11 @@ export function Credits() {
                 <p className="text-xl font-bold text-primary-600 mb-4">
                   {formatPrice(pkg.amount, pkg.currency)}
                 </p>
-                <button
+                <Button
                   onClick={() => handlePurchase(pkg.id)}
                   disabled={purchaseLoading !== null}
-                  className={cn(
-                    "w-full btn flex items-center justify-center gap-2",
-                    pkg.id === "credits_100"
-                      ? "bg-primary-600 text-white hover:bg-primary-700"
-                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                  )}
+                  variant={pkg.id === "credits_100" ? "primary" : "secondary"}
+                  className="flex w-full items-center justify-center gap-2"
                 >
                   {purchaseLoading === pkg.id ? (
                     <>
@@ -172,7 +166,7 @@ export function Credits() {
                       Comprar
                     </>
                   )}
-                </button>
+                </Button>
               </div>
             </div>
           ))}

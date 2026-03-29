@@ -10,7 +10,7 @@ import {
   updateLeadChatInfo,
   updateLeadStatus,
   appendConversationRow,
-  appendQualifiedLeadRow,
+
   getActiveStyle,
   getConversationByChatId,
   getConversationByPhoneAndListing,
@@ -26,6 +26,8 @@ import {
   searchListings,
   saveCall,
   findCallByVapiId,
+  getAllLeadsWithChatId,
+  updateLeadAnalysis,
 } from "./services/firestore";
 import { checkWhapiHealth } from "./services/whapiClient";
 import { sendTextMessage, sendInitialTemplateMessage, getActiveProvider as getActiveProviderFn } from "./services/messagingProvider";
@@ -129,19 +131,22 @@ function splitFeatures(features: string): string[] {
   return [normalized];
 }
 
-function sanitizeSummaryValue(value?: string): string | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
+function sanitizeSummaryValue(value?: string | number | boolean): string | number | boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value;
+  
+  const trimmed = String(value).trim();
   if (!trimmed) return undefined;
   const normalized = trimmed.replace(/\s+/g, "").toUpperCase();
   if (SUMMARY_EMPTY_TOKENS.has(normalized)) return undefined;
   return trimmed;
 }
 
-function pickSummaryValue(...candidates: (string | undefined)[]): string | undefined {
+function pickSummaryValue<T extends string | number | boolean>(...candidates: (T | undefined)[]): T | undefined {
   for (const candidate of candidates) {
     const sanitized = sanitizeSummaryValue(candidate);
-    if (sanitized) return sanitized;
+    if (sanitized !== undefined) return sanitized as T;
   }
   return undefined;
 }
@@ -155,12 +160,15 @@ function buildQualifiedLeadMessage(state: ConversationState, summary?: LeadSumma
 
   if (state.operationType === "Alquiler") {
     lines.push(`Personas: ${pickSummaryValue(summary?.people) ?? NO_DATA_LABEL}`);
-    lines.push(`Ingresos: ${pickSummaryValue(summary?.income) ?? NO_DATA_LABEL}`);
-    lines.push(`Mascotas: ${pickSummaryValue(summary?.pets) ?? NO_DATA_LABEL}`);
+    lines.push(`Ingresos: ${pickSummaryValue(summary?.income) !== undefined ? pickSummaryValue(summary?.income) + " €/mes" : NO_DATA_LABEL}`);
+    
+    const petsVal = pickSummaryValue(summary?.pets);
+    lines.push(`Mascotas: ${petsVal === true ? "Sí" : petsVal === false ? "No" : NO_DATA_LABEL}`);
+    
     lines.push(`Fechas: ${pickSummaryValue(summary?.dates) ?? NO_DATA_LABEL}`);
   } else {
     lines.push(`Forma de pago: ${pickSummaryValue(summary?.paymentMethod) ?? NO_DATA_LABEL}`);
-    lines.push(`Ingresos: ${pickSummaryValue(summary?.income) ?? NO_DATA_LABEL}`);
+    lines.push(`Ingresos: ${pickSummaryValue(summary?.income) !== undefined ? pickSummaryValue(summary?.income) + " €/mes" : NO_DATA_LABEL}`);
   }
 
   lines.push(`Disponibilidad visita: ${pickSummaryValue(summary?.visitAvailability) ?? NO_DATA_LABEL}`);
@@ -255,6 +263,28 @@ function parseAssistantResponse(rawMessage: string): ParsedAssistantResponse {
 function extractInboundMessages(body: unknown): InboundMessage[] {
   if (!body || typeof body !== "object") return [];
   const candidate = body as Record<string, unknown>;
+
+  // Check if it's a Twilio payload (form-urlencoded usually results in top-level fields)
+  if (candidate.SmsSid && candidate.From && candidate.Body) {
+    const from = String(candidate.From);
+    const bodyText = String(candidate.Body);
+    const waId = candidate.WaId ? String(candidate.WaId) : extractPhoneFromChatId(from);
+    
+    // Canonical format for Twilio WhatsApp is whatsapp:+123456789
+    // We want to normalize it to our internal format 123456789@s.whatsapp.net
+    const phone = waId;
+    const chatId = normalizeToCanonicalChatId(phone);
+    
+    const timestampValue = candidate.Timestamp ? Date.parse(String(candidate.Timestamp)) : Date.now();
+
+    return [{
+      chatId,
+      phone,
+      text: bodyText,
+      timestamp: ensureTimestampMillis(timestampValue),
+    }];
+  }
+
   const messagesField = candidate.messages;
   const rawMessages: unknown[] = Array.isArray(messagesField)
     ? messagesField
@@ -597,29 +627,19 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         }
       }
 
-      // Save to qualified leads
-      try {
-        const resolvedName = pickSummaryValue(leadSummary?.name, state.name) ?? "";
-        await appendQualifiedLeadRow({
-          phone: state.phone,
-          chatId: state.chatId,
-          listingCode: state.listingCode,
-          conversationSummary: notificationBody,
-          name: resolvedName,
-          qualified: true,
-        });
-        console.log("Qualified lead saved", state.chatId);
-      } catch (error) {
-        console.error("Error saving qualified lead", error);
-      }
 
-      // Update lead status to qualified
+      // Update lead status to qualified — leads is now the single SOT
       try {
         const resolvedName = pickSummaryValue(leadSummary?.name, state.name);
         await updateLeadStatus({
           chatId: state.chatId,
           name: resolvedName,
           qualificationStatus: "qualified",
+          pets: leadSummary?.pets,
+          income: leadSummary?.income,
+          paymentMethod: leadSummary?.paymentMethod,
+          notes: leadSummary?.notes,
+          conversationSummary: notificationBody,
         });
         console.log("Lead status updated to qualified", state.chatId);
       } catch (error) {
@@ -666,6 +686,13 @@ export const webhook = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
+
+    console.log("--- DEBUG WEBHOOK START ---");
+    console.log("Method:", req.method);
+    console.log("Headers:", JSON.stringify(req.headers, null, 2));
+    console.log("Body Type:", typeof req.body);
+    console.log("Body JSON:", JSON.stringify(req.body, null, 2));
+    console.log("--- DEBUG WEBHOOK END ---");
 
     console.log("Webhook POST received", JSON.stringify(req.body, null, 2));
 
@@ -746,6 +773,12 @@ export const webhook = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
     res.status(500).json({ error: "Internal server error", details: error instanceof Error ? error.message : String(error) });
   }
 });
+
+/**
+ * Dedicated webhook for Twilio messages
+ * Twilio sends form-urlencoded data we can handle in the same logic
+ */
+export const twilioWebhook = webhook;
 
 /**
  * Process buffered messages - called by Cloud Tasks after buffer delay expires
@@ -950,6 +983,10 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
 
       const formattedFeatures = formatFeaturesList(featuresText, initialLanguage);
 
+      // Twilio ContentVariables cannot contain newlines (error 21656)
+      // Replace newlines with a visual separator that WhatsApp renders well
+      const sanitizedFeatures = formattedFeatures.replace(/\n/g, " | ");
+
       const result = await sendInitialTemplateMessage({
         to: phone,
         chatId,
@@ -957,7 +994,7 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
         variables: {
           "1": agentName,
           "2": listingData.link,
-          "3": formattedFeatures,
+          "3": sanitizedFeatures,
         },
         mediaUrl: "https://real-estate-idealista-bot.web.app/idealista.jpg",
       });
@@ -1430,6 +1467,101 @@ export const retryFailedMessagesTask = onSchedule({
 });
 
 /**
+ * Scheduled agent that analyzes lead conversations and updates structured data.
+ * Runs every 6 hours starting at noon (Madrid time): 12:00, 18:00, 00:00, 06:00
+ * Uses ChatGPT to extract: pets (boolean), income (€/month), payment method, notes.
+ * Only re-analyzes leads that have new messages since last analysis.
+ */
+export const analyzeLeadsAgent = onSchedule({
+  schedule: "0 0,6,12,18 * * *",
+  region: REGION,
+  timeZone: "Europe/Madrid",
+  timeoutSeconds: 540, // 9 minutes max (Cloud Functions gen2 limit)
+  memory: "512MiB",
+}, async () => {
+  console.log("[AnalyzeLeadsAgent] Starting scheduled lead analysis...");
+
+  try {
+    const leads = await getAllLeadsWithChatId();
+    console.log(`[AnalyzeLeadsAgent] Found ${leads.length} leads with chatId`);
+
+    let analyzed = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const { docId, data: leadData } of leads) {
+      try {
+        const chatId = leadData.chatId as string;
+
+        // Get the conversation
+        const conversation = await getConversationByChatId(chatId);
+        if (!conversation || !conversation.history || conversation.history.length === 0) {
+          skipped++;
+          continue;
+        }
+
+        // Check if there are user messages at all
+        const hasUserMessages = conversation.history.some(h => h.role === "user" && h.text.trim());
+        if (!hasUserMessages) {
+          skipped++;
+          continue;
+        }
+
+        // Compare lastAnalyzedAt with conversation's lastMessage timestamp
+        const lastAnalyzedAt = leadData.lastAnalyzedAt as FirebaseFirestore.Timestamp | undefined;
+        const lastMessage = (conversation as any).lastMessage as FirebaseFirestore.Timestamp | undefined;
+
+        if (lastAnalyzedAt && lastMessage) {
+          // If the lead was analyzed after the last message, skip
+          const analyzedMs = lastAnalyzedAt.toMillis();
+          const messageMs = lastMessage.toMillis();
+          if (analyzedMs >= messageMs) {
+            skipped++;
+            continue;
+          }
+        } else if (lastAnalyzedAt && !lastMessage) {
+          // Already analyzed but no lastMessage timestamp — skip to be safe
+          skipped++;
+          continue;
+        }
+
+        // Analyze the full conversation
+        console.log(`[AnalyzeLeadsAgent] Analyzing lead ${docId} (chat: ${chatId})`);
+
+        const summary = await summarizeLeadDetails(conversation);
+
+        // Build the analysis update — always replace all fields
+        const analysisUpdate: {
+          pets?: boolean;
+          income?: number;
+          paymentMethod?: "Contado" | "Hipoteca";
+          notes?: string;
+          name?: string;
+        } = {};
+
+        if (summary.pets !== undefined) analysisUpdate.pets = summary.pets;
+        if (summary.income !== undefined) analysisUpdate.income = summary.income;
+        if (summary.paymentMethod !== undefined) analysisUpdate.paymentMethod = summary.paymentMethod;
+        if (summary.notes !== undefined) analysisUpdate.notes = summary.notes;
+        if (summary.name !== undefined) analysisUpdate.name = summary.name;
+
+        await updateLeadAnalysis(docId, analysisUpdate);
+        analyzed++;
+
+        console.log(`[AnalyzeLeadsAgent] Updated lead ${docId}: pets=${summary.pets}, income=${summary.income}, paymentMethod=${summary.paymentMethod}`);
+      } catch (error) {
+        errors++;
+        console.error(`[AnalyzeLeadsAgent] Error analyzing lead ${docId}:`, error);
+      }
+    }
+
+    console.log(`[AnalyzeLeadsAgent] Complete. Analyzed: ${analyzed}, Skipped: ${skipped}, Errors: ${errors}`);
+  } catch (error) {
+    console.error("[AnalyzeLeadsAgent] Fatal error:", error);
+  }
+});
+
+/**
  * Manual trigger for sync (for testing)
  */
 export const triggerSync = onRequest({ cors: true, region: REGION, secrets: ["SMTP_PASS"] }, async (_req, res) => {
@@ -1439,6 +1571,76 @@ export const triggerSync = onRequest({ cors: true, region: REGION, secrets: ["SM
     res.status(200).json({ success: true, result });
   } catch (error) {
     console.error("Manual sync failed:", error);
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
+/**
+ * Manual trigger for lead analysis (for testing).
+ * Forces re-analysis of ALL leads regardless of lastAnalyzedAt.
+ */
+export const triggerAnalyzeLeads = onRequest({ cors: true, region: REGION, timeoutSeconds: 540, memory: "512MiB" }, async (_req, res) => {
+  console.log("[AnalyzeLeadsAgent] Manual trigger — analyzing ALL leads...");
+  try {
+    const leads = await getAllLeadsWithChatId();
+    console.log(`[AnalyzeLeadsAgent] Found ${leads.length} leads with chatId`);
+
+    let analyzed = 0;
+    let skipped = 0;
+    let errors = 0;
+    const results: { docId: string; status: string; summary?: Record<string, unknown> }[] = [];
+
+    for (const { docId, data: leadData } of leads) {
+      try {
+        const chatId = leadData.chatId as string;
+
+        const conversation = await getConversationByChatId(chatId);
+        if (!conversation || !conversation.history || conversation.history.length === 0) {
+          skipped++;
+          results.push({ docId, status: "skipped_no_conversation" });
+          continue;
+        }
+
+        const hasUserMessages = conversation.history.some(h => h.role === "user" && h.text.trim());
+        if (!hasUserMessages) {
+          skipped++;
+          results.push({ docId, status: "skipped_no_user_messages" });
+          continue;
+        }
+
+        console.log(`[AnalyzeLeadsAgent] Analyzing lead ${docId} (chat: ${chatId})`);
+        const summary = await summarizeLeadDetails(conversation);
+
+        const analysisUpdate: {
+          pets?: boolean;
+          income?: number;
+          paymentMethod?: "Contado" | "Hipoteca";
+          notes?: string;
+          name?: string;
+        } = {};
+
+        if (summary.pets !== undefined) analysisUpdate.pets = summary.pets;
+        if (summary.income !== undefined) analysisUpdate.income = summary.income;
+        if (summary.paymentMethod !== undefined) analysisUpdate.paymentMethod = summary.paymentMethod;
+        if (summary.notes !== undefined) analysisUpdate.notes = summary.notes;
+        if (summary.name !== undefined) analysisUpdate.name = summary.name;
+
+        await updateLeadAnalysis(docId, analysisUpdate);
+        analyzed++;
+        results.push({ docId, status: "analyzed", summary: analysisUpdate as Record<string, unknown> });
+
+        console.log(`[AnalyzeLeadsAgent] Updated lead ${docId}`);
+      } catch (error) {
+        errors++;
+        results.push({ docId, status: "error", summary: { error: String(error) } });
+        console.error(`[AnalyzeLeadsAgent] Error analyzing lead ${docId}:`, error);
+      }
+    }
+
+    console.log(`[AnalyzeLeadsAgent] Complete. Analyzed: ${analyzed}, Skipped: ${skipped}, Errors: ${errors}`);
+    res.status(200).json({ success: true, analyzed, skipped, errors, results });
+  } catch (error) {
+    console.error("[AnalyzeLeadsAgent] Fatal error:", error);
     res.status(500).json({ success: false, error: String(error) });
   }
 });
@@ -1928,6 +2130,7 @@ export const vapiWebhook = onRequest({ cors: true, region: REGION }, async (req,
           name: customerName,
           qualificationStatus: status,
           recordings: recordingUrl ? [recordingUrl] : [],
+          conversationSummary: isQualified ? notificationBody : undefined,
         });
       } else if (listingCode) {
         // Register new lead from VAPI inbound call
@@ -1968,17 +2171,8 @@ export const vapiWebhook = onRequest({ cors: true, region: REGION }, async (req,
         vapiCallId: callId,
       });
 
-      // 5. Send notifications and save to qualified list
+      // Save qualified status to leads (SOT)
       if (isQualified) {
-        await appendQualifiedLeadRow({
-          phone: phone,
-          chatId: chatId,
-          listingCode: listingCode,
-          name: customerName || "Lead Voz",
-          qualified: true,
-          conversationSummary: notificationBody,
-        });
-
         const notificationNumberRaw = NOTIFICATION_NUMBER.value();
         if (notificationNumberRaw) {
           const numbers = notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean);
@@ -2157,28 +2351,6 @@ export const onConversationWritten = onDocumentWritten({
   );
 });
 
-export const onQualifiedLeadWritten = onDocumentWritten({
-  document: "organizations/{orgId}/qualifiedLeads/{leadId}",
-  database: DATABASE_ID,
-  region: REGION,
-}, async (event) => {
-  const before = event.data?.before.data();
-  const after = event.data?.after.data();
-
-  let action: AuditAction = "update";
-  if (!before) action = "create";
-  else if (!after) action = "delete";
-
-  const changes = extractDocChanges(before, after);
-  if (changes.length === 0 && action === "update") return;
-
-  await recordSystemAction(
-    "qualified_lead",
-    event.params.leadId,
-    action,
-    { changes }
-  );
-});
 
 export const onListingWritten = onDocumentWritten({
   document: "organizations/{orgId}/listings/{listingId}",

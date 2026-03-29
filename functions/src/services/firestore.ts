@@ -414,25 +414,7 @@ export async function appendConversationRow(params: {
   } as Partial<ConversationState>);
 }
 
-// Qualified Leads
-export async function appendQualifiedLeadRow(params: {
-  phone: string;
-  chatId: string;
-  listingCode?: string;
-  conversationSummary: string;
-  name: string;
-  qualified: boolean;
-}): Promise<void> {
-  await getOrgDb().collection("qualifiedLeads").add({
-    phone: params.phone,
-    chatId: params.chatId,
-    listingCode: params.listingCode,
-    conversationSummary: params.conversationSummary,
-    name: params.name,
-    qualified: params.qualified,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-}
+
 
 // Bot Config
 const DEFAULT_STYLES: BotStyle[] = [
@@ -516,6 +498,11 @@ export async function updateLeadStatus(params: {
   name?: string;
   qualificationStatus: QualificationStatus;
   recordings?: string[];
+  pets?: boolean;
+  income?: number;
+  paymentMethod?: "Contado" | "Hipoteca";
+  notes?: string;
+  conversationSummary?: string;
 }): Promise<void> {
   const snapshot = await getDb()
     .collection("leads")
@@ -535,6 +522,26 @@ export async function updateLeadStatus(params: {
 
   if (params.name !== undefined) {
     updateData.name = params.name;
+  }
+
+  if (params.pets !== undefined) {
+    updateData.pets = params.pets;
+  }
+
+  if (params.income !== undefined) {
+    updateData.income = params.income;
+  }
+
+  if (params.paymentMethod !== undefined) {
+    updateData.paymentMethod = params.paymentMethod;
+  }
+
+  if (params.notes !== undefined) {
+    updateData.notes = params.notes;
+  }
+
+  if (params.conversationSummary !== undefined) {
+    updateData.conversationSummary = params.conversationSummary;
   }
 
   if (params.recordings !== undefined) {
@@ -947,4 +954,53 @@ export async function findCallByVapiId(callId: string): Promise<Call | null> {
   if (snapshot.empty) return null;
   const doc = snapshot.docs[0];
   return { id: doc.id, ...doc.data() } as Call;
+}
+
+// ==================== LEAD ANALYSIS AGENT ====================
+
+/**
+ * Get all leads that have a chatId (needed for conversation analysis)
+ */
+export async function getAllLeadsWithChatId(): Promise<{ docId: string; data: Record<string, unknown> }[]> {
+  const snapshot = await getOrgDb().collection("leads").get();
+  const results: { docId: string; data: Record<string, unknown> }[] = [];
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    if (data.chatId) {
+      results.push({ docId: doc.id, data });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Update a lead with analysis results.
+ * Replaces all structured fields (pets, income, paymentMethod, notes) and sets lastAnalyzedAt.
+ * Uses FieldValue.delete() for undefined values to remove stale data.
+ */
+export async function updateLeadAnalysis(docId: string, analysis: {
+  pets?: boolean;
+  income?: number;
+  paymentMethod?: "Contado" | "Hipoteca";
+  notes?: string;
+  name?: string;
+}): Promise<void> {
+  const docRef = getOrgDb().collection("leads").doc(docId);
+  const deleteField = admin.firestore.FieldValue.delete();
+
+  const updateData: Record<string, unknown> = {
+    pets: analysis.pets !== undefined ? analysis.pets : deleteField,
+    income: analysis.income !== undefined ? analysis.income : deleteField,
+    paymentMethod: analysis.paymentMethod !== undefined ? analysis.paymentMethod : deleteField,
+    notes: analysis.notes !== undefined ? analysis.notes : deleteField,
+    lastAnalyzedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (analysis.name !== undefined) {
+    updateData.name = analysis.name;
+  }
+
+  await docRef.update(updateData);
 }

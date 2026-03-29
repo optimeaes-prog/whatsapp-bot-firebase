@@ -7,7 +7,10 @@
  * Extracts the phone number part.
  */
 export function extractPhoneFromChatId(chatId: string): string {
-    return chatId.replace(/@(c\.us|s\.whatsapp\.net)$/, "");
+    return chatId
+        .replace(/@(c\.us|s\.whatsapp\.net)$/, "")
+        .replace(/^whatsapp:/, "")
+        .replace(/^\+/, "");
 }
 
 /**

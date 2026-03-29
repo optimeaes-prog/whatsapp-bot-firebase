@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./contexts/AuthContext";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -8,7 +9,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Listings } from "./pages/Listings";
 import { Leads } from "./pages/Leads";
 import { Conversations } from "./pages/Conversations";
-import { QualifiedLeads } from "./pages/QualifiedLeads";
+
 import { Alerts } from "./pages/Alerts";
 import { Configuracion } from "./pages/Configuracion";
 import { AuditLog } from "./pages/AuditLog";
@@ -79,16 +80,7 @@ function App() {
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/cualificados"
-              element={
-                <ProtectedRoute>
-                  <Layout>
-                    <QualifiedLeads />
-                  </Layout>
-                </ProtectedRoute>
-              }
-            />
+            <Route path="/cualificados" element={<Navigate to="/leads?status=qualified" replace />} />
             <Route
               path="/alertas"
               element={
@@ -162,6 +154,7 @@ function App() {
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </BrowserRouter>
+        <Toaster position="top-right" richColors closeButton />
       </AuthProvider>
     </QueryClientProvider>
   );
