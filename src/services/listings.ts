@@ -89,6 +89,7 @@ export async function createListing(data: ListingFormData): Promise<string> {
       addDoc(collection(db, COLLECTION_NAME), {
         description: data.description,
         listingCode: data.listingCode,
+        listingCodeFotocasa: (data as any).listingCodeFotocasa || "",
         referencia: (data as any).referencia,
         link: data.link,
         operationType: data.operationType,
@@ -106,6 +107,9 @@ export async function createListing(data: ListingFormData): Promise<string> {
         country: (data as any).country || "",
         provinceNormalized: (data as any).provinceNormalized || "",
         agentName: (data as any).agentName || "",
+        minMonthlyIncome: (data as any).minMonthlyIncome ?? null,
+        maxPeople: (data as any).maxPeople ?? null,
+        requireMortgageApproved: (data as any).requireMortgageApproved === true,
         profitabilityReportAvailable: data.profitabilityReportAvailable,
         profitabilityReport: data.profitabilityReport,
         isActive: true, // Nuevo anuncio siempre empieza como activo
@@ -134,6 +138,7 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
 
   if (data.description !== undefined) updateData.description = data.description;
   if (data.listingCode !== undefined) updateData.listingCode = data.listingCode;
+  if ((data as any).listingCodeFotocasa !== undefined) updateData.listingCodeFotocasa = (data as any).listingCodeFotocasa;
   if ((data as any).referencia !== undefined) updateData.referencia = (data as any).referencia;
   if (data.link !== undefined) updateData.link = data.link;
   if (data.operationType !== undefined) updateData.operationType = data.operationType;
@@ -151,6 +156,9 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
   if ((data as any).country !== undefined) updateData.country = (data as any).country;
   if ((data as any).provinceNormalized !== undefined) updateData.provinceNormalized = (data as any).provinceNormalized;
   if ((data as any).agentName !== undefined) updateData.agentName = (data as any).agentName;
+  if ((data as any).minMonthlyIncome !== undefined) updateData.minMonthlyIncome = (data as any).minMonthlyIncome;
+  if ((data as any).maxPeople !== undefined) updateData.maxPeople = (data as any).maxPeople;
+  if ((data as any).requireMortgageApproved !== undefined) updateData.requireMortgageApproved = (data as any).requireMortgageApproved === true;
   if (data.profitabilityReportAvailable !== undefined) updateData.profitabilityReportAvailable = data.profitabilityReportAvailable;
   if (data.profitabilityReport !== undefined) updateData.profitabilityReport = data.profitabilityReport;
 

@@ -92,6 +92,7 @@ export type LeadRow = {
 export type ListingRow = {
   description: string;
   listingCode: string;
+  listingCodeFotocasa?: string;
   link: string;
   operationType: OperationType;
   features: string;

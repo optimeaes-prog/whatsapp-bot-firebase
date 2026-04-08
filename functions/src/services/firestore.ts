@@ -35,6 +35,7 @@ function listingRowFromDoc(data: FirebaseFirestore.DocumentData): ListingRow {
   return {
     description: data.description || "",
     listingCode: data.listingCode || "",
+    listingCodeFotocasa: data.listingCodeFotocasa || "",
     link: data.link || "",
     operationType: data.operationType as OperationType,
     features: data.features || "",

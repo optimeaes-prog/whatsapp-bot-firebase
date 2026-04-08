@@ -22,6 +22,7 @@ export type Listing = {
   id: string;
   description: string;
   listingCode: string;
+  listingCodeFotocasa?: string;           // ID Fotocasa (opcional)
   referencia: string;                     // Referencia del anuncio (normalmente igual a listingCode si no tienen CRM propio)
   link: string;
   operationType: OperationType;

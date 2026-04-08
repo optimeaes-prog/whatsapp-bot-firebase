@@ -56,6 +56,7 @@ function parsePhotonFeature(f: { properties?: Record<string, string | undefined>
 const emptyFormData: ListingFormData = {
   description: "",
   listingCode: "",
+  listingCodeFotocasa: "",
   referencia: "",
   link: "", // Se generará automáticamente al guardar
   operationType: "Venta",
@@ -100,6 +101,7 @@ export function Listings() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<ListingFormData>(emptyFormData);
   const [saving, setSaving] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   // Estados para autocompletado de dirección
@@ -141,19 +143,68 @@ export function Listings() {
   const [isClosureReasonDropdownOpen, setIsClosureReasonDropdownOpen] = useState(false);
   const [isLeadDropdownOpen, setIsLeadDropdownOpen] = useState(false);
 
-  // Helper to format price with suffix
-  const formatPrice = (price: string | undefined, type: OperationType): string => {
-    if (!price) return "";
-    // Remove existing € or €/mes
-    const clean = price.split("€")[0].trim();
-    if (!clean) return "";
-
-    if (type === "Alquiler") {
-      return `${clean} €/mes`;
-    } else {
-      return `${clean} €`;
-    }
+  const normalizeNumericString = (raw: string | undefined): string => {
+    if (!raw) return "";
+    return raw.replace(/[^\d.,]/g, "").replace(",", ".").trim();
   };
+
+  const isDigitsOnly = (value: string) => /^\d+$/.test(value);
+
+  const formErrors = useMemo(() => {
+    const errors: Record<string, string> = {};
+    const description = formData.description.trim();
+    const listingCode = formData.listingCode.trim();
+    const listingCodeFotocasa = (formData.listingCodeFotocasa || "").trim();
+    const address = (formData.address || "").trim();
+    const features = formData.features?.trim() || "";
+    const price = normalizeNumericString(formData.price);
+    const m2 = normalizeNumericString(formData.m2);
+    const rooms = normalizeNumericString(formData.rooms);
+    const idealistaDescription = formData.idealistaDescription || "";
+    const profitabilityReport = formData.profitabilityReport || "";
+
+    if (!description) errors.description = "El identificador es obligatorio.";
+    else if (description.length > 50) errors.description = "Máximo 50 caracteres.";
+
+    if (!listingCode) errors.listingCode = "El ID Idealista es obligatorio.";
+    else if (!isDigitsOnly(listingCode)) errors.listingCode = "Debe contener solo dígitos.";
+    else if (listingCode.length > 9) errors.listingCode = "Máximo 9 dígitos.";
+
+    if (!listingCodeFotocasa) errors.listingCodeFotocasa = "El ID Fotocasa es obligatorio.";
+    else if (!isDigitsOnly(listingCodeFotocasa)) errors.listingCodeFotocasa = "Debe contener solo dígitos.";
+    else if (listingCodeFotocasa.length > 9) errors.listingCodeFotocasa = "Máximo 9 dígitos.";
+
+    if (!formData.referencia?.trim()) errors.referencia = "La referencia es obligatoria.";
+    if (!formData.agentName?.trim()) errors.agentName = "El nombre del agente es obligatorio.";
+    if (!address) errors.address = "La dirección exacta es obligatoria.";
+
+    if (features.length > 150) errors.features = "Máximo 150 caracteres.";
+
+    if (!price) errors.price = "El precio es obligatorio y debe ser numérico.";
+    else if (Number.isNaN(Number(price))) errors.price = "Introduce un número válido.";
+
+    if (!m2) errors.m2 = "Los metros cuadrados son obligatorios.";
+    else {
+      const value = Number(m2);
+      if (Number.isNaN(value)) errors.m2 = "Debe ser numérico.";
+      else if (value > 100) errors.m2 = "Máximo 100.";
+    }
+
+    if (!rooms) errors.rooms = "Las habitaciones son obligatorias.";
+    else {
+      const value = Number(rooms);
+      if (Number.isNaN(value)) errors.rooms = "Debe ser numérico.";
+      else if (value > 50) errors.rooms = "Máximo 50.";
+    }
+
+    if (!idealistaDescription.trim()) errors.idealistaDescription = "La descripción del anuncio es obligatoria.";
+    else if (idealistaDescription.length > 5000) errors.idealistaDescription = "Máximo 5000 caracteres.";
+    if (formData.profitabilityReportAvailable && profitabilityReport.length > 5000) {
+      errors.profitabilityReport = "Máximo 5000 caracteres.";
+    }
+
+    return errors;
+  }, [formData]);
 
   const normalizeBulletsOnePerLine = (value: string): string => {
     return value
@@ -321,6 +372,7 @@ export function Listings() {
 
   function openCreateModal() {
     setFormData(emptyFormData);
+    setSubmitAttempted(false);
     setEditingId(null);
     setModalOpen(true);
     setAddressSuggestionOptions([]);
@@ -333,6 +385,7 @@ export function Listings() {
     setFormData({
       description: listing.description,
       listingCode: listing.listingCode,
+      listingCodeFotocasa: listing.listingCodeFotocasa || "",
       referencia: listing.referencia,
       link: listing.link || "",
       operationType: listing.operationType,
@@ -352,8 +405,12 @@ export function Listings() {
       profitabilityReportAvailable: listing.profitabilityReportAvailable,
       profitabilityReport: listing.profitabilityReport,
       agentName: listing.agentName || "",
+      minMonthlyIncome: listing.minMonthlyIncome,
+      maxPeople: listing.maxPeople,
+      requireMortgageApproved: listing.requireMortgageApproved === true,
     });
     setEditingId(listing.id);
+    setSubmitAttempted(false);
     setModalOpen(true);
     setAddressSuggestionOptions([]);
     setShowSuggestions(false);
@@ -363,6 +420,15 @@ export function Listings() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setSubmitAttempted(true);
+    const errorEntries = Object.entries(formErrors);
+    if (errorEntries.length > 0) {
+      const firstField = errorEntries[0][0];
+      const element = document.querySelector(`[name="${firstField}"]`) as HTMLElement | null;
+      if (element && typeof element.focus === "function") element.focus();
+      toast.error("Revisa los campos marcados antes de guardar.");
+      return;
+    }
     setSaving(true);
 
     try {
@@ -381,9 +447,15 @@ export function Listings() {
 
       const dataToSave = {
         ...formData,
+        description: formData.description.trim(),
+        listingCode: formData.listingCode.trim(),
+        listingCodeFotocasa: (formData.listingCodeFotocasa || "").trim(),
+        referencia: formData.referencia.trim(),
+        agentName: formData.agentName?.trim() || "",
+        features: (formData.features || "").trim(),
         address: addressLine,
         provinceNormalized: provinceNorm,
-        price: formatPrice(formData.price, formData.operationType),
+        price: normalizeNumericString(formData.price),
         link: `https://www.idealista.com/inmueble/${formData.listingCode}`,
       };
 
@@ -544,6 +616,7 @@ export function Listings() {
       const haystack = [
         listing.description,
         listing.listingCode,
+        listing.listingCodeFotocasa,
         listing.referencia,
         listing.address,
         listing.street,
@@ -920,6 +993,12 @@ export function Listings() {
                             <ExternalLink size={12} />
                           </a>
                         </div>
+                        {listing.listingCodeFotocasa && (
+                          <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm">
+                            <span className="text-gray-400 font-medium">Fotocasa</span>
+                            <span className="text-gray-700">{listing.listingCodeFotocasa}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1085,51 +1164,175 @@ export function Listings() {
                 </button>
               </div>
               <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Identificador Anuncio</label>
-                <input type="text" required value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="input" placeholder="Ej: Piso 2 habitaciones en Fuengirola" />
-              </div>
-
-              <div className="flex items-start justify-between gap-4 rounded-xl border border-gray-200 bg-gray-50/50 px-4 py-3">
-                <div className="min-w-0">
-                  <label htmlFor="quickQualificationEnabled" className="text-sm font-medium text-gray-800">
-                    Cualificación rápida
-                  </label>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Si está activado, cuando entre un interesado por este anuncio se notificará al agente y el asistente hará handoff sin cualificar.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={formData.quickQualificationEnabled === true}
-                  onClick={() => setFormData((prev) => ({ ...prev, quickQualificationEnabled: prev.quickQualificationEnabled !== true }))}
-                  className={cn(
-                    "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2",
-                    formData.quickQualificationEnabled === true ? "bg-primary-600" : "bg-gray-300"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
-                      formData.quickQualificationEnabled === true ? "translate-x-5" : "translate-x-1"
-                    )}
+              <div className="rounded-xl border-2 border-gray-300 bg-white shadow-sm p-4 space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600">Información del inmueble</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Identificador Anuncio <span className="text-red-500">*</span></label>
+                  <input
+                    name="description"
+                    type="text"
+                    required
+                    maxLength={50}
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    className={cn("input", submitAttempted && formErrors.description && "border-red-400 focus:ring-red-400")}
+                    placeholder="Ej: Piso 2 habitaciones en Fuengirola"
                   />
-                  <span className="sr-only">Activar cualificación rápida</span>
-                </button>
-                <input
-                  type="checkbox"
-                  id="quickQualificationEnabled"
-                  checked={formData.quickQualificationEnabled === true}
-                  onChange={(e) => setFormData({ ...formData, quickQualificationEnabled: e.target.checked })}
-                  className="sr-only"
-                  tabIndex={-1}
-                />
+                  <div className="mt-1 flex justify-between text-xs">
+                    <span className="text-red-600">{submitAttempted ? (formErrors.description || "") : ""}</span>
+                    <span className="text-gray-400">{formData.description.length}/50</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Operación <span className="text-red-500">*</span></label>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setIsOperationTypeDropdownOpen(!isOperationTypeDropdownOpen)}
+                      className={cn(
+                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
+                        isOperationTypeDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
+                      )}
+                    >
+                      <span>{formData.operationType}</span>
+                      <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isOperationTypeDropdownOpen && "rotate-180")} />
+                    </button>
+                    {isOperationTypeDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setIsOperationTypeDropdownOpen(false)} />
+                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                          {["Venta", "Alquiler"].map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => {
+                                const newType = type as OperationType;
+                                setFormData({
+                                  ...formData,
+                                  operationType: newType,
+                                  price: normalizeNumericString(formData.price)
+                                });
+                                setIsOperationTypeDropdownOpen(false);
+                              }}
+                              className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                            >
+                              {formData.operationType === type ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                              <span className="text-sm text-gray-700 font-medium">{type}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">ID Idealista <span className="text-red-500">*</span></label>
+                  <input
+                    name="listingCode"
+                    type="text"
+                    required
+                    inputMode="numeric"
+                    maxLength={9}
+                    value={formData.listingCode}
+                    onChange={(e) => setFormData({ ...formData, listingCode: e.target.value.replace(/[^\d]/g, "") })}
+                    className={cn("input", submitAttempted && formErrors.listingCode && "border-red-400 focus:ring-red-400")}
+                    placeholder="Ej: 110595991"
+                  />
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.listingCode || "") : ""}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">ID Fotocasa <span className="text-red-500">*</span></label>
+                  <input
+                    name="listingCodeFotocasa"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={9}
+                    value={formData.listingCodeFotocasa || ""}
+                    onChange={(e) => setFormData({ ...formData, listingCodeFotocasa: e.target.value.replace(/[^\d]/g, "") })}
+                    className={cn("input", submitAttempted && formErrors.listingCodeFotocasa && "border-red-400 focus:ring-red-400")}
+                    placeholder="Ej: 123456789"
+                  />
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.listingCodeFotocasa || "") : ""}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Referencia <span className="text-red-500">*</span></label>
+                  <input
+                    name="referencia"
+                    type="text"
+                    required
+                    value={formData.referencia}
+                    onChange={(e) => setFormData({ ...formData, referencia: e.target.value })}
+                    className={cn("input", submitAttempted && formErrors.referencia && "border-red-400 focus:ring-red-400")}
+                    placeholder="Mismo que ID si no tienen CRM"
+                  />
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.referencia || "") : ""}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del Agente <span className="text-red-500">*</span></label>
+                  <input
+                    name="agentName"
+                    type="text"
+                    required
+                    value={formData.agentName}
+                    onChange={(e) => setFormData({ ...formData, agentName: e.target.value })}
+                    className={cn("input", submitAttempted && formErrors.agentName && "border-red-400 focus:ring-red-400")}
+                    placeholder="Ej: Paco"
+                  />
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.agentName || "") : ""}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Precio <span className="text-red-500">*</span></label>
+                  <input
+                    name="price"
+                    type="text"
+                    inputMode="decimal"
+                    value={formData.price}
+                    onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                    className={cn("input", submitAttempted && formErrors.price && "border-red-400 focus:ring-red-400")}
+                    placeholder="Ej: 250000"
+                  />
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.price || "") : ""}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Metros cuadrados (m²) <span className="text-red-500">*</span></label>
+                  <input
+                    name="m2"
+                    type="text"
+                    inputMode="numeric"
+                    value={formData.m2}
+                    onChange={(e) => setFormData({ ...formData, m2: e.target.value.replace(/[^\d]/g, "") })}
+                    className={cn("input", submitAttempted && formErrors.m2 && "border-red-400 focus:ring-red-400")}
+                    placeholder="Ej: 35"
+                  />
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.m2 || "") : ""}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Habitaciones <span className="text-red-500">*</span></label>
+                  <input
+                    name="rooms"
+                    type="text"
+                    inputMode="numeric"
+                    value={formData.rooms}
+                    onChange={(e) => setFormData({ ...formData, rooms: e.target.value.replace(/[^\d]/g, "") })}
+                    className={cn("input", submitAttempted && formErrors.rooms && "border-red-400 focus:ring-red-400")}
+                    placeholder="Ej: 1"
+                  />
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.rooms || "") : ""}</p>
+                </div>
+              </div>
+              </div>
+
+              <div className="rounded-xl border-2 border-gray-300 bg-white shadow-sm p-4 space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600">Ubicación</h3>
               {/* Campo de Dirección con Autocompletado */}
               <div className="relative">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Dirección exacta</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Dirección exacta <span className="text-red-500">*</span></label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                     <MapPin size={16} className="text-gray-400" />
@@ -1143,7 +1346,7 @@ export function Listings() {
                     onClick={() => {
                       setAddressSearchEnabled(true);
                     }}
-                    className="input !pl-10"
+                    className={cn("input !pl-10", submitAttempted && formErrors.address && "border-red-400 focus:ring-red-400")}
                     placeholder="Calle, número, ciudad..."
                     autoComplete="off"
                   />
@@ -1183,6 +1386,7 @@ export function Listings() {
                   </div>
                 )}
               </div>
+              <p className="text-xs text-red-600 -mt-1">{submitAttempted ? (formErrors.address || "") : ""}</p>
 
               <p className="text-xs text-gray-500 -mt-2">
                 Busca y elige una sugerencia para rellenar calle, ciudad, provincia y CP; puedes editarlos abajo.
@@ -1252,73 +1456,49 @@ export function Listings() {
                   </div>
                 </div>
               </details>
+              </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">ID Idealista</label>
-                  <input type="text" required value={formData.listingCode} onChange={(e) => setFormData({ ...formData, listingCode: e.target.value })} className="input" placeholder="Ej: 110595991" />
+              <div className="rounded-xl border-2 border-gray-300 bg-white shadow-sm p-4 space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600">Cualificación y filtros</h3>
+              <div className="flex items-start justify-between gap-4 rounded-xl border border-gray-200 bg-white px-4 py-3">
+                <div className="min-w-0">
+                  <label htmlFor="quickQualificationEnabled" className="text-sm font-medium text-gray-800">
+                    Cualificación rápida
+                  </label>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Si está activado, cuando entre un interesado por este anuncio se notificará al agente y el asistente hará handoff sin cualificar.
+                  </p>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Referencia</label>
-                  <input 
-                    type="text" 
-                    required
-                    value={formData.referencia} 
-                    onChange={(e) => setFormData({ ...formData, referencia: e.target.value })} 
-                    className="input" 
-                    placeholder="Mismo que ID si no tienen CRM" 
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del Agente</label>
-                  <input type="text" required value={formData.agentName} onChange={(e) => setFormData({ ...formData, agentName: e.target.value })} className="input" placeholder="Ej: Paco" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Operación</label>
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setIsOperationTypeDropdownOpen(!isOperationTypeDropdownOpen)}
-                      className={cn(
-                        "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
-                        isOperationTypeDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
-                      )}
-                    >
-                      <span>{formData.operationType}</span>
-                      <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isOperationTypeDropdownOpen && "rotate-180")} />
-                    </button>
-                    {isOperationTypeDropdownOpen && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setIsOperationTypeDropdownOpen(false)} />
-                        <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
-                          {["Venta", "Alquiler"].map((type) => (
-                            <button
-                              key={type}
-                              type="button"
-                              onClick={() => {
-                                const newType = type as OperationType;
-                                setFormData({
-                                  ...formData,
-                                  operationType: newType,
-                                  price: formData.price ? formatPrice(formData.price, newType) : ""
-                                });
-                                setIsOperationTypeDropdownOpen(false);
-                              }}
-                              className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
-                            >
-                              {formData.operationType === type ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
-                              <span className="text-sm text-gray-700 font-medium">{type}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={formData.quickQualificationEnabled === true}
+                  onClick={() => setFormData((prev) => ({ ...prev, quickQualificationEnabled: prev.quickQualificationEnabled !== true }))}
+                  className={cn(
+                    "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none",
+                    formData.quickQualificationEnabled === true ? "bg-primary-600" : "bg-gray-300"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+                      formData.quickQualificationEnabled === true ? "translate-x-5" : "translate-x-1"
                     )}
-                  </div>
-                </div>
+                  />
+                  <span className="sr-only">Activar cualificación rápida</span>
+                </button>
+                <input
+                  type="checkbox"
+                  id="quickQualificationEnabled"
+                  checked={formData.quickQualificationEnabled === true}
+                  onChange={(e) => setFormData({ ...formData, quickQualificationEnabled: e.target.checked })}
+                  className="sr-only"
+                  tabIndex={-1}
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Condiciones a aceptar</label>
-                <div className="relative">
+                <div className={cn("relative", formData.quickQualificationEnabled === true && "opacity-50")}>
                   <div
                     ref={featuresGhostRef}
                     aria-hidden="true"
@@ -1333,7 +1513,12 @@ export function Listings() {
                     •
                   </div>
                   <textarea
+                    name="features"
                     ref={featuresRef}
+                    maxLength={150}
+                    value={formData.features}
+                    disabled={formData.quickQualificationEnabled === true}
+                    onChange={(e) => setFormData({ ...formData, features: e.target.value })}
                     onKeyDown={handleFeaturesKeyDown}
                     onInput={(e) => normalizeFeaturesTextareaInPlace(e.currentTarget)}
                     onBlur={(e) => {
@@ -1346,14 +1531,21 @@ export function Listings() {
                     placeholder={"• Entrada a la vivienda de tierra\n• Vivienda ocupada\n• Vivienda de temporada"}
                   />
                 </div>
-                <p className="mt-1 text-xs text-gray-500">Una por línea.</p>
+                <div className="mt-1 flex justify-between text-xs">
+                  <span className={cn(formErrors.features ? "text-red-600" : "text-gray-500")}>
+                    {formData.quickQualificationEnabled === true
+                      ? "Desactivado porque la cualificación rápida está activa."
+                      : (formErrors.features || "Una por línea.")}
+                  </span>
+                  <span className="text-gray-400">{(formData.features || "").length}/150</span>
+                </div>
               </div>
 
               {/* Filtros de cualificación (opcionales) */}
               {formData.operationType === "Alquiler" && (
-                <div className="border border-blue-100 rounded-lg p-4 bg-blue-50 space-y-3">
-                  <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Filtros de cualificación (opcionales)</p>
-                  <p className="text-xs text-blue-600">Si se rellenan, un agente IA decidirá automáticamente si el lead cumple los criterios antes de notificarte.</p>
+                <div className={cn("space-y-3", formData.quickQualificationEnabled === true && "opacity-50")}>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">Filtros de cualificación (opcionales)</p>
+                  <p className="text-xs text-gray-500">Si se rellenan, el asistente decidirá automáticamente si el lead cumple los criterios antes de notificarte.</p>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Ingresos netos mensuales mínimos (€)</label>
@@ -1361,6 +1553,7 @@ export function Listings() {
                         type="number"
                         min={0}
                         value={formData.minMonthlyIncome ?? ""}
+                        disabled={formData.quickQualificationEnabled === true}
                         onChange={(e) => setFormData({ ...formData, minMonthlyIncome: e.target.value === "" ? undefined : Number(e.target.value) })}
                         className="input"
                         placeholder="Ej: 2000"
@@ -1372,6 +1565,7 @@ export function Listings() {
                         type="number"
                         min={1}
                         value={formData.maxPeople ?? ""}
+                        disabled={formData.quickQualificationEnabled === true}
                         onChange={(e) => setFormData({ ...formData, maxPeople: e.target.value === "" ? undefined : Number(e.target.value) })}
                         className="input"
                         placeholder="Ej: 3"
@@ -1382,52 +1576,40 @@ export function Listings() {
               )}
 
               {formData.operationType === "Venta" && (
-                <div className="border border-blue-100 rounded-lg p-4 bg-blue-50">
-                  <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2">Filtros de cualificación (opcionales)</p>
-                  <p className="text-xs text-blue-600 mb-3">Si se activa, un agente IA descartará automáticamente leads sin hipoteca concedida ni pago al contado.</p>
+                <div className={cn(formData.quickQualificationEnabled === true && "opacity-50")}>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-600 mb-2">Filtros de cualificación (opcionales)</p>
+                  <p className="text-xs text-gray-500 mb-3">Si se activa, el asistente descartará automáticamente leads sin hipoteca concedida ni pago al contado.</p>
                   <label className="flex items-center gap-3 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={formData.requireMortgageApproved ?? false}
+                      disabled={formData.quickQualificationEnabled === true}
                       onChange={(e) => setFormData({ ...formData, requireMortgageApproved: e.target.checked })}
-                      className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                     />
                     <span className="text-sm text-gray-700">Solo con hipoteca concedida o pago al contado</span>
                   </label>
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Precio</label>
-                  <input
-                    type="text"
-                    value={formData.price}
-                    onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                    onBlur={() => {
-                      if (formData.price) {
-                        setFormData({
-                          ...formData,
-                          price: formatPrice(formData.price, formData.operationType)
-                        });
-                      }
-                    }}
-                    className="input"
-                    placeholder={formData.operationType === "Venta" ? "Ej: 250.000 €" : "Ej: 965 €/mes"}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Metros cuadrados (m²)</label>
-                  <input type="text" value={formData.m2} onChange={(e) => setFormData({ ...formData, m2: e.target.value })} className="input" placeholder="Ej: 35" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Habitaciones</label>
-                  <input type="text" value={formData.rooms} onChange={(e) => setFormData({ ...formData, rooms: e.target.value })} className="input" placeholder="Ej: 1" />
-                </div>
               </div>
+
+              <div className="rounded-xl border-2 border-gray-300 bg-white shadow-sm p-4 space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600">Contenido comercial</h3>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Descripción de anuncio en Idealista</label>
-                <textarea value={formData.idealistaDescription} onChange={(e) => setFormData({ ...formData, idealistaDescription: e.target.value })} className="input min-h-[120px]" placeholder="Pega aquí la descripción completa del anuncio de Idealista..." />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Descripción de anuncio en Idealista <span className="text-red-500">*</span></label>
+                <textarea
+                  name="idealistaDescription"
+                  maxLength={5000}
+                  value={formData.idealistaDescription}
+                  onChange={(e) => setFormData({ ...formData, idealistaDescription: e.target.value })}
+                  className={cn("input min-h-[120px]", submitAttempted && formErrors.idealistaDescription && "border-red-400 focus:ring-red-400")}
+                  placeholder="Pega aquí la descripción completa del anuncio de Idealista..."
+                />
+                <div className="mt-1 flex justify-between text-xs">
+                  <span className="text-red-600">{submitAttempted ? (formErrors.idealistaDescription || "") : ""}</span>
+                  <span className="text-gray-400">{(formData.idealistaDescription || "").length}/5000</span>
+                </div>
               </div>
 
               {formData.operationType === "Venta" && (
@@ -1440,9 +1622,21 @@ export function Listings() {
               {formData.profitabilityReportAvailable && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Informe de Rentabilidad</label>
-                  <textarea value={formData.profitabilityReport} onChange={(e) => setFormData({ ...formData, profitabilityReport: e.target.value })} className="input min-h-[120px]" placeholder="Incluye aquí el informe de rentabilidad..." />
+                  <textarea
+                    name="profitabilityReport"
+                    maxLength={5000}
+                    value={formData.profitabilityReport}
+                    onChange={(e) => setFormData({ ...formData, profitabilityReport: e.target.value })}
+                    className={cn("input min-h-[120px]", formErrors.profitabilityReport && "border-red-400 focus:ring-red-400")}
+                    placeholder="Incluye aquí el informe de rentabilidad..."
+                  />
+                  <div className="mt-1 flex justify-between text-xs">
+                    <span className="text-red-600">{submitAttempted ? (formErrors.profitabilityReport || "") : ""}</span>
+                    <span className="text-gray-400">{(formData.profitabilityReport || "").length}/5000</span>
+                  </div>
                 </div>
               )}
+              </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
                 <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>
