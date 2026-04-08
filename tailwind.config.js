@@ -8,17 +8,22 @@ export default {
     extend: {
       colors: {
         primary: {
-          50: '#FFF9EB',
-          100: '#FEF0C7',
-          200: '#FEE08A',
-          300: '#FCCC4D',
-          400: '#F8B82D',
-          500: '#F5A623',
-          600: '#D98A06',
-          700: '#B66E07',
-          800: '#935609',
-          900: '#78460D',
-          950: '#45260A',
+          // Brand orange (logo): #FFB03F
+          50: "#FFF7E6",
+          100: "#FFEBC2",
+          200: "#FFD58A",
+          300: "#FFC04D",
+          400: "#FFB84A",
+          500: "#FFB03F",
+          600: "#E8992C",
+          700: "#C97F1E",
+          800: "#A96616",
+          900: "#7A4A10",
+          950: "#4A2C08",
+        },
+        // WhatsApp-style user bubble green (used on landing demo)
+        whatsapp: {
+          bubble: "#DCF8C6",
         },
       },
     },

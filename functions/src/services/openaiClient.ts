@@ -1,8 +1,15 @@
 import OpenAI from "openai";
 import { defineString } from "firebase-functions/params";
-import { ConversationState, HistoryItem, LeadSummary, BotStyle } from "../types";
-
-const OPENAI_API_KEY = defineString("OPENAI_API_KEY");
+import { OPENAI_API_KEY } from "../secrets";
+import {
+  ConversationState,
+  HistoryItem,
+  LeadSummary,
+  BotStyle,
+  OperationType,
+  ListingForResolution,
+  AgentListingResolutionDecision,
+} from "../types";
 const OPENAI_MODEL = defineString("OPENAI_MODEL");
 
 let client: OpenAI | null = null;
@@ -53,7 +60,8 @@ FLOW FOR "Sale"
 Objective: Validate interest and payment method.
 
 STEP 1 - NAME:
-- If the user hasn't introduced themselves, ask: "Who am I speaking with?"
+- If a client name is provided in the "SPECIFIC DATA FOR THIS CONVERSATION" section, you ALREADY know the name → DO NOT ask "Who am I speaking with?" and do not ask for name/surname.
+- Only if the name is NOT provided there and the user hasn't introduced themselves, ask: "Who am I speaking with?"
 - If they already introduced themselves, DO NOT ask again.
 
 STEP 2 - Features:
@@ -70,8 +78,8 @@ STEP 4 - Visit availability:
 - NEVER confirm a specific time or date. Just collect their preference.
 
 STEP 5 - Closing:
-- BEFORE CLOSING: If you haven't captured the user's name yet, ask for it ONE LAST TIME instead of closing the conversation.
-- When you have the information (including availability, and you have asked for their name) → natural closing message indicating the agent WILL CALL to CONFIRM the visit + marker.
+- BEFORE CLOSING: If the name is NOT known (not provided in the conversation data and not introduced by the user), you may ask ONCE for their name. Otherwise, NEVER ask for it again.
+- When you have the information (including availability) → natural closing message indicating the agent WILL CALL to CONFIRM the visit + marker.
 - NEVER give the impression that the visit is already confirmed or scheduled.
 
 ========================
@@ -80,7 +88,8 @@ FLOW FOR "Rental"
 Objective: Get the tenant profile.
 
 STEP 1 - NAME:
-- If the user hasn't introduced themselves, ask: "Who am I speaking with?"
+- If a client name is provided in the "SPECIFIC DATA FOR THIS CONVERSATION" section, you ALREADY know the name → DO NOT ask "Who am I speaking with?" and do not ask for name/surname.
+- Only if the name is NOT provided there and the user hasn't introduced themselves, ask: "Who am I speaking with?"
 - If they already introduced themselves, DO NOT ask again.
 
 STEP 2 - Tenant data (GROUP in 1-2 messages):
@@ -94,8 +103,8 @@ STEP 3 - Visit availability:
 - NEVER confirm a specific time or date. Just collect their preference.
 
 STEP 4 - Closing:
-- BEFORE CLOSING: If you haven't captured the user's name yet, ask for it ONE LAST TIME instead of closing the conversation.
-- When you have: people, income, dates, pets, availability (and you have asked for their name) → natural closing message indicating the agent WILL CALL to CONFIRM the visit + marker.
+- BEFORE CLOSING: If the name is NOT known (not provided in the conversation data and not introduced by the user), you may ask ONCE for their name. Otherwise, NEVER ask for it again.
+- When you have: people, income, dates, pets, availability → natural closing message indicating the agent WILL CALL to CONFIRM the visit + marker.
 - DO NOT summarize the data before closing.
 - NEVER give the impression that the visit is already confirmed or scheduled.
 
@@ -162,7 +171,8 @@ FLUJO PARA "Venta"
 Objetivo: Validar interés y método de pago.
 
 PASO 1 - NOMBRE:
-- Si el usuario no se ha presentado, pregúntalo: "¿Con quién hablo?"
+- Si en "DATOS ESPECÍFICOS DE ESTA CONVERSACIÓN" viene un nombre de cliente, YA lo conoces → NO preguntes "¿Con quién hablo?" ni pidas nombre/apellidos.
+- Solo si NO viene nombre ahí y el usuario no se ha presentado, pregúntalo: "¿Con quién hablo?"
 - Si ya se presentó, NO vuelvas a preguntarlo.
 
 PASO 2 - Características:
@@ -179,8 +189,8 @@ PASO 4 - Disponibilidad para visitar:
 - NUNCA confirmes una hora o fecha específica. Solo recoges preferencia.
 
 PASO 5 - Cierre:
-- ANTES DE CERRAR: Si aún no has capturado el nombre del usuario, pídeselo UNA ÚLTIMA VEZ en lugar de cerrar la conversación.
-- Cuando tengas la información (incluida disponibilidad, y hayas pedido el nombre) → mensaje de cierre natural indicando que el comercial LLAMARÁ para CONFIRMAR la visita + marcador.
+- ANTES DE CERRAR: Si el nombre NO es conocido (no viene en los datos de conversación y el usuario no se ha presentado), puedes pedirlo UNA sola vez. Si el nombre ya es conocido, NUNCA lo vuelvas a pedir.
+- Cuando tengas la información (incluida disponibilidad) → mensaje de cierre natural indicando que el comercial LLAMARÁ para CONFIRMAR la visita + marcador.
 - NUNCA des la impresión de que la visita ya está confirmada o agendada.
 
 ========================
@@ -189,7 +199,8 @@ FLUJO PARA "Alquiler"
 Objetivo: Obtener perfil del inquilino.
 
 PASO 1 - NOMBRE:
-- Si el usuario no se ha presentado, pregúntalo: "¿Con quién hablo?"
+- Si en "DATOS ESPECÍFICOS DE ESTA CONVERSACIÓN" viene un nombre de cliente, YA lo conoces → NO preguntes "¿Con quién hablo?" ni pidas nombre/apellidos.
+- Solo si NO viene nombre ahí y el usuario no se ha presentado, pregúntalo: "¿Con quién hablo?"
 - Si ya se presentó, NO vuelvas a preguntarlo.
 
 PASO 2 - Datos del inquilino (AGRUPA en 1-2 mensajes):
@@ -203,8 +214,8 @@ PASO 3 - Disponibilidad para visitar:
 - NUNCA confirmes una hora o fecha específica. Solo recoges preferencia.
 
 PASO 4 - Cierre:
-- ANTES DE CERRAR: Si aún no has capturado el nombre del usuario, pídeselo UNA ÚLTIMA VEZ en lugar de cerrar la conversación.
-- Cuando tengas: personas, ingresos, fechas, mascotas y disponibilidad (y hayas pedido el nombre) → mensaje de cierre natural indicando que el comercial LLAMARÁ para CONFIRMAR la visita + marcador.
+- ANTES DE CERRAR: Si el nombre NO es conocido (no viene en los datos de conversación y el usuario no se ha presentado), puedes pedirlo UNA sola vez. Si el nombre ya es conocido, NUNCA lo vuelvas a pedir.
+- Cuando tengas: personas, ingresos, fechas, mascotas y disponibilidad → mensaje de cierre natural indicando que el comercial LLAMARÁ para CONFIRMAR la visita + marcador.
 - NO resumas los datos antes de cerrar.
 - NUNCA des la impresión de que la visita ya está confirmada o agendada.
 
@@ -257,9 +268,15 @@ function buildInstructions(state: ConversationState, style: BotStyle): string {
     "========================",
     language === "en" ? "SPECIFIC DATA FOR THIS CONVERSATION" : "DATOS ESPECÍFICOS DE ESTA CONVERSACIÓN",
     "========================",
+    language === "en"
+      ? `Client name (already known): ${state.name || "UNKNOWN"}`
+      : `Nombre del cliente (ya conocido): ${state.name || "DESCONOCIDO"}`,
     language === "en" ? `Listing link: ${state.link}` : `Enlace del anuncio: ${state.link}`,
     language === "en" ? `Address: ${state.address || "Not specified"}` : `Dirección: ${state.address || "No especificada"}`,
     language === "en" ? `Communicated features: ${state.features}` : `Características comunicadas: ${state.features}`,
+    language === "en"
+      ? `Idealista description (verbatim, may be long): ${state.idealistaDescription || "Not provided"}`
+      : `Descripción de Idealista (texto literal, puede ser largo): ${state.idealistaDescription || "No proporcionada"}`,
     language === "en"
       ? `Profitability report available: ${state.profitabilityReportAvailable ? "TRUE" : "FALSE"}`
       : `Informe de rentabilidad disponible: ${state.profitabilityReportAvailable ? "TRUE" : "FALSE"}`,
@@ -488,5 +505,316 @@ export async function translateTextToBritishEnglish(text: string): Promise<strin
   }
 
   return output.trim();
+}
+
+type ListingCandidateForLlm = {
+  listingCode: string;
+  description?: string;
+  address?: string;
+  price?: string | number;
+  link?: string;
+};
+
+export type ListingResolutionDecision =
+  | { kind: "match"; listingCode: string }
+  | { kind: "ambiguous"; listingCodes: string[] }
+  | { kind: "none" };
+
+export async function decideListingFromCandidates(params: {
+  userText: string;
+  candidates: ListingCandidateForLlm[];
+  operationType?: string;
+}): Promise<ListingResolutionDecision> {
+  const model = resolveModel();
+
+  const instructions = `
+Eres un clasificador que debe elegir cuál anuncio (si alguno) coincide con el mensaje del cliente.
+
+Responde EXCLUSIVAMENTE con UNA de estas formas (sin texto extra):
+- match:<listingCode>
+- ambiguous:<listingCode1>,<listingCode2>,...   (2 a 5 códigos, solo los plausibles)
+- none
+
+Reglas:
+- Si el usuario pegó un enlace o referencia que claramente corresponde a un candidato, elige match.
+- Si hay duda real entre varios, usa ambiguous con los mejores.
+- Si no hay suficiente información, responde none.
+  `.trim();
+
+  const input = [
+    `Tipo de operación: ${params.operationType || "desconocido"}`,
+    "",
+    "Texto del cliente:",
+    params.userText.trim().slice(0, 2000),
+    "",
+    "Candidatos (JSON):",
+    JSON.stringify(params.candidates.slice(0, 30)),
+  ].join("\n");
+
+  const response = await getClient().responses.create({
+    model,
+    instructions,
+    input,
+    store: false,
+    text: { format: { type: "text" } },
+  });
+
+  const raw = (response.output_text || "").trim();
+  if (!raw) return { kind: "none" };
+
+  const m = raw.match(/^(match|ambiguous|none)\s*:?\\s*(.*)$/i);
+  if (!m) return { kind: "none" };
+  const kind = m[1].toLowerCase();
+  const rest = (m[2] || "").trim();
+
+  if (kind === "none") return { kind: "none" };
+  if (kind === "match") {
+    const code = rest.split(/[\\s,]+/).find(Boolean);
+    return code ? { kind: "match", listingCode: code } : { kind: "none" };
+  }
+  const codes = rest
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+  return codes.length >= 2 ? { kind: "ambiguous", listingCodes: codes } : { kind: "none" };
+}
+
+function clampConfidence(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function parseConfidence(raw: string | undefined, fallback = 0.5): number {
+  if (!raw) return fallback;
+  const normalized = raw.replace(",", ".").trim();
+  const parsed = Number(normalized);
+  return clampConfidence(Number.isFinite(parsed) ? parsed : fallback);
+}
+
+function parseAgentListingResolution(
+  rawOutput: string,
+  validListingCodes: Set<string>
+): AgentListingResolutionDecision {
+  const fallback: AgentListingResolutionDecision = {
+    kind: "none",
+    confidence: 0,
+    reason: "No parseable decision from model output.",
+  };
+  const raw = (rawOutput || "").trim();
+  if (!raw) return fallback;
+
+  const firstLine = raw.split(/\n+/)[0].trim();
+  const segments = firstLine.split(":");
+  if (segments.length === 0) return fallback;
+  const kind = (segments[0] || "").trim().toLowerCase();
+
+  if (kind === "match") {
+    const listingCode = (segments[1] || "").trim();
+    if (!listingCode || !validListingCodes.has(listingCode)) return fallback;
+    const confidence = parseConfidence(segments[2], 0.8);
+    const reason = segments.slice(3).join(":").trim() || "Matched by strongest combined evidence.";
+    return { kind: "match", listingCode, confidence, reason };
+  }
+
+  if (kind === "ambiguous") {
+    const candidatesRaw = (segments[1] || "").trim();
+    const listingCodes = Array.from(new Set(
+      candidatesRaw
+        .split(",")
+        .map((code) => code.trim())
+        .filter((code) => !!code && validListingCodes.has(code))
+    )).slice(0, 5);
+    if (listingCodes.length < 2) return fallback;
+    const confidence = parseConfidence(segments[2], 0.55);
+    const reason = segments.slice(3).join(":").trim() || "Several listings fit similarly.";
+    return { kind: "ambiguous", listingCodes, confidence, reason };
+  }
+
+  if (kind === "none") {
+    const confidence = parseConfidence(segments[1], 0.4);
+    const reason = segments.slice(2).join(":").trim() || "Insufficient evidence to match safely.";
+    return { kind: "none", confidence, reason };
+  }
+
+  return fallback;
+}
+
+export async function resolveListingWithAgent(params: {
+  bufferText: string;
+  activeListings: ListingForResolution[];
+  operationType?: OperationType;
+}): Promise<AgentListingResolutionDecision> {
+  if (!params.activeListings || params.activeListings.length === 0) {
+    return {
+      kind: "none",
+      confidence: 0,
+      reason: "No active listings available.",
+    };
+  }
+
+  const listingsPayload = params.activeListings.slice(0, 700).map((listing) => ({
+    listingCode: listing.listingCode,
+    operationType: listing.operationType || "",
+    price: listing.price ?? "",
+    address: listing.address || listing.street || "",
+    street: listing.street || "",
+    city: listing.city || "",
+    province: listing.province || "",
+    description: (listing.description || "").slice(0, 160),
+    link: listing.link || "",
+  }));
+  const validListingCodes = new Set(listingsPayload.map((l) => l.listingCode).filter(Boolean));
+
+  const instructions = `
+Eres un agente de matching inmobiliario. Tu tarea es identificar qué anuncio del catálogo activo corresponde al mensaje del cliente.
+
+Debes responder EXCLUSIVAMENTE en UNA línea con este formato:
+- match:<listingCode>:<confidence_0_1>:<reason_short>
+- ambiguous:<listingCode1>,<listingCode2>,...:<confidence_0_1>:<reason_short>
+- none:<confidence_0_1>:<reason_short>
+
+Reglas obligatorias:
+1) Prioriza coincidencias explícitas de referencia o enlace.
+2) Interpreta precios de forma flexible y humana:
+   - ejemplos: "2200", "2200€/mes", "2.2k", "400mil", "0.4M".
+3) En venta/alquiler permite aproximación razonable de precio (no exactitud rígida), pero evita falsos positivos.
+4) Usa también dirección parcial, zona, ciudad y variantes ortográficas.
+5) Si hay duda real entre varios anuncios, devuelve ambiguous con 2-5 códigos.
+6) Si no hay evidencia suficiente, devuelve none.
+7) No inventes códigos; usa solo códigos del catálogo proporcionado.
+  `.trim();
+
+  const input = [
+    `Tipo de operación detectado: ${params.operationType || "desconocido"}`,
+    "",
+    "Texto combinado del cliente:",
+    (params.bufferText || "").trim().slice(0, 4000),
+    "",
+    "Catálogo activo (JSON):",
+    JSON.stringify(listingsPayload),
+  ].join("\n");
+
+  const response = await getClient().responses.create({
+    model: resolveModel(),
+    instructions,
+    input,
+    store: false,
+    text: { format: { type: "text" } },
+  });
+
+  return parseAgentListingResolution(response.output_text || "", validListingCodes);
+}
+
+export type LeadFilterResult = { pass: boolean; reason: string };
+
+export async function checkLeadPassesFilters(params: {
+  conversationSummary: string;
+  operationType: OperationType;
+  minMonthlyIncome?: number;
+  maxPeople?: number;
+  requireMortgageApproved?: boolean;
+}): Promise<LeadFilterResult> {
+  const filterLines: string[] = [];
+
+  if (params.operationType === "Alquiler") {
+    if (params.minMonthlyIncome != null) {
+      filterLines.push(`- Ingresos netos mensuales mínimos exigidos: ${params.minMonthlyIncome} €/mes`);
+    }
+    if (params.maxPeople != null) {
+      filterLines.push(`- Número máximo de personas permitidas: ${params.maxPeople}`);
+    }
+  } else {
+    if (params.requireMortgageApproved) {
+      filterLines.push(`- Solo se acepta compra al contado o con hipoteca ya concedida por el banco. Se descarta cualquier lead que necesite tramitar la hipoteca o no lo haya mencionado.`);
+    }
+  }
+
+  if (filterLines.length === 0) {
+    return { pass: true, reason: "No hay filtros activos." };
+  }
+
+  const instructions = `
+Eres un agente de filtrado de leads inmobiliarios. Tu misión es determinar si el lead cumple los criterios de filtrado del anuncio.
+
+Criterios de filtrado activos:
+${filterLines.join("\n")}
+
+Reglas:
+- Analiza el resumen de conversación y decide si el lead cumple TODOS los criterios.
+- Si un criterio relevante no se menciona en el resumen, considera que NO se cumple (actitud conservadora).
+- Responde EXCLUSIVAMENTE con JSON válido, sin texto adicional: {"pass": true, "reason": "..."} o {"pass": false, "reason": "..."}
+- La razón debe ser breve (máximo 1 frase en español) y explicar el motivo del resultado.
+`.trim();
+
+  const response = await getClient().responses.create({
+    model: "gpt-4o-mini",
+    instructions,
+    input: `Resumen de conversación con el lead:\n${params.conversationSummary}`,
+    store: false,
+    text: { format: { type: "text" } },
+  });
+
+  const output = (response.output_text || "").trim();
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  const jsonCandidate = start !== -1 && end !== -1 && end > start ? output.slice(start, end + 1) : output;
+
+  try {
+    const parsed = JSON.parse(jsonCandidate);
+    const pass = parsed.pass === true;
+    const reason = typeof parsed.reason === "string" && parsed.reason.trim()
+      ? parsed.reason.trim()
+      : pass ? "Lead cumple los criterios." : "Lead no cumple los criterios.";
+    return { pass, reason };
+  } catch {
+    console.warn("checkLeadPassesFilters: failed to parse AI response", jsonCandidate);
+    // Fail-open: if we can't parse the response, let the lead through to avoid false rejections
+    return { pass: true, reason: "No se pudo evaluar el filtro; lead aprobado por defecto." };
+  }
+}
+
+export type ConfirmDenyDecision = "confirm" | "deny" | "unclear";
+
+export async function classifyConfirmDeny(params: {
+  userText: string;
+  promptContext?: string;
+}): Promise<ConfirmDenyDecision> {
+  const model = resolveModel();
+  const instructions = `
+Clasifica la intención del usuario respecto a una confirmación de “¿Es este el anuncio?”.
+
+Responde EXCLUSIVAMENTE con una palabra:
+- confirm
+- deny
+- unclear
+
+Guía:
+- confirm: el usuario confirma que sí es, o muestra acuerdo claro para continuar con ese anuncio.
+- deny: el usuario dice que no es, que es otro, o rechaza explícitamente.
+- unclear: no queda claro, o contesta otra cosa.
+  `.trim();
+
+  const input = [
+    params.promptContext ? `Contexto:\n${params.promptContext}` : "",
+    "Mensaje del usuario:",
+    params.userText.trim().slice(0, 1000),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const response = await getClient().responses.create({
+    model,
+    instructions,
+    input,
+    store: false,
+    text: { format: { type: "text" } },
+  });
+
+  const raw = (response.output_text || "").trim().toLowerCase();
+  if (raw === "confirm" || raw === "deny" || raw === "unclear") return raw;
+  return "unclear";
 }
 

@@ -5,6 +5,7 @@ import type { Lead, QualificationStatus, OperationType } from "../types";
 import { updateLead } from "../services/leads";
 import { updateConversation } from "../services/conversations";
 import { formatPhone, cn } from "../lib/utils";
+import { Button } from "./ui";
 
 interface LeadEditModalProps {
     lead: Lead;
@@ -22,7 +23,7 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
     const [income, setIncome] = useState<number | "">(lead.income ?? "");
     const [paymentMethod, setPaymentMethod] = useState<"Contado" | "Hipoteca" | "">(lead.paymentMethod ?? "");
     const [notes, setNotes] = useState(lead.notes || "");
-    const [tags, setTags] = useState<string[]>(lead.tags || []);
+    const [tags, setTags] = useState<string[]>((lead.tags || []).filter((t) => t.toLowerCase() !== "lead"));
     const [newTag, setNewTag] = useState("");
     const [saving, setSaving] = useState(false);
 
@@ -40,13 +41,20 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
         setIncome(lead.income ?? "");
         setPaymentMethod(lead.paymentMethod ?? "");
         setNotes(lead.notes || "");
-        setTags(lead.tags || []);
+        setTags((lead.tags || []).filter((t) => t.toLowerCase() !== "lead"));
     }, [lead]);
 
     const handleAddTag = (e?: React.FormEvent) => {
         e?.preventDefault();
-        if (newTag.trim() && !tags.includes(newTag.trim())) {
-            setTags([...tags, newTag.trim()]);
+        const candidate = newTag.trim();
+        if (!candidate) return;
+        if (candidate.toLowerCase() === "lead") {
+            toast.error("El tag 'lead' ya no se usa en Leads");
+            setNewTag("");
+            return;
+        }
+        if (!tags.includes(candidate)) {
+            setTags([...tags, candidate]);
             setNewTag("");
         }
     };
@@ -109,9 +117,15 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                             <p className="text-sm text-gray-500">{formatPhone(lead.phone)}</p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors p-1.5 rounded-btn hover:bg-gray-100">
+                    <Button
+                        onClick={onClose}
+                        variant="ghost"
+                        size="icon"
+                        className="text-gray-400 hover:text-gray-600"
+                        title="Cerrar"
+                    >
                         <X size={24} />
-                    </button>
+                    </Button>
                 </div>
 
                 {/* Content */}
@@ -139,7 +153,7 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                                     <Hash size={16} className="text-primary-500" />
                                     Código de anuncio
                                 </span>
-                                {listingCode && (
+                                {listingCode && listingCode !== "__pending__" && (
                                     <a
                                         href={`https://www.idealista.com/inmueble/${listingCode}`}
                                         target="_blank"
@@ -340,16 +354,18 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                                     <>
                                         <div className="fixed inset-0 z-40" onClick={() => setIsPaymentMethodDropdownOpen(false)} />
                                         <div className="absolute left-0 mt-2 w-full bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
-                                            {[
-                                                { value: "", label: "No especificado" },
-                                                { value: "Contado", label: "Contado" },
-                                                { value: "Hipoteca", label: "Hipoteca" }
-                                            ].map((opt) => (
+                                            {(
+                                                [
+                                                    { value: "", label: "No especificado" },
+                                                    { value: "Contado", label: "Contado" },
+                                                    { value: "Hipoteca", label: "Hipoteca" },
+                                                ] as const
+                                            ).map((opt) => (
                                                 <button
                                                     key={opt.value}
                                                     type="button"
                                                     onClick={() => {
-                                                        setPaymentMethod(opt.value as any);
+                                                        setPaymentMethod(opt.value);
                                                         setIsPaymentMethodDropdownOpen(false);
                                                     }}
                                                     className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
@@ -393,13 +409,14 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                                 placeholder="Nueva etiqueta..."
                                 className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
                             />
-                            <button
+                            <Button
                                 type="submit"
                                 disabled={!newTag.trim()}
-                                className="px-4 py-2 bg-primary-50 text-primary-600 hover:bg-primary-100 rounded-btn font-semibold text-sm transition-colors disabled:opacity-50"
+                                variant="outline"
+                                className="border-primary-200 text-primary-700 hover:bg-primary-50"
                             >
                                 Añadir
-                            </button>
+                            </Button>
                         </form>
                     </div>
 
@@ -420,33 +437,23 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
 
                 {/* Footer */}
                 <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-between">
-                    <button
+                    <Button
                         onClick={() => onViewConversation(lead)}
-                        className="flex items-center gap-2 px-4 py-2 text-primary-600 hover:bg-primary-50 rounded-btn transition-colors text-sm font-semibold border border-primary-200"
+                        variant="outline"
+                        className="border-primary-200 text-primary-700 hover:bg-primary-50"
                     >
                         <MessageSquare size={18} />
                         Ver conversación
-                    </button>
+                    </Button>
 
                     <div className="flex gap-3">
-                        <button
-                            onClick={onClose}
-                            className="px-6 py-2 text-gray-700 hover:bg-gray-200 rounded-btn transition-colors text-sm font-semibold"
-                        >
+                        <Button onClick={onClose} variant="secondary">
                             Cancelar
-                        </button>
-                        <button
-                            onClick={handleSave}
-                            disabled={saving}
-                            className="flex items-center gap-2 px-8 py-2 bg-primary-600 text-white rounded-btn hover:bg-primary-700 transition-all text-sm font-bold shadow-lg shadow-primary-200 disabled:opacity-50"
-                        >
-                            {saving ? (
-                                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                            ) : (
-                                <Save size={18} />
-                            )}
+                        </Button>
+                        <Button onClick={handleSave} loading={saving} className="px-8">
+                            <Save size={18} />
                             Guardar Cambios
-                        </button>
+                        </Button>
                     </div>
                 </div>
             </div>

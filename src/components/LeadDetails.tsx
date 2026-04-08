@@ -4,6 +4,9 @@ import { Tag, StickyNote, Plus, X, Save } from "lucide-react";
 import type { Lead, Conversation } from "../types";
 import { updateLead, getLeadByChatId } from "../services/leads";
 import { updateConversation } from "../services/conversations";
+import { cn } from "../lib/utils";
+import { customLeadTagMd } from "../lib/metricTheme";
+import { Button } from "./ui";
 
 interface LeadDetailsProps {
     lead?: Lead;
@@ -22,24 +25,35 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
     useEffect(() => {
         if (initialLead) {
             setNotes(initialLead.notes || "");
-            setTags(initialLead.tags || []);
+            setTags((initialLead.tags || []).filter((t) => t.toLowerCase() !== "lead"));
             setLeadId(initialLead.id);
             setChatId(initialLead.chatId);
         } else if (initialConversation) {
             setNotes(initialConversation.notes || "");
-            setTags(initialConversation.tags || []);
+            setTags([]);
             setChatId(initialConversation.chatId);
-            // Try to find lead to get leadId
+            // Source of truth: tags belong to Lead.
             getLeadByChatId(initialConversation.chatId).then(l => {
-                if (l) setLeadId(l.id);
+                if (l) {
+                    setLeadId(l.id);
+                    setNotes(l.notes || initialConversation.notes || "");
+                    setTags((l.tags || []).filter((t) => t.toLowerCase() !== "lead"));
+                }
             });
         }
     }, [initialLead, initialConversation]);
 
     const handleAddTag = (e?: React.FormEvent) => {
         e?.preventDefault();
-        if (newTag.trim() && !tags.includes(newTag.trim())) {
-            setTags([...tags, newTag.trim()]);
+        const candidate = newTag.trim();
+        if (!candidate) return;
+        if (candidate.toLowerCase() === "lead") {
+            toast.error("El tag 'lead' ya no se usa en Leads");
+            setNewTag("");
+            return;
+        }
+        if (!tags.includes(candidate)) {
+            setTags([...tags, candidate]);
             setNewTag("");
         }
     };
@@ -51,16 +65,31 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
     const handleSave = async () => {
         setSaving(true);
         try {
-            const data = { notes, tags };
+            const leadData = { notes, tags };
 
             const promises: Promise<any>[] = [];
 
             if (leadId) {
-                promises.push(updateLead(leadId, data));
+                promises.push(updateLead(leadId, leadData));
             }
 
             if (chatId) {
-                promises.push(updateConversation(chatId, data));
+                // Keep notes mirrored in conversation for chat view.
+                // Tags are lead-owned and should not depend on conversation storage.
+                promises.push(updateConversation(chatId, { notes }));
+            }
+
+            if (!leadId && chatId) {
+                const matchedLead = await getLeadByChatId(chatId);
+                if (matchedLead) {
+                    promises.push(updateLead(matchedLead.id, leadData));
+                    setLeadId(matchedLead.id);
+                }
+            }
+
+            if (promises.length === 0) {
+                toast.error("No se encontró lead asociado para guardar tags");
+                return;
             }
 
             await Promise.all(promises);
@@ -97,7 +126,7 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                     {tags.map((tag) => (
                         <span
                             key={tag}
-                            className="inline-flex items-center gap-1 rounded-full border border-primary-100 bg-primary-50 px-2 py-0.5 text-xs font-medium text-primary-700"
+                            className={cn("inline-flex items-center gap-1", customLeadTagMd)}
                         >
                             {tag}
                             <button
@@ -128,18 +157,15 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
             </div>
 
             <div className="flex justify-end pt-2">
-                <button
+                <Button
+                    type="button"
                     onClick={handleSave}
-                    disabled={saving}
-                    className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-btn hover:bg-primary-700 transition-colors text-sm font-medium shadow-sm disabled:opacity-50"
+                    loading={saving}
+                    className="shadow-sm"
                 >
-                    {saving ? (
-                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                        <Save size={16} />
-                    )}
+                    {saving ? null : <Save size={16} />}
                     Guardar Cambios
-                </button>
+                </Button>
             </div>
         </div>
     );

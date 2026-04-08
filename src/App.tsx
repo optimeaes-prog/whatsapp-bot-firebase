@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from "react-router-dom";
 import { Toaster } from "sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./contexts/AuthContext";
@@ -13,14 +13,27 @@ import { Conversations } from "./pages/Conversations";
 import { Alerts } from "./pages/Alerts";
 import { Configuracion } from "./pages/Configuracion";
 import { AuditLog } from "./pages/AuditLog";
-import { Calls } from "./pages/Calls";
 import { Landing } from "./pages/Landing";
+import { MarketingLanding } from "./pages/MarketingLanding";
 import { Users } from "./pages/Users";
 import { Credits } from "./pages/Credits";
 import { Onboarding } from "./pages/Onboarding";
 import { AdminOnboards } from "./pages/AdminOnboards";
+import { LegalDoc } from "./pages/LegalDoc";
+import { WhatsAppAnimationLab } from "./pages/WhatsAppAnimationLab";
+import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 
 const queryClient = new QueryClient();
+
+/** Legacy /cualificados links: forward to Leads with filters, preserving ?ad= */
+function CualificadosRedirect() {
+  const [searchParams] = useSearchParams();
+  const ad = searchParams.get("ad");
+  const qs = new URLSearchParams();
+  qs.set("status", "qualified");
+  if (ad) qs.set("ad", ad);
+  return <Navigate to={`/leads?${qs.toString()}`} replace />;
+}
 
 function App() {
   return (
@@ -30,6 +43,26 @@ function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/" element={<Landing />} />
+            <Route path="/marketing" element={<MarketingLanding />} />
+            <Route path="/terms" element={<LegalDoc title="Términos y Condiciones" path="/legal/terms.es.md" />} />
+            <Route path="/privacy" element={<LegalDoc title="Política de Privacidad" path="/legal/privacy.es.md" />} />
+            <Route path="/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
+            <Route
+              path="/_internal/whatsapp-leads-animation"
+              element={
+                <ProtectedRoute>
+                  <WhatsAppLeadsAnimation />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/_internal/whatsapp-animation-lab"
+              element={
+                <ProtectedRoute>
+                  <WhatsAppAnimationLab />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/dashboard"
               element={
@@ -80,7 +113,7 @@ function App() {
                 </ProtectedRoute>
               }
             />
-            <Route path="/cualificados" element={<Navigate to="/leads?status=qualified" replace />} />
+            <Route path="/cualificados" element={<CualificadosRedirect />} />
             <Route
               path="/alertas"
               element={
@@ -107,16 +140,6 @@ function App() {
                 <ProtectedRoute>
                   <Layout>
                     <AuditLog />
-                  </Layout>
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/llamadas"
-              element={
-                <ProtectedRoute>
-                  <Layout>
-                    <Calls />
                   </Layout>
                 </ProtectedRoute>
               }

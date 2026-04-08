@@ -6,7 +6,7 @@ type Props = {
   className?: string;
 };
 
-/** Contenedor común para vistas tipo bandeja (conversaciones, llamadas). */
+/** Contenedor común para vistas tipo bandeja (p. ej. conversaciones). */
 export function InboxShell({ children, className }: Props) {
   return (
     <div

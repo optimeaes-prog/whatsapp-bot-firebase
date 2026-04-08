@@ -1,6 +1,10 @@
 import * as admin from "firebase-admin";
 import { sendText as whapiSendText } from "./whapiClient";
-import { sendText as twilioSendText, sendTemplate as twilioSendTemplate } from "./twilioClient";
+import {
+  sendText as twilioSendText,
+  sendTemplate as twilioSendTemplate,
+  sendTextWithTemplateFallback as twilioSendTextWithTemplateFallback,
+} from "./twilioClient";
 
 type MessagingProvider = "whapi" | "twilio";
 
@@ -21,6 +25,7 @@ type SendTemplateParams = {
   language: "es" | "en";
   variables: Record<string, string>;
   mediaUrl?: string;
+  templateSid?: string;
 };
 
 // Cache the provider to avoid reading Firestore on every message
@@ -94,4 +99,31 @@ export async function sendInitialTemplateMessage(params: SendTemplateParams): Pr
   // The caller should handle this by sending regular messages via sendTextMessage
   // This function is only needed for Twilio template flow
   throw new Error("sendInitialTemplateMessage should only be called when Twilio is active");
+}
+
+export async function sendAgentNotificationMessage(params: {
+  to: string;
+  body: string;
+  chatId?: string;
+  templateSid?: string;
+  context?: string;
+}): Promise<SendTextResult> {
+  const provider = await getActiveProvider();
+  console.log(`Sending agent notification via ${provider} to ${params.to}`);
+
+  if (provider === "twilio") {
+    const result = await twilioSendTextWithTemplateFallback({
+      to: params.to,
+      body: params.body,
+      chatId: params.chatId,
+      templateSid: params.templateSid,
+      context: params.context,
+    });
+    if (result.usedTemplateFallback) {
+      console.log(`Agent notification sent via Twilio template fallback to ${params.to}`);
+    }
+    return { chatId: result.chatId, messageId: result.messageId };
+  }
+
+  return whapiSendText({ to: params.to, body: params.body, chatId: params.chatId });
 }

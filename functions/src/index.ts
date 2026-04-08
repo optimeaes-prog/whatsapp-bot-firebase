@@ -1,14 +1,18 @@
 import * as admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineString } from "firebase-functions/params";
-import { AuditAction, ConversationState, HistoryItem, InboundMessage, LeadSummary, ListingRow, OperationType, PendingItem, QualificationStatus } from "./types";
+import { AuditAction, AuditEntityType, ConversationState, HistoryItem, InboundMessage, LeadSummary, ListingRow, OperationType, PendingItem } from "./types";
 import {
   fetchListingByCode,
+  listActiveListingsForResolution,
   findLeadByChatId,
   findLeadByPhone,
   updateLeadChatInfo,
   updateLeadStatus,
+  createPendingCallLead,
+  updateLeadListingByChatId,
   appendConversationRow,
 
   getActiveStyle,
@@ -23,31 +27,58 @@ import {
   getAlertCountSince,
   markLeadAsResponded,
   getResponseRateStats,
-  searchListings,
-  saveCall,
-  findCallByVapiId,
   getAllLeadsWithChatId,
   updateLeadAnalysis,
+  upsertCallIntent,
 } from "./services/firestore";
 import { checkWhapiHealth } from "./services/whapiClient";
-import { sendTextMessage, sendInitialTemplateMessage, getActiveProvider as getActiveProviderFn } from "./services/messagingProvider";
+import { sendText as whapiSendText } from "./services/whapiClient";
 import {
+  sendTextMessage,
+  sendInitialTemplateMessage,
+  sendAgentNotificationMessage,
+  getActiveProvider as getActiveProviderFn,
+} from "./services/messagingProvider";
+import { createContentTemplate } from "./services/twilioClient";
+import {
+  classifyConfirmDeny,
+  resolveListingWithAgent,
   generateAssistantResponse,
   summarizeLeadDetails,
   extractClientName,
   translateTextToBritishEnglish,
+  checkLeadPassesFilters,
 } from "./services/openaiClient";
-import { scheduleBufferTask, BUFFER_DELAY_SECONDS } from "./services/cloudTasks";
+import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS } from "./services/cloudTasks";
 import { sendAlert, sendHealthReport } from "./services/alertService";
+import { ALERT_CATALOG } from "./services/alertCatalog";
 import { syncConversationsWithWhapi, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
-import { addCredits, deductOrgCredits, getOrgCredits } from "./services/creditsService";
+import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN } from "./secrets";
+import {
+  addOrgCredits,
+  addOrgCreditsForPaymentIntentOnce,
+  getOrgAutoRechargeSettingsForApi,
+  getOrgCredits,
+  getOrgStripeCustomerId,
+  mergeOrgStripeBillingFields,
+  saveOrgAutoRechargeSettings,
+} from "./services/creditsService";
 import { getAuditLogs as getAuditLogsFromService, recordLeadChange, recordConversationChange, recordListingChange, recordSystemAction } from "./services/auditService";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import {
   createCheckoutSession,
+  createSubscriptionCheckoutSession,
+  extractBillingFromCheckoutSession,
   getCreditPackages,
   constructWebhookEvent,
 } from "./services/stripeService";
+import {
+  getOrgSubscription,
+  setOrgSubscription,
+  grantSubscriptionCredits,
+  SUBSCRIPTION_CREDITS,
+} from "./services/subscriptionService";
+import type { SubscriptionPlanId } from "./types";
 import {
   extractPhoneFromChatId,
   getChatIdVariants,
@@ -55,21 +86,249 @@ import {
   isSpanishPhoneNumber,
   normalizeToCanonicalChatId,
 } from "./utils";
-import { listCalls } from "./services/vapiService";
-
+import { normalizeForSearch } from "./utils/addressNormalize";
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
   admin.initializeApp();
 }
 
+// Firestore settings must be applied exactly once and before any Firestore use.
+// Do it at process startup to avoid "Firestore has already been initialized" errors.
+(() => {
+  const FIRESTORE_DATABASE_ID = "realestate-whatsapp-bot";
+  try {
+    getFirestore(admin.app(), FIRESTORE_DATABASE_ID).settings({ ignoreUndefinedProperties: true });
+  } catch (e) {
+    // If another module already configured settings in this process, don't crash the function.
+    console.warn("[firestore] settings() already applied or Firestore already used:", e);
+  }
+})();
+
 // Region configuration
 const REGION = "europe-west1";
 
+// Organisation identifier (single-tenant for now)
+const ORG_ID = "org_paco_granados";
+
 // Config params
 const NOTIFICATION_NUMBER = defineString("NOTIFICATION_NUMBER");
+const VOICE_AUDIO_1_URL = defineString("VOICE_AUDIO_1_URL");
+const VOICE_AUDIO_2_URL = defineString("VOICE_AUDIO_2_URL");
+const TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES = defineString("TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES");
+const TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN = defineString("TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN");
+const TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION = defineString("TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION");
 
 const LEAD_QUALIFIED_MARKER = "[LEAD_CUALIFICADO]";
 const LEAD_NOT_INTERESTED_MARKER = "[LEAD_NO_INTERESADO]";
+
+const CALL_PENDING_LISTING_CODE = "__pending__";
+// Keep this aligned with audio durations so WhatsApp is sent right after hangup.
+// Current v10 durations: part1 ~6.9s + pause 3s + part2 ~13.9s => ~24s total.
+const CALL_HANDOFF_DELAY_SECONDS = 24;
+
+function getAgentNotificationTemplateSid(): string | undefined {
+  const sid = TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION.value();
+  const normalized = typeof sid === "string" ? sid.trim() : "";
+  return normalized || undefined;
+}
+
+function buildTwiml(xmlBody: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n${xmlBody}\n</Response>`;
+}
+
+function twimlEscape(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function normalizeE164FromTwilio(from: unknown): string {
+  const raw = typeof from === "string" ? from.trim() : "";
+  if (!raw) return "";
+  // Twilio Voice 'From' is like +34911...
+  return raw.startsWith("+") ? raw.slice(1) : raw;
+}
+
+function extractListingCodeFromText(text: string): string | null {
+  const t = text || "";
+  // Idealista URL
+  const urlMatch = t.match(/idealista\.com\/inmueble\/(\d{6,12})/i);
+  if (urlMatch?.[1]) return urlMatch[1];
+  // Any long-ish digit group (common idealista ids)
+  const digitMatch = t.match(/\b(\d{6,12})\b/);
+  return digitMatch?.[1] || null;
+}
+
+function extractPriceFromText(text: string): number | undefined {
+  const t = (text || "").toLowerCase();
+  // 250k / 250 K
+  const k = t.match(/\b(\d{2,4})\s*k\b/);
+  if (k?.[1]) {
+    const value = Number(k[1]) * 1000;
+    return Number.isFinite(value) ? value : undefined;
+  }
+  // 250.000 / 250000 / 250,000
+  const n = t.match(/\b(\d{2,3}(?:[.,]\d{3})+|\d{5,7})\b/);
+  if (!n?.[1]) return undefined;
+  const cleaned = n[1].replace(/[^\d]/g, "");
+  const value = Number(cleaned);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+type ListingCandidate = {
+  listingCode: string;
+  description?: string;
+  address?: string;
+  price?: string | number;
+  link?: string;
+};
+
+function isLikelyListingHint(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (extractListingCodeFromText(t)) return true;
+  if (extractPriceFromText(t) !== undefined) return true;
+  if (t.length >= 4 && /[a-záéíóúñü]/i.test(t)) return true;
+  return false;
+}
+
+function buildRetryListingLookupMessage(attempt: number): string {
+  const header = attempt <= 1
+    ? "Vale, aún no lo localizo con esos datos."
+    : "Sigo sin localizarlo con seguridad.";
+  return compactMessage([
+    header,
+    "¿Me puedes dar otro dato para encontrarlo?",
+    "",
+    "Puedes enviar:",
+    "1) Número de referencia (9 dígitos, empieza por 1)",
+    "2) Calle o zona",
+    "3) Precio aproximado",
+    "4) O el enlace al anuncio",
+  ]);
+}
+
+function buildConfirmListingMessage(candidate: ListingCandidate): string {
+  return compactMessage([
+    "Estupendo, creo que ya lo tengo.",
+    candidate.link ? `Link: ${candidate.link}` : "",
+    "",
+    "¿Es esta la vivienda por la que nos contactas?",
+  ]);
+}
+
+function buildPickListingMessage(candidates: ListingCandidate[]): string {
+  const items = candidates.slice(0, 5).map((c, idx) => {
+    const bits = [
+      c.description || `Anuncio ${c.listingCode}`,
+      c.address ? `(${c.address})` : "",
+      c.price ? `- ${c.price}` : "",
+      c.link ? `- ${c.link}` : "",
+    ].filter(Boolean);
+    return `${idx + 1}) ${bits.join(" ")}`.trim();
+  });
+  return compactMessage([
+    "He encontrado varios anuncios que podrían encajar.",
+    "¿Cuál es el correcto?",
+    "",
+    ...items,
+    "",
+    "Respóndeme con el número (1-5), o pega el enlace/ref.",
+    "Si no es ninguno, dime “ninguna” y lo buscamos con otro dato.",
+  ]);
+}
+
+function parsePickSelection(text: string, max: number): { kind: "number"; index: number } | { kind: "none" } | { kind: "unknown" } {
+  const t = (text || "").trim().toLowerCase();
+  if (!t) return { kind: "unknown" };
+  if (t.includes("ninguna") || t.includes("ninguno") || t.includes("no es") || t === "no") return { kind: "none" };
+  const m = t.match(/\b([1-9])\b/);
+  if (m?.[1]) {
+    const idx = Number(m[1]) - 1;
+    if (idx >= 0 && idx < max) return { kind: "number", index: idx };
+  }
+  return { kind: "unknown" };
+}
+
+async function resolveListingFromBufferedText(params: {
+  operationType?: OperationType;
+  text: string;
+}): Promise<
+  | { kind: "match"; listing: ListingRow }
+  | { kind: "ambiguous"; candidates: ListingRow[] }
+  | { kind: "none" }
+> {
+  const combinedText = params.text || "";
+  const directCode = extractListingCodeFromText(combinedText);
+  if (directCode) {
+    const direct = await fetchListingByCode(directCode);
+    if (direct) return { kind: "match", listing: direct };
+  }
+  const activeListings = await listActiveListingsForResolution({
+    operationType: params.operationType,
+    limit: 600,
+  });
+  if (!activeListings.length) return { kind: "none" };
+
+  const decision = await resolveListingWithAgent({
+    bufferText: combinedText,
+    activeListings,
+    operationType: params.operationType,
+  });
+  console.log("Listing agent decision", {
+    kind: decision.kind,
+    confidence: decision.confidence,
+    reason: decision.reason,
+    operationType: params.operationType || "unknown",
+    listingCount: activeListings.length,
+  });
+
+  if (decision.kind === "match") {
+    if (decision.confidence < 0.7) return { kind: "none" };
+    const found = await fetchListingByCode(decision.listingCode);
+    return found ? { kind: "match", listing: found } : { kind: "none" };
+  }
+
+  if (decision.kind === "ambiguous") {
+    if (decision.confidence < 0.35) return { kind: "none" };
+    const rows = await Promise.all(decision.listingCodes.slice(0, 5).map((code) => fetchListingByCode(code)));
+    const candidates = rows.filter((row): row is ListingRow => !!row);
+    return candidates.length >= 2 ? { kind: "ambiguous", candidates } : { kind: "none" };
+  }
+
+  return { kind: "none" };
+}
+
+function buildCallInitialWhatsAppMessageEs(agentName?: string): string {
+  const who = agentName ? ` de ${agentName}` : "";
+  return [
+    `¡Hola! Soy el asistente virtual${who}. Acabamos de hablar por teléfono.`,
+    "Para localizar el anuncio, ¿me indicas por favor cuál es?",
+    "Me puedes pasar:",
+    "1) El número de referencia (9 dígitos, empieza por 1)",
+    "2) La calle o zona",
+    "3) El precio",
+    "4) O pegar directamente el enlace al anuncio",
+  ].join("\n\n");
+}
+
+function buildListingNotFoundFallback(agentName?: string): string {
+  const who = agentName ? ` a ${agentName}` : "";
+  return `Vale, parece que no lo encuentro en mi sistema, pero no te preocupes. Le enviaré tu contacto${who} para que te llame lo antes posible.`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function extractStripeId(value: unknown): string {
+  if (typeof value === "string") return value;
+  const rec = asRecord(value);
+  return typeof rec.id === "string" ? rec.id : "";
+}
 
 const BULLET_SYMBOL = "•";
 const NO_DATA_LABEL = "Sin datos";
@@ -304,6 +563,8 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
         ? msg.text
         : typeof (msg.text as Record<string, unknown>)?.body === "string"
           ? ((msg.text as Record<string, unknown>).body as string)
+          : typeof (msg.link_preview as Record<string, unknown>)?.body === "string"
+            ? ((msg.link_preview as Record<string, unknown>).body as string)
           : typeof msg.body === "string"
             ? msg.body
             : "";
@@ -374,13 +635,35 @@ async function ensureConversationState(chatId: string, phoneHint?: string): Prom
       history: [],
       pendingUserMessages: [],
       isFinished: false,
-      botDisabled: true,
+      botDisabled: false,
       type: "non-lead",
       tags: ["non-lead"],
       language: resolveInitialLanguage(phone),
     };
     conversationStates.set(chatId, nonLeadState);
     return nonLeadState;
+  }
+
+  // Special case: lead exists but listing is not resolved yet (call→WhatsApp handoff)
+  if (lead.listingCode === CALL_PENDING_LISTING_CODE) {
+    const initialLanguage = resolveInitialLanguage(phone);
+    const pendingState: ConversationState = {
+      phone,
+      listingCode: CALL_PENDING_LISTING_CODE,
+      chatId: lead.chatId || chatId,
+      operationType: lead.operationType,
+      history: [],
+      pendingUserMessages: [],
+      isFinished: false,
+      type: "lead",
+      tags: ["lead", "call", "pending-listing"],
+      language: initialLanguage,
+      botDisabled: false,
+      name: lead.name,
+    };
+    conversationStates.set(chatId, pendingState);
+    if (pendingState.chatId !== chatId) conversationStates.set(pendingState.chatId, pendingState);
+    return pendingState;
   }
 
   const listing = await fetchListingByCode(lead.listingCode);
@@ -394,7 +677,7 @@ async function ensureConversationState(chatId: string, phoneHint?: string): Prom
       history: [],
       pendingUserMessages: [],
       isFinished: false,
-      botDisabled: true,
+      botDisabled: false,
       type: "non-lead",
       tags: ["non-lead", "missing-listing"],
       language: resolveInitialLanguage(phone),
@@ -432,6 +715,7 @@ async function ensureConversationState(chatId: string, phoneHint?: string): Prom
     type: "lead",
     tags: ["lead"],
     language: initialLanguage,
+    name: lead.name,
   };
 
   // Cache under both the requested chatId and the canonical one
@@ -507,6 +791,360 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     }
   }
 
+  const applyListingToStateAndPersist = async (listing: ListingRow): Promise<void> => {
+    const initialLanguage = state.language || resolveInitialLanguage(state.phone);
+    const featuresText = await getFeaturesForLanguage(listing.features, initialLanguage);
+
+    state.listingCode = listing.listingCode;
+    state.operationType = listing.operationType;
+    state.description = listing.description;
+    state.link = listing.link;
+    state.address = listing.address;
+    state.features = featuresText;
+    state.idealistaDescription = listing.idealistaDescription || "";
+    state.profitabilityReportAvailable = listing.profitabilityReportAvailable;
+    state.profitabilityReport = listing.profitabilityReport;
+    state.type = "lead";
+    state.tags = Array.from(new Set([...(state.tags || ["lead"]), "lead"]));
+    state.language = initialLanguage;
+
+    await upsertConversation(state.chatId, {
+      listingCode: listing.listingCode,
+      operationType: listing.operationType,
+      description: listing.description,
+      link: listing.link,
+      address: listing.address,
+      features: featuresText,
+      idealistaDescription: listing.idealistaDescription || "",
+      profitabilityReportAvailable: listing.profitabilityReportAvailable,
+      profitabilityReport: listing.profitabilityReport,
+      tags: state.tags,
+      type: "lead",
+      language: initialLanguage,
+      flowStep: "qualification",
+      pendingListingCandidate: undefined,
+      pendingListingCandidates: undefined,
+      listingResolveAttempts: state.listingResolveAttempts || 0,
+    });
+
+    await updateLeadListingByChatId({
+      chatId: state.chatId,
+      phone: state.phone,
+      listingCode: listing.listingCode,
+      operationType: listing.operationType,
+      name: state.name,
+      listingResolutionStatus: "resolved",
+      tags: state.tags,
+    });
+
+    // Quick qualification toggle: if enabled, notify agent immediately and hand off.
+    if (listing.quickQualificationEnabled) {
+      const notificationNumberRaw = NOTIFICATION_NUMBER.value();
+      const agentNums = notificationNumberRaw
+        ? notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean)
+        : [];
+      const agentMsg = compactMessage([
+        "Nuevo interés (cualificación rápida).",
+        `Nombre: ${state.name || "Sin nombre"}`,
+        `Tel: +${state.phone}`,
+        `Anuncio: ${listing.description} (ID ${listing.listingCode})`,
+        listing.link ? `Link: ${listing.link}` : "",
+      ]);
+      const templateSid = getAgentNotificationTemplateSid();
+      for (const num of agentNums) {
+        try {
+          await sendAgentNotificationMessage({
+            to: num,
+            body: agentMsg,
+            templateSid,
+            context: `quick-qualification:${state.chatId}`,
+          });
+        } catch (error) {
+          console.error("Failed to send quick-qualification notification", error);
+        }
+      }
+
+      state.isFinished = true;
+      state.tags = Array.from(new Set([...(state.tags || []), "needs-human", "quick-qualification"]));
+      await updateLeadStatus({
+        chatId: state.chatId,
+        name: state.name,
+        qualificationStatus: "not_qualified",
+      });
+      await upsertConversation(state.chatId, {
+        isFinished: true,
+        tags: state.tags,
+      });
+    }
+  };
+
+  // Deterministic call→WhatsApp listing resolution & confirmation before enabling AI flow.
+  if (state.listingCode === CALL_PENDING_LISTING_CODE || !state.listingCode) {
+    const currentStep = state.flowStep || "call_listing_collect";
+    const combinedText = sortedMessages.map((m) => m.text).join("\n");
+    const lastUserText = sortedMessages.length > 0 ? sortedMessages[sortedMessages.length - 1].text : "";
+
+    const attempt = typeof state.listingResolveAttempts === "number" ? state.listingResolveAttempts : 0;
+
+    const notifyAgentAndClose = async (reason: string, extra?: string) => {
+      const notificationNumberRaw = NOTIFICATION_NUMBER.value();
+      const agentNums = notificationNumberRaw
+        ? notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean)
+        : [];
+      const agentMsg = compactMessage([
+        reason,
+        `Nombre: ${state.name || "Sin nombre"}`,
+        `Tel: +${state.phone}`,
+        state.pendingListingCandidate?.listingCode ? `Candidato: ${state.pendingListingCandidate.listingCode}` : "",
+        state.pendingListingCandidate?.link ? `Link candidato: ${state.pendingListingCandidate.link}` : "",
+        extra ? `Texto: ${extra}` : "",
+        `ChatId: ${state.chatId}`,
+      ]);
+      const templateSid = getAgentNotificationTemplateSid();
+      for (const num of agentNums) {
+        try {
+          await sendAgentNotificationMessage({
+            to: num,
+            body: agentMsg,
+            templateSid,
+            context: `call-flow:${state.chatId}`,
+          });
+        } catch (error) {
+          console.error("Failed to notify agent (call flow)", error);
+        }
+      }
+      state.isFinished = true;
+      state.tags = Array.from(new Set([...(state.tags || []), "needs-human"]));
+      await upsertConversation(state.chatId, { isFinished: true, tags: state.tags, flowStep: "closed" });
+    };
+
+    try {
+      if (currentStep === "call_listing_pick") {
+        const extractedCode = extractListingCodeFromText(lastUserText);
+        if (extractedCode) {
+          const listing = await fetchListingByCode(extractedCode);
+          if (listing) {
+            state.pendingListingCandidate = { listingCode: listing.listingCode, link: listing.link, description: listing.description };
+            state.pendingListingCandidates = undefined;
+            state.flowStep = "call_listing_confirm";
+            await upsertConversation(state.chatId, {
+              flowStep: "call_listing_confirm",
+              pendingListingCandidate: state.pendingListingCandidate,
+              pendingListingCandidates: undefined,
+              listingResolveAttempts: attempt,
+            });
+            await sendTextMessage({ to: state.phone, body: buildConfirmListingMessage(state.pendingListingCandidate), chatId: state.chatId });
+            return;
+          }
+        }
+
+        const candidates = state.pendingListingCandidates || [];
+        const sel = parsePickSelection(lastUserText, candidates.length);
+        if (sel.kind === "number") {
+          const picked = candidates[sel.index];
+          state.pendingListingCandidate = picked;
+          state.pendingListingCandidates = undefined;
+          state.flowStep = "call_listing_confirm";
+          await upsertConversation(state.chatId, {
+            flowStep: "call_listing_confirm",
+            pendingListingCandidate: picked,
+            pendingListingCandidates: undefined,
+            listingResolveAttempts: attempt,
+          });
+          await sendTextMessage({ to: state.phone, body: buildConfirmListingMessage(picked), chatId: state.chatId });
+          return;
+        }
+
+        if (sel.kind === "none") {
+          const nextAttempt = attempt + 1;
+          state.listingResolveAttempts = nextAttempt;
+          state.flowStep = "call_listing_collect";
+          state.pendingListingCandidates = undefined;
+          state.pendingListingCandidate = undefined;
+          await upsertConversation(state.chatId, {
+            flowStep: "call_listing_collect",
+            listingResolveAttempts: nextAttempt,
+            pendingListingCandidates: undefined,
+            pendingListingCandidate: undefined,
+          });
+          if (nextAttempt <= 2) {
+            await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt), chatId: state.chatId });
+            return;
+          }
+          const fallbackToUser = buildListingNotFoundFallback(undefined);
+          await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
+          await updateLeadListingByChatId({
+            chatId: state.chatId,
+            phone: state.phone,
+            listingCode: CALL_PENDING_LISTING_CODE,
+            operationType: state.operationType,
+            name: state.name,
+            listingResolutionStatus: "failed",
+            tags: state.tags,
+          });
+          await notifyAgentAndClose("Nuevo lead (no se pudo encontrar el anuncio).", combinedText);
+          return;
+        }
+
+        // Unknown selection → resend list
+        if (candidates.length > 0) {
+          await sendTextMessage({ to: state.phone, body: buildPickListingMessage(candidates), chatId: state.chatId });
+          return;
+        }
+
+        state.flowStep = "call_listing_collect";
+      }
+
+      if (currentStep === "call_listing_confirm") {
+        const candidate = state.pendingListingCandidate;
+        if (!candidate?.listingCode) {
+          state.flowStep = "call_listing_collect";
+          await upsertConversation(state.chatId, { flowStep: "call_listing_collect" });
+          return;
+        }
+
+        const decision = await classifyConfirmDeny({
+          userText: lastUserText,
+          promptContext: `Candidato: ${candidate.description || ""} (ID ${candidate.listingCode})\nLink: ${candidate.link || ""}`.trim(),
+        });
+
+        if (decision === "confirm") {
+          const listing = await fetchListingByCode(candidate.listingCode);
+          if (!listing) {
+            const nextAttempt = attempt + 1;
+            state.listingResolveAttempts = nextAttempt;
+            state.flowStep = "call_listing_collect";
+            state.pendingListingCandidate = undefined;
+            await upsertConversation(state.chatId, {
+              flowStep: "call_listing_collect",
+              listingResolveAttempts: nextAttempt,
+              pendingListingCandidate: undefined,
+            });
+            await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt), chatId: state.chatId });
+            return;
+          }
+
+          await applyListingToStateAndPersist(listing);
+          if (state.isFinished) return;
+
+          const language = state.language || resolveInitialLanguage(state.phone);
+          const formattedFeatures = formatFeaturesList(state.features || "", language);
+          const msg = compactMessage([
+            "Estupendo, ¡lo tengo!",
+            "",
+            listing.link || "",
+            "",
+            "Por confirmar, ¿has visto las características?",
+            "",
+            formattedFeatures,
+          ]);
+          await sendTextMessage({ to: state.phone, body: msg, chatId: state.chatId });
+          state.flowStep = "qualification";
+          await upsertConversation(state.chatId, { flowStep: "qualification" });
+          return;
+        }
+
+        if (decision === "deny") {
+          const fallbackToUser = buildListingNotFoundFallback(undefined);
+          await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
+          await updateLeadListingByChatId({
+            chatId: state.chatId,
+            phone: state.phone,
+            listingCode: CALL_PENDING_LISTING_CODE,
+            operationType: state.operationType,
+            name: state.name,
+            listingResolutionStatus: "failed",
+            tags: state.tags,
+          });
+          await notifyAgentAndClose("Nuevo lead (el usuario indicó que NO es el anuncio).", combinedText);
+          return;
+        }
+
+        await sendTextMessage({ to: state.phone, body: "¿Me confirmas si es esta vivienda? Si no lo es, dime otro dato o pega el enlace/ref.", chatId: state.chatId });
+        return;
+      }
+
+      // Default (collect): attempt to resolve listing from buffered text
+      if (sortedMessages.length > 0 && isLikelyListingHint(combinedText)) {
+        const res = await resolveListingFromBufferedText({
+          operationType: state.operationType,
+          text: combinedText,
+        });
+
+        if (res.kind === "match") {
+          const cand: ListingCandidate = {
+            listingCode: res.listing.listingCode,
+            description: res.listing.description,
+            address: res.listing.address || res.listing.street,
+            price: res.listing.price,
+            link: res.listing.link,
+          };
+          state.pendingListingCandidate = cand;
+          state.pendingListingCandidates = undefined;
+          state.flowStep = "call_listing_confirm";
+          await upsertConversation(state.chatId, {
+            flowStep: "call_listing_confirm",
+            pendingListingCandidate: cand,
+            pendingListingCandidates: undefined,
+            listingResolveAttempts: attempt,
+          });
+          await sendTextMessage({ to: state.phone, body: buildConfirmListingMessage(cand), chatId: state.chatId });
+          return;
+        }
+
+        if (res.kind === "ambiguous") {
+          const cands: ListingCandidate[] = res.candidates.slice(0, 5).map((l) => ({
+            listingCode: l.listingCode,
+            description: l.description,
+            address: l.address || l.street,
+            price: l.price,
+            link: l.link,
+          }));
+          state.pendingListingCandidates = cands;
+          state.pendingListingCandidate = undefined;
+          state.flowStep = "call_listing_pick";
+          await upsertConversation(state.chatId, {
+            flowStep: "call_listing_pick",
+            pendingListingCandidates: cands,
+            pendingListingCandidate: undefined,
+            listingResolveAttempts: attempt,
+          });
+          await sendTextMessage({ to: state.phone, body: buildPickListingMessage(cands), chatId: state.chatId });
+          return;
+        }
+
+        // none → retry up to 2 times
+        const nextAttempt = attempt + 1;
+        state.listingResolveAttempts = nextAttempt;
+        await upsertConversation(state.chatId, {
+          flowStep: "call_listing_collect",
+          listingResolveAttempts: nextAttempt,
+        });
+        if (nextAttempt <= 2) {
+          await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt), chatId: state.chatId });
+          return;
+        }
+
+        const fallbackToUser = buildListingNotFoundFallback(undefined);
+        await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
+        state.tags = Array.from(new Set([...(state.tags || []), "listing-not-found"]));
+        await updateLeadListingByChatId({
+          chatId: state.chatId,
+          phone: state.phone,
+          listingCode: CALL_PENDING_LISTING_CODE,
+          operationType: state.operationType,
+          name: state.name,
+          listingResolutionStatus: "failed",
+          tags: state.tags,
+        });
+        await notifyAgentAndClose("Nuevo lead (no se pudo encontrar el anuncio).", combinedText);
+        return;
+      }
+    } catch (error) {
+      console.warn("Call listing resolution flow failed", error);
+    }
+  }
+
   // Save conversation snapshot with all messages
   await appendConversationRow({
     phone: state.phone,
@@ -518,7 +1156,109 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     isFinished: state.isFinished,
   });
 
-  // If bot is disabled, we don't generate an automated response
+  // Deterministic step: Idealista confirmation (Si/No) before enabling AI flow.
+  if (state.flowStep === "idealista_confirm") {
+    const combinedUserText = sortedMessages.map((m) => m.text).join("\n").trim();
+    const lastUserText = sortedMessages.length > 0 ? sortedMessages[sortedMessages.length - 1].text : "";
+    const normalized = normalizeForSearch(lastUserText || "");
+
+    let decision: "confirm" | "deny" | "unclear" = "unclear";
+    if (combinedUserText) {
+      try {
+        decision = await classifyConfirmDeny({
+          userText: combinedUserText,
+          promptContext: [
+            "Paso actual: confirmación inicial tras mensaje de Idealista.",
+            "Pregunta esperada al usuario: ¿Es correcto? (Sí/No)",
+            `Anuncio actual: ${state.link || "sin_link"}`,
+          ].join("\n"),
+        });
+      } catch (error) {
+        console.warn("Failed to classify idealista confirmation, using lexical fallback", error);
+      }
+    }
+
+    // Safety net when the classifier cannot decide.
+    if (decision === "unclear") {
+      if (normalized === "si" || normalized === "s" || normalized === "sí" || normalized === "yes") {
+        decision = "confirm";
+      } else if (normalized === "no" || normalized === "nop") {
+        decision = "deny";
+      }
+    }
+
+    if (decision === "confirm") {
+      const language = state.language || resolveInitialLanguage(state.phone);
+      const formattedFeatures = formatFeaturesList(state.features || "", language);
+      const msg = compactMessage([
+        language === "en"
+          ? "Great. Have you seen the highlights?"
+          : "Estupendo. ¿Has visto las características?",
+        formattedFeatures,
+      ]);
+
+      try {
+        await sendTextMessage({ to: state.phone, body: msg, chatId: state.chatId });
+      } catch (error) {
+        console.error("Failed to send features after confirm", error);
+      }
+
+      state.history.push({ role: "assistant", text: msg, timestamp: Date.now() });
+      state.flowStep = "qualification";
+
+      await upsertConversation(state.chatId, {
+        history: state.history,
+        flowStep: "qualification",
+      });
+      return;
+    }
+
+    if (decision === "deny") {
+      const msg = "Perfecto, gracias. Lo dejamos aquí.";
+      try {
+        await sendTextMessage({ to: state.phone, body: msg, chatId: state.chatId });
+      } catch (error) {
+        console.error("Failed to send close after NO", error);
+      }
+
+      state.history.push({ role: "assistant", text: msg, timestamp: Date.now() });
+      state.flowStep = "closed";
+      state.isFinished = true;
+
+      await upsertConversation(state.chatId, {
+        history: state.history,
+        flowStep: "closed",
+        isFinished: true,
+      });
+
+      try {
+        await updateLeadStatus({ chatId: state.chatId, name: state.name, qualificationStatus: "rejected" });
+      } catch (error) {
+        console.error("Failed to mark lead rejected after NO", error);
+      }
+
+      return;
+    }
+
+    // Unrecognized response: re-ask succinctly.
+    const reprompt = "¿Es correcto? Responde: Si / No";
+    try {
+      await sendTextMessage({ to: state.phone, body: reprompt, chatId: state.chatId });
+    } catch (error) {
+      console.error("Failed to reprompt confirm", error);
+    }
+    state.history.push({ role: "assistant", text: reprompt, timestamp: Date.now() });
+    await upsertConversation(state.chatId, { history: state.history });
+    return;
+  }
+
+  // Non-lead / unknown numbers: never use OpenAI; botDisabled is only for manual agent toggle in Proplead.
+  if (state.type === "non-lead") {
+    console.log("Non-lead conversation, skipping AI response", state.chatId);
+    return;
+  }
+
+  // Agent turned off assistant from Proplead
   if (state.botDisabled) {
     console.log("Bot is disabled for this conversation, skipping response generation", state.chatId);
     return;
@@ -613,21 +1353,6 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
       const notificationBody = buildQualifiedLeadMessage(state, leadSummary);
 
-      // Send notification
-      const notificationNumberRaw = NOTIFICATION_NUMBER.value();
-      if (notificationNumberRaw) {
-        const numbers = notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean);
-        for (const num of numbers) {
-          try {
-            await sendTextMessage({ to: num, body: notificationBody });
-            console.log(`Notification sent for qualified lead to ${num}`, state.chatId);
-          } catch (error) {
-            console.error(`Error sending notification to ${num}`, error);
-          }
-        }
-      }
-
-
       // Update lead status to qualified — leads is now the single SOT
       try {
         const resolvedName = pickSummaryValue(leadSummary?.name, state.name);
@@ -672,7 +1397,14 @@ function getProcessBufferUrl(): string {
   return `https://europe-west1-${projectId}.cloudfunctions.net/processBuffer`;
 }
 
-export const webhook = onRequest({ cors: true, region: REGION, secrets: ["SMTP_PASS"] }, async (req, res) => {
+function getSendCallHandoffUrl(): string {
+  const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "";
+  return `https://europe-west1-${projectId}.cloudfunctions.net/sendCallHandoffMessage`;
+}
+
+export const webhook = onRequest(
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] },
+  async (req, res) => {
   try {
     // Handle GET requests (webhook verification)
     if (req.method === "GET") {
@@ -772,7 +1504,8 @@ export const webhook = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
     });
     res.status(500).json({ error: "Internal server error", details: error instanceof Error ? error.message : String(error) });
   }
-});
+}
+);
 
 /**
  * Dedicated webhook for Twilio messages
@@ -781,9 +1514,132 @@ export const webhook = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
 export const twilioWebhook = webhook;
 
 /**
+ * Twilio Voice webhook for call→WhatsApp handoff.
+ * Configure your Twilio phone number "A CALL COMES IN" to point to this function's URL.
+ *
+ * Flow:
+ * - Play audio 1
+ * - Play audio 2
+ * - Hang up
+ * - Create pending lead + send WhatsApp (async) after hangup
+ */
+export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  try {
+    const body = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : {};
+    const callSid = typeof body.CallSid === "string" ? body.CallSid : "";
+    const fromPhone = normalizeE164FromTwilio(body.From);
+
+    if (!fromPhone) {
+      res.set("Content-Type", "text/xml");
+      res.status(200).send(buildTwiml(`<Say>Invalid caller.</Say><Hangup/>`));
+      return;
+    }
+
+    const audio1 = VOICE_AUDIO_1_URL.value();
+    const audio2 = VOICE_AUDIO_2_URL.value();
+    if (!audio1 || !audio2) {
+      console.error("VOICE_AUDIO_1_URL / VOICE_AUDIO_2_URL not configured");
+      res.set("Content-Type", "text/xml");
+      res.status(200).send(buildTwiml(`<Say>Audio not configured.</Say><Hangup/>`));
+      return;
+    }
+
+    const chatId = normalizeToCanonicalChatId(fromPhone);
+
+    // CRITICAL: Return TwiML IMMEDIATELY to avoid audio clipping.
+    // Do all I/O (lead creation, task scheduling) AFTER sending response.
+    res.set("Content-Type", "text/xml");
+    res.status(200).send(
+      buildTwiml(
+        [
+          `<Play>${twimlEscape(audio1)}</Play>`,
+          `<Pause length="3"/>`,
+          `<Play>${twimlEscape(audio2)}</Play>`,
+          `<Hangup/>`,
+        ].join("\n")
+      )
+    );
+
+    // Now do all async work without blocking the TwiML response
+    setImmediate(async () => {
+      // 1) Always schedule WhatsApp independently based on call start time.
+      // This avoids missing the message if any non-critical write fails.
+      try {
+        await scheduleImmediateHttpTask({
+          url: getSendCallHandoffUrl(),
+          payload: {
+            phone: fromPhone,
+            chatId,
+            agentName: "Paco Granados",
+          },
+          taskPrefix: "callhandoff",
+          taskId: callSid || chatId,
+          // Send roughly at the end of call audio from call start.
+          delaySeconds: CALL_HANDOFF_DELAY_SECONDS,
+        });
+      } catch (error) {
+        console.error("voiceWebhook failed scheduling handoff task", error);
+      }
+
+      // 2) Persist optional data independently (should not block messaging).
+      try {
+        if (callSid) {
+          await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
+        }
+      } catch (error) {
+        console.error("voiceWebhook failed upserting call intent", error);
+      }
+
+      try {
+        await createPendingCallLead({ phone: fromPhone, chatId });
+      } catch (error) {
+        console.error("voiceWebhook failed creating pending call lead", error);
+      }
+    });
+  } catch (error) {
+    console.error("voiceWebhook error", error);
+    res.set("Content-Type", "text/xml");
+    res.status(200).send(buildTwiml(`<Say>Error.</Say><Hangup/>`));
+  }
+});
+
+/**
+ * Cloud Tasks target: sends the post-call WhatsApp message via Whapi (Spanish).
+ * Required because voice webhook must respond immediately to avoid awkward pauses/cut audio.
+ */
+export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
+  const chatId = typeof req.body?.chatId === "string" ? req.body.chatId.trim() : "";
+  const agentName = typeof req.body?.agentName === "string" ? req.body.agentName.trim() : "Paco Granados";
+
+  if (!phone) {
+    res.status(400).json({ error: "phone is required" });
+    return;
+  }
+
+  try {
+    // Whapi expects international number without plus sign; `phone` should already be digits.
+    await whapiSendText({
+      to: phone,
+      chatId: chatId || normalizeToCanonicalChatId(phone),
+      body: buildCallInitialWhatsAppMessageEs(agentName),
+    });
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error("sendCallHandoffMessage failed", error);
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
  * Process buffered messages - called by Cloud Tasks after buffer delay expires
  */
-export const processBuffer = onRequest({ cors: true, region: REGION, secrets: ["SMTP_PASS"] }, async (req, res) => {
+export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   try {
     // Only accept POST from Cloud Tasks
     if (req.method !== "POST") {
@@ -856,7 +1712,296 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: ["
   }
 });
 
-export const newLead = onRequest({ cors: true, region: REGION, secrets: ["SMTP_PASS"] }, async (req, res) => {
+/**
+ * Shared WhatsApp onboarding after a listing is resolved (Idealista webhook / newLead).
+ * Same Twilio template / Whapi flow as legacy newLead. No credit deduction (disabled until re-enabled).
+ */
+export async function runNewLeadMessagingPipeline(params: {
+  phone: string;
+  listingCode: string;
+  listingData: ListingRow;
+  leadTags: string[];
+}): Promise<
+  | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
+  | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
+> {
+  const { phone, listingCode, listingData, leadTags } = params;
+
+  const initialLanguage = resolveInitialLanguage(phone);
+  const featuresText = await getFeaturesForLanguage(listingData.features, initialLanguage);
+  const initialMessages = composeInitialMessages(listingData.operationType, listingData.link, featuresText, {
+    language: initialLanguage,
+  });
+
+  let chatId: string = normalizeToCanonicalChatId(phone);
+  const listingAddress =
+    [listingData.street, listingData.address].filter(Boolean).join(", ").trim() || listingData.address;
+
+  try {
+    await updateLeadChatInfo({
+      phone,
+      listingCode,
+      chatId,
+      operationType: listingData.operationType,
+      tags: leadTags,
+    });
+  } catch (error) {
+    console.warn("Failed to create preliminary lead record", error);
+  }
+
+  const initialHistory: HistoryItem[] = [];
+
+  try {
+    const provider = await getActiveProviderFn();
+    if (provider === "twilio") {
+      const agentName = listingData.agentName || "Paco";
+      const formattedFeatures = formatFeaturesList(featuresText, initialLanguage);
+      const sanitizedFeatures = formattedFeatures.replace(/\n/g, " | ");
+
+      const result = await sendInitialTemplateMessage({
+        to: phone,
+        chatId,
+        language: initialLanguage,
+        variables: {
+          "1": agentName,
+          "2": listingData.link,
+          "3": sanitizedFeatures,
+        },
+        mediaUrl: "https://real-estate-idealista-bot.web.app/idealista.jpg",
+      });
+
+      if (result.chatId && result.chatId !== chatId) {
+        chatId = result.chatId;
+      }
+
+      const templateText =
+        initialLanguage === "en"
+          ? `Hi, I'm Marcos, the virtual assistant for ${agentName}, it's a pleasure to help you 🙂\n\nYou've shown interest in this property: ${listingData.link}\n\nJust to confirm, have you reviewed the property highlights?\n\n${formattedFeatures}\n\nI look forward to hearing from you.`
+          : `Hola, soy Marcos, el asistente virtual de ${agentName}, un placer atenderte 🙂\n\nTe has interesado en esta vivienda: ${listingData.link}\n\nPor confirmar, ¿has visto las características?\n\n${formattedFeatures}\n\nEspero tu respuesta.`;
+
+      initialHistory.push({
+        role: "assistant",
+        text: templateText,
+        timestamp: Date.now(),
+      });
+    } else {
+      for (let i = 0; i < initialMessages.length; i += 1) {
+        const body = initialMessages[i];
+        const result = await sendTextMessage({ to: phone, body, chatId });
+
+        if (result.chatId && result.chatId !== chatId) {
+          chatId = result.chatId;
+        }
+
+        initialHistory.push({
+          role: "assistant",
+          text: body,
+          timestamp: Date.now() + i,
+        });
+      }
+    }
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    const state: ConversationState = {
+      phone,
+      listingCode,
+      chatId,
+      operationType: listingData.operationType,
+      description: listingData.description,
+      link: listingData.link,
+      address: listingAddress,
+      features: featuresText,
+      profitabilityReportAvailable: listingData.profitabilityReportAvailable,
+      profitabilityReport: listingData.profitabilityReport,
+      history: initialHistory,
+      pendingUserMessages: [],
+      isFinished: false,
+      tags: leadTags,
+      recordings: [],
+    };
+
+    await upsertConversation(chatId, { ...state, type: "lead" });
+    conversationStates.set(chatId, state);
+
+    return { ok: false, kind: "send_failed", chatId, details, initialHistory, featuresText };
+  }
+
+  try {
+    await updateLeadChatInfo({
+      phone,
+      listingCode,
+      chatId,
+      operationType: listingData.operationType,
+      tags: leadTags,
+    });
+  } catch (error) {
+    console.error("Error updating lead with final chatId", error);
+  }
+
+  const state: ConversationState = {
+    phone,
+    listingCode,
+    chatId,
+    operationType: listingData.operationType,
+    description: listingData.description,
+    link: listingData.link,
+    address: listingAddress,
+    features: featuresText,
+    profitabilityReportAvailable: listingData.profitabilityReportAvailable,
+    profitabilityReport: listingData.profitabilityReport,
+    history: initialHistory,
+    pendingUserMessages: [],
+    isFinished: false,
+    tags: leadTags,
+    recordings: [],
+  };
+
+  conversationStates.set(chatId, { ...state, type: "lead" });
+  await upsertConversation(chatId, { ...state, tags: leadTags, type: "lead" });
+
+  return { ok: true, chatId, initialHistory, featuresText };
+}
+
+async function runIdealistaConfirmPipeline(params: {
+  phone: string;
+  listingCode: string;
+  listingData: ListingRow;
+  leadTags: string[];
+  leadName?: string;
+  language?: "es" | "en";
+}): Promise<
+  | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
+  | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
+> {
+  const { phone, listingCode, listingData, leadTags, leadName, language } = params;
+  const initialLanguage = language || resolveInitialLanguage(phone);
+  const featuresText = await getFeaturesForLanguage(listingData.features, initialLanguage);
+
+  let chatId: string = normalizeToCanonicalChatId(phone);
+  const listingAddress =
+    [listingData.street, listingData.address].filter(Boolean).join(", ").trim() || listingData.address;
+
+  try {
+    await updateLeadChatInfo({
+      phone,
+      listingCode,
+      chatId,
+      operationType: listingData.operationType,
+      name: leadName,
+      tags: leadTags,
+      qualificationStatus: "not_qualified",
+    });
+  } catch (error) {
+    console.warn("Failed to create preliminary lead record (idealista confirm)", error);
+  }
+
+  const initialHistory: HistoryItem[] = [];
+  const agentName = listingData.agentName || "Paco";
+
+  try {
+    const provider = await getActiveProviderFn();
+    if (provider === "twilio") {
+      const confirmTemplateSid =
+        initialLanguage === "en"
+          ? TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN.value()
+          : TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES.value();
+      if (!confirmTemplateSid) {
+        throw new Error(`Missing Twilio confirm template SID for language ${initialLanguage}`);
+      }
+
+      const result = await sendInitialTemplateMessage({
+        to: phone,
+        chatId,
+        language: initialLanguage,
+        templateSid: confirmTemplateSid,
+        variables: {
+          "1": leadName || "Hola",
+          "2": agentName,
+          "3": listingData.link,
+        },
+      });
+
+      if (result.chatId && result.chatId !== chatId) {
+        chatId = result.chatId;
+      }
+
+      const templateText =
+        initialLanguage === "en"
+          ? `Hi ${leadName || ""}${leadName ? "," : ""} I'm Marcos, ${agentName}'s virtual assistant.\n` +
+            `You contacted us on Idealista about this property: ${listingData.link}\n` +
+            `Is that correct? (Reply: Yes / No)`
+          : `Hola ${leadName || ""}${leadName ? "," : ""} soy Marcos, el asistente virtual de ${agentName}, encantado.\n` +
+            `Nos has contactado en idealista por esta vivienda: ${listingData.link}\n` +
+            `¿Es correcto? (Responde: Sí / No)`;
+      initialHistory.push({ role: "assistant", text: templateText, timestamp: Date.now() });
+    } else {
+      const body =
+        initialLanguage === "en"
+          ? `Hi ${leadName || ""}${leadName ? "," : ""} I'm Marcos, ${agentName}'s virtual assistant.\n\n` +
+            `You contacted us on Idealista about this property: ${listingData.link}\n\n` +
+            `Is that correct? (Reply: Yes / No)`
+          : `Hola ${leadName || ""}${leadName ? "," : ""} soy Marcos, el asistente virtual de ${agentName}, encantado.\n\n` +
+            `Nos has contactado en idealista por esta vivienda: ${listingData.link}\n\n` +
+            `¿Es correcto? (Responde: Sí / No)`;
+      const result = await sendTextMessage({ to: phone, body, chatId });
+      if (result.chatId && result.chatId !== chatId) chatId = result.chatId;
+      initialHistory.push({ role: "assistant", text: body, timestamp: Date.now() });
+    }
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    const state: ConversationState = {
+      phone,
+      listingCode,
+      chatId,
+      operationType: listingData.operationType,
+      description: listingData.description,
+      link: listingData.link,
+      address: listingAddress,
+      features: featuresText,
+      profitabilityReportAvailable: listingData.profitabilityReportAvailable,
+      profitabilityReport: listingData.profitabilityReport,
+      history: initialHistory,
+      pendingUserMessages: [],
+      isFinished: false,
+      tags: leadTags,
+      recordings: [],
+      flowStep: "idealista_confirm",
+      botDisabled: false,
+    };
+
+    await upsertConversation(chatId, { ...state, type: "lead", idealistaDescription: listingData.idealistaDescription || "" });
+    conversationStates.set(chatId, state);
+    return { ok: false, kind: "send_failed", chatId, details, initialHistory, featuresText };
+  }
+
+  const state: ConversationState = {
+    phone,
+    listingCode,
+    chatId,
+    operationType: listingData.operationType,
+    description: listingData.description,
+    link: listingData.link,
+    address: listingAddress,
+    features: featuresText,
+    profitabilityReportAvailable: listingData.profitabilityReportAvailable,
+    profitabilityReport: listingData.profitabilityReport,
+    history: initialHistory,
+    pendingUserMessages: [],
+    isFinished: false,
+    tags: leadTags,
+    recordings: [],
+    flowStep: "idealista_confirm",
+    botDisabled: false,
+    name: leadName,
+  };
+
+  conversationStates.set(chatId, { ...state, type: "lead" });
+  await upsertConversation(chatId, { ...state, type: "lead", idealistaDescription: listingData.idealistaDescription || "" });
+
+  return { ok: true, chatId, initialHistory, featuresText };
+}
+
+export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -864,6 +2009,9 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
 
   const phone = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
   const listingCode = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
+  const leadName = typeof req.body?.nombre === "string" ? req.body.nombre.trim() : "";
+  const language = typeof req.body?.language === "string" ? req.body.language.trim() : "";
+  const languageNorm = language === "en" ? "en" : language === "es" ? "es" : "";
 
   if (!phone || !listingCode) {
     res.status(400).json({ error: "telefono y anuncio son obligatorios" });
@@ -916,22 +2064,7 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
     }
   }
 
-  // Deduct 2 credits from the organization before proceeding
-  const CREDITS_PER_CONVERSATION = 2;
-  try {
-    await deductOrgCredits(CREDITS_PER_CONVERSATION, `Nueva conversación: ${phone} → ${listingCode}`);
-    console.log(`Deducted ${CREDITS_PER_CONVERSATION} credits for new lead ${phone}`);
-  } catch (error: any) {
-    if (error.message?.includes("insuficientes")) {
-      res.status(402).json({ error: "Créditos insuficientes para crear una nueva conversación" });
-      return;
-    }
-    console.error("Error deducting credits", error);
-    res.status(500).json({ error: "Error al procesar créditos" });
-    return;
-  }
-
-  let listingData;
+  let listingData: ListingRow | null;
   try {
     listingData = await fetchListingByCode(listingCode);
   } catch (error) {
@@ -950,151 +2083,28 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: ["SMTP_P
     return;
   }
 
-  const initialLanguage = resolveInitialLanguage(phone);
-  const featuresText = await getFeaturesForLanguage(listingData.features, initialLanguage);
-  const initialMessages = composeInitialMessages(listingData.operationType, listingData.link, featuresText, {
-    language: initialLanguage,
+  const pipeline = await runIdealistaConfirmPipeline({
+    phone,
+    listingCode,
+    listingData,
+    leadTags: ["lead"],
+    leadName: leadName || undefined,
+    language: (languageNorm as "es" | "en" | "") || undefined,
   });
 
-  // 1. First, ensure the lead is saved in Firestore so we don't lose it if sending fails
-  // We use the canonical chatId format to prevent duplicates
-  let chatId: string = normalizeToCanonicalChatId(phone);
-
-  try {
-    await updateLeadChatInfo({
-      phone,
-      listingCode,
-      chatId,
-      operationType: listingData.operationType,
-      tags: ["lead"],
-    });
-    console.log(`Lead record created/updated for ${phone} with temporary chatId: ${chatId}`);
-  } catch (error) {
-    console.warn("Failed to create preliminary lead record", error);
-    // We continue anyway to try to send messages
-  }
-
-  // 2. Now try to send the initial messages
-  const initialHistory: HistoryItem[] = [];
-  try {
-    const provider = await getActiveProviderFn();
-    if (provider === "twilio") {
-      const agentName = listingData.agentName || "Paco";
-
-      const formattedFeatures = formatFeaturesList(featuresText, initialLanguage);
-
-      // Twilio ContentVariables cannot contain newlines (error 21656)
-      // Replace newlines with a visual separator that WhatsApp renders well
-      const sanitizedFeatures = formattedFeatures.replace(/\n/g, " | ");
-
-      const result = await sendInitialTemplateMessage({
-        to: phone,
-        chatId,
-        language: initialLanguage,
-        variables: {
-          "1": agentName,
-          "2": listingData.link,
-          "3": sanitizedFeatures,
-        },
-        mediaUrl: "https://real-estate-idealista-bot.web.app/idealista.jpg",
-      });
-
-      if (result.chatId && result.chatId !== chatId) {
-        chatId = result.chatId;
-      }
-
-      // Reconstruct the template text for history tracking (v11 format)
-      const templateText = initialLanguage === "en"
-        ? `Hi, I'm Marcos, the virtual assistant for ${agentName}, it's a pleasure to help you 🙂\n\nYou've shown interest in this property: ${listingData.link}\n\nJust to confirm, have you reviewed the property highlights?\n\n${formattedFeatures}\n\nI look forward to hearing from you.`
-        : `Hola, soy Marcos, el asistente virtual de ${agentName}, un placer atenderte 🙂\n\nTe has interesado en esta vivienda: ${listingData.link}\n\nPor confirmar, ¿has visto las características?\n\n${formattedFeatures}\n\nEspero tu respuesta.`;
-
-      initialHistory.push({
-        role: "assistant",
-        text: templateText,
-        timestamp: Date.now(),
-      });
-    } else {
-      // Whapi: send multiple free-form messages as before
-      for (let i = 0; i < initialMessages.length; i += 1) {
-        const body = initialMessages[i];
-        const result = await sendTextMessage({ to: phone, body, chatId });
-
-        if (result.chatId && result.chatId !== chatId) {
-          chatId = result.chatId;
-        }
-
-        initialHistory.push({
-          role: "assistant",
-          text: body,
-          timestamp: Date.now() + i,
-        });
-      }
-    }
-  } catch (error) {
-    console.error("Error sending initial messages", error);
-
-    // Even if sending failed, we save the partial history and state we have
-    const state: ConversationState = {
-      phone,
-      listingCode,
-      chatId,
-      operationType: listingData.operationType,
-      description: listingData.description,
-      link: listingData.link,
-      features: featuresText,
-      profitabilityReportAvailable: listingData.profitabilityReportAvailable,
-      profitabilityReport: listingData.profitabilityReport,
-      history: initialHistory,
-      pendingUserMessages: [],
-      isFinished: false,
-    };
-
-    await upsertConversation(chatId, { ...state, tags: ["lead"], type: "lead" });
-    conversationStates.set(chatId, state);
-
+  if (!pipeline.ok) {
     res.status(502).json({
       error: "No se pudieron enviar los mensajes iniciales (pero el lead ha sido guardado)",
-      details: error instanceof Error ? error.message : String(error),
-      chatId
+      details: pipeline.details,
+      chatId: pipeline.chatId,
     });
     return;
   }
 
-  // 3. Final update of the lead and creation of the conversation state
-  try {
-    await updateLeadChatInfo({
-      phone,
-      listingCode,
-      chatId,
-      operationType: listingData.operationType,
-      tags: ["lead"],
-    });
-  } catch (error) {
-    console.error("Error updating lead with final chatId", error);
-  }
-
-  const state: ConversationState = {
-    phone,
-    listingCode,
-    chatId,
-    operationType: listingData.operationType,
-    description: listingData.description,
-    link: listingData.link,
-    features: featuresText,
-    profitabilityReportAvailable: listingData.profitabilityReportAvailable,
-    profitabilityReport: listingData.profitabilityReport,
-    history: initialHistory,
-    pendingUserMessages: [],
-    isFinished: false,
-  };
-
-  conversationStates.set(chatId, { ...state, tags: ["lead"], type: "lead" });
-  await upsertConversation(chatId, { ...state, tags: ["lead"], type: "lead" });
-
-  res.status(200).json({ chatId, success: true });
+  res.status(200).json({ chatId: pipeline.chatId, success: true });
 });
 
-export const sendMessage = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const sendMessage = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -1134,7 +2144,7 @@ export const sendMessage = onRequest({ cors: true, region: REGION }, async (req,
   }
 });
 
-export const sendMassMessage = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const sendMassMessage = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -1196,7 +2206,98 @@ export const sendMassMessage = onRequest({ cors: true, region: REGION }, async (
   });
 });
 
-export const triggerBot = onRequest({ cors: true, region: REGION }, async (req, res) => {
+/**
+ * One-shot helper to create Twilio Content templates used by this bot.
+ * You will still need to submit them for WhatsApp approval in Twilio manually.
+ *
+ * Security: requires `?token=...` matching ADMIN_TEMPLATE_TOKEN.
+ */
+export const createTwilioTemplates = onRequest({ cors: true, region: REGION, secrets: [ADMIN_TEMPLATE_TOKEN] }, async (req, res) => {
+  const token = typeof req.query.token === "string" ? req.query.token : "";
+  if (!token || token !== ADMIN_TEMPLATE_TOKEN.value()) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  try {
+    const suffix = Date.now().toString();
+    const idealistaConfirm = await createContentTemplate({
+      friendlyName: `idealista_confirm_es_${suffix}`,
+      language: "es",
+      variables: {
+        "1": "Carlos",
+        "2": "Paco Granados",
+        "3": "https://www.idealista.com/inmueble/110595991",
+      },
+      types: {
+        "twilio/quick-reply": {
+          body:
+            "Hola {{1}}.\n\n" +
+            "Soy Marcos, el asistente virtual de {{2}}.\n\n" +
+            "Nos has contactado en Idealista por esta vivienda:\n{{3}}\n\n" +
+            "¿Es correcto?",
+          actions: [
+            { title: "Sí", id: "yes" },
+            { title: "No", id: "no" },
+          ],
+        },
+        "twilio/text": {
+          body:
+            "Hola {{1}}.\n\n" +
+            "Soy Marcos, el asistente virtual de {{2}}.\n\n" +
+            "Nos has contactado en Idealista por esta vivienda:\n{{3}}\n\n" +
+            "¿Es correcto? (Responde: Sí / No)",
+        },
+      },
+    });
+
+    const idealistaConfirmEn = await createContentTemplate({
+      friendlyName: `idealista_confirm_en_${suffix}`,
+      language: "en",
+      variables: {
+        "1": "John",
+        "2": "Paco Granados",
+        "3": "https://www.idealista.com/inmueble/110595991",
+      },
+      types: {
+        "twilio/quick-reply": {
+          body:
+            "Hi {{1}}.\n\n" +
+            "I'm Marcos, the virtual assistant for {{2}}.\n\n" +
+            "You contacted us on Idealista about this property:\n{{3}}\n\n" +
+            "Is that correct?",
+          actions: [
+            { title: "Yes", id: "yes" },
+            { title: "No", id: "no" },
+          ],
+        },
+        "twilio/text": {
+          body:
+            "Hi {{1}}.\n\n" +
+            "I'm Marcos, the virtual assistant for {{2}}.\n\n" +
+            "You contacted us on Idealista about this property:\n{{3}}\n\n" +
+            "Is that correct? (Reply: Yes / No)",
+        },
+      },
+    });
+
+    res.status(200).json({
+      idealistaConfirm: idealistaConfirm.contentSid,
+      idealistaConfirmEn: idealistaConfirmEn.contentSid,
+      note: "Envía estos ContentSid a WhatsApp para aprobación en Twilio y configura TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES / TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN.",
+    });
+  } catch (error) {
+    console.error("createTwilioTemplates error", error);
+    const errAny = error as unknown as { message?: string; response?: { data?: unknown; status?: number } };
+    res.status(500).json({
+      error: error instanceof Error ? error.message : String(error),
+      twilioStatus: errAny.response?.status,
+      twilioData: errAny.response?.data,
+    });
+  }
+});
+
+export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -1230,7 +2331,7 @@ export const triggerBot = onRequest({ cors: true, region: REGION }, async (req, 
   }
 });
 
-export const healthz = onRequest({ cors: true, region: REGION }, async (_req, res) => {
+export const healthz = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN] }, async (_req, res) => {
   const whapiStatus = await checkWhapiHealth();
 
   if (whapiStatus.status !== "ok") {
@@ -1253,10 +2354,34 @@ export const monitoringTask = onSchedule({
   schedule: "*/30 * * * *", // Every 30 minutes
   region: REGION,
   timeZone: "Europe/Madrid",
-  secrets: ["SMTP_PASS"],
-}, async (event) => {
+  secrets: [WHAPI_TOKEN],
+}, async () => {
   console.log("Running scheduled health check...");
   const whapiStatus = await checkWhapiHealth();
+
+  // Persist last test time + status even when Whapi is OK.
+  try {
+    const databaseId = "realestate-whatsapp-bot";
+    const orgId = "org_paco_granados";
+    const db = getFirestore(admin.app(), databaseId);
+    const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
+    await settingsRef.set(
+      {
+        lastCheckByKey: {
+          whapi_down: {
+            status: whapiStatus.status === "ok" ? "ok" : "error",
+            checkedAt: new Date().toISOString(),
+            checkedAtMs: Date.now(),
+            details: whapiStatus.details ?? null,
+          },
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (e) {
+    console.warn("Failed to persist lastCheckByKey for monitoringTask:", e);
+  }
 
   if (whapiStatus.status !== "ok") {
     await sendAlert(
@@ -1294,7 +2419,7 @@ export const checkFollowUps = onSchedule({
   schedule: "0 * * * *", // Every hour
   region: REGION,
   timeZone: "Europe/Madrid",
-}, async (event) => {
+}, async () => {
   console.log("Checking for conversations that need a follow-up...");
 
   try {
@@ -1344,7 +2469,7 @@ export const checkFollowUps = onSchedule({
   }
 });
 
-export const testAlert = onRequest({ cors: true, region: REGION, secrets: ["SMTP_PASS"] }, async (_req, res) => {
+export const testAlert = onRequest({ cors: true, region: REGION }, async (_req, res) => {
   try {
     console.log("Iniciando prueba manual de alerta...");
     await sendAlert(
@@ -1370,7 +2495,6 @@ export const syncConversationsTask = onSchedule({
   schedule: "*/30 * * * *", // Every 30 minutes
   region: REGION,
   timeZone: "Europe/Madrid",
-  secrets: ["SMTP_PASS"],
 }, async () => {
   console.log("Starting scheduled conversation sync...");
   try {
@@ -1392,7 +2516,6 @@ export const twiceDailyStatusReportTask = onSchedule({
   schedule: "0 9,21 * * *", // Twice a day at 9:00 and 21:00
   region: REGION,
   timeZone: "Europe/Madrid",
-  secrets: ["SMTP_PASS"],
 }, async () => {
   console.log("Starting twice-daily status report...");
   try {
@@ -1450,7 +2573,6 @@ export const retryFailedMessagesTask = onSchedule({
   schedule: "*/15 * * * *", // Every 15 minutes
   region: REGION,
   timeZone: "Europe/Madrid",
-  secrets: ["SMTP_PASS"],
 }, async () => {
   console.log("Starting failed message retry task...");
   try {
@@ -1509,7 +2631,7 @@ export const analyzeLeadsAgent = onSchedule({
 
         // Compare lastAnalyzedAt with conversation's lastMessage timestamp
         const lastAnalyzedAt = leadData.lastAnalyzedAt as FirebaseFirestore.Timestamp | undefined;
-        const lastMessage = (conversation as any).lastMessage as FirebaseFirestore.Timestamp | undefined;
+        const lastMessage = conversation.lastMessage as FirebaseFirestore.Timestamp | undefined;
 
         if (lastAnalyzedAt && lastMessage) {
           // If the lead was analyzed after the last message, skip
@@ -1564,7 +2686,7 @@ export const analyzeLeadsAgent = onSchedule({
 /**
  * Manual trigger for sync (for testing)
  */
-export const triggerSync = onRequest({ cors: true, region: REGION, secrets: ["SMTP_PASS"] }, async (_req, res) => {
+export const triggerSync = onRequest({ cors: true, region: REGION }, async (_req, res) => {
   try {
     console.log("Manual sync triggered...");
     const result = await syncConversationsWithWhapi();
@@ -1685,6 +2807,149 @@ export const getCredits = onRequest({ cors: true, region: REGION }, async (req, 
   }
 });
 
+type SubscriptionBillingInterval = "month" | "year";
+
+/**
+ * Map planId to the Stripe Price ID stored in environment variables
+ */
+function getPriceIdForPlan(planId: string, billingInterval: SubscriptionBillingInterval = "month"): string {
+  if (billingInterval === "year") {
+    const map: Record<string, string | undefined> = {
+      plus: process.env.STRIPE_PLUS_ANNUAL_PRICE_ID?.trim(),
+      pro: process.env.STRIPE_PRO_ANNUAL_PRICE_ID?.trim(),
+      pro_plus: process.env.STRIPE_PRO_PLUS_ANNUAL_PRICE_ID?.trim(),
+    };
+    const priceId = map[planId];
+    if (!priceId || priceId.includes("REPLACE")) {
+      throw new Error(
+        "Contratación anual no disponible: faltan precios Stripe anuales (STRIPE_*_ANNUAL_PRICE_ID). Usa facturación mensual o contacta con soporte."
+      );
+    }
+    return priceId;
+  }
+
+  const map: Record<string, string | undefined> = {
+    plus: process.env.STRIPE_PLUS_PRICE_ID?.trim(),
+    pro: process.env.STRIPE_PRO_PRICE_ID?.trim(),
+    pro_plus: process.env.STRIPE_PRO_PLUS_PRICE_ID?.trim(),
+  };
+  const priceId = map[planId];
+  if (!priceId || priceId.includes("REPLACE")) {
+    throw new Error(
+      `No valid Stripe Price ID for plan "${planId}". Set Firebase secrets STRIPE_PLUS_PRICE_ID, STRIPE_PRO_PRICE_ID, STRIPE_PRO_PLUS_PRICE_ID to real price_… values (recurring monthly).`
+    );
+  }
+  return priceId;
+}
+
+/**
+ * Create a Stripe Checkout session for a recurring subscription plan.
+ * Requires Authorization header with Firebase ID token.
+ */
+export const createSubscriptionCheckout = onRequest(
+  {
+    cors: true,
+    region: REGION,
+    secrets: [
+      "STRIPE_API_KEY",
+      "STRIPE_PLUS_PRICE_ID",
+      "STRIPE_PRO_PRICE_ID",
+      "STRIPE_PRO_PLUS_PRICE_ID",
+      "STRIPE_PLUS_ANNUAL_PRICE_ID",
+      "STRIPE_PRO_ANNUAL_PRICE_ID",
+      "STRIPE_PRO_PLUS_ANNUAL_PRICE_ID",
+    ],
+  },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+      const { planId, successUrl, cancelUrl, billingInterval: rawBilling } = req.body as {
+        planId?: string;
+        successUrl?: string;
+        cancelUrl?: string;
+        billingInterval?: string;
+      };
+
+      if (!planId || !successUrl || !cancelUrl) {
+        res.status(400).json({ error: "planId, successUrl, and cancelUrl are required" });
+        return;
+      }
+
+      if (!["plus", "pro", "pro_plus"].includes(planId)) {
+        res.status(400).json({ error: `Invalid planId: ${planId}. Must be one of: plus, pro, pro_plus` });
+        return;
+      }
+
+      const billingInterval: SubscriptionBillingInterval =
+        rawBilling === "year" ? "year" : "month";
+
+      const priceId = getPriceIdForPlan(planId, billingInterval);
+      const session = await createSubscriptionCheckoutSession(
+        ORG_ID,
+        planId,
+        priceId,
+        successUrl,
+        cancelUrl
+      );
+
+      res.status(200).json({ sessionId: session.sessionId, url: session.url });
+    } catch (error) {
+      console.error("Error creating subscription checkout:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create subscription checkout" });
+    }
+  }
+);
+
+/**
+ * Get the current subscription for the org.
+ * Returns planId, status, and currentPeriodEnd.
+ * Requires Authorization header with Firebase ID token.
+ */
+export const getSubscription = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  try {
+    if (req.method !== "GET") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+    const sub = await getOrgSubscription(ORG_ID);
+
+    if (!sub) {
+      res.status(200).json({ planId: "free", status: "active", currentPeriodEnd: null });
+      return;
+    }
+
+    res.status(200).json({
+      planId: sub.planId,
+      status: sub.status,
+      currentPeriodEnd: sub.currentPeriodEnd,
+    });
+  } catch (error) {
+    console.error("Error getting subscription:", error);
+    res.status(500).json({ error: "Failed to get subscription" });
+  }
+});
+
 /**
  * Create a Stripe Checkout session for purchasing credits
  */
@@ -1706,10 +2971,11 @@ export const createStripeCheckout = onRequest({ cors: true, region: REGION, secr
     const decodedToken = await admin.auth().verifyIdToken(token);
     const userId = decodedToken.uid;
 
-    const { packageId, successUrl, cancelUrl } = req.body as {
+    const { packageId, successUrl, cancelUrl, quantity: rawQty } = req.body as {
       packageId?: string;
       successUrl?: string;
       cancelUrl?: string;
+      quantity?: number;
     };
 
     if (!packageId || !successUrl || !cancelUrl) {
@@ -1717,7 +2983,24 @@ export const createStripeCheckout = onRequest({ cors: true, region: REGION, secr
       return;
     }
 
-    const session = await createCheckoutSession(userId, packageId, successUrl, cancelUrl);
+    const parsedQty =
+      rawQty === undefined || rawQty === null
+        ? 1
+        : typeof rawQty === "number"
+          ? rawQty
+          : parseInt(String(rawQty), 10);
+    const quantity = Number.isFinite(parsedQty) ? Math.floor(parsedQty) : 1;
+
+    const existingCustomerId = await getOrgStripeCustomerId(ORG_ID);
+    const session = await createCheckoutSession(
+      userId,
+      ORG_ID,
+      packageId,
+      successUrl,
+      cancelUrl,
+      existingCustomerId ?? undefined,
+      quantity
+    );
 
     res.status(200).json({
       sessionId: session.sessionId,
@@ -1730,13 +3013,75 @@ export const createStripeCheckout = onRequest({ cors: true, region: REGION, secr
 });
 
 /**
+ * Persist auto-recharge preferences for the org.
+ */
+export const saveAutoRecharge = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+    const body = req.body as {
+      enabled?: boolean;
+      thresholdCredits?: number;
+      rechargeCredits?: number;
+    };
+    if (typeof body.enabled !== "boolean") {
+      res.status(400).json({ error: "enabled (boolean) is required" });
+      return;
+    }
+
+    await saveOrgAutoRechargeSettings(ORG_ID, {
+      enabled: body.enabled,
+      thresholdCredits: typeof body.thresholdCredits === "number" ? body.thresholdCredits : 20,
+      rechargeCredits: typeof body.rechargeCredits === "number" ? body.rechargeCredits : 100,
+    });
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error("saveAutoRecharge:", error);
+    res.status(500).json({ error: "Failed to save auto-recharge settings" });
+  }
+});
+
+/**
+ * Read auto-recharge preferences (and whether a card is on file).
+ */
+export const getAutoRecharge = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  try {
+    if (req.method !== "GET") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+    const settings = await getOrgAutoRechargeSettingsForApi(ORG_ID);
+    res.status(200).json(settings);
+  } catch (error) {
+    console.error("getAutoRecharge:", error);
+    res.status(500).json({ error: "Failed to get auto-recharge settings" });
+  }
+});
+
+/**
  * Stripe webhook handler for payment events
  * Called by Stripe when payment succeeds, fails, etc.
  */
 export const stripeWebhook = onRequest({
   cors: false,
   region: REGION,
-  secrets: ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET"]
+  secrets: ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PLUS_PRICE_ID", "STRIPE_PRO_PRICE_ID", "STRIPE_PRO_PLUS_PRICE_ID"],
 }, async (req, res) => {
   try {
     if (req.method !== "POST") {
@@ -1770,22 +3115,143 @@ export const stripeWebhook = onRequest({
 
     // Handle the event
     switch (event.type) {
+      // ── One-time credit top-up ─────────────────────────────────────
       case "checkout.session.completed": {
         const session = event.data.object;
-        const userId = session.metadata?.userId;
-        const credits = parseInt(session.metadata?.credits || "0", 10);
+        const orgId = session.metadata?.orgId ?? ORG_ID;
 
-        if (userId && credits > 0) {
-          const newBalance = await addCredits(
-            userId,
-            credits,
-            session.id,
-            `Compra de ${credits} créditos`
-          );
-          console.log(`Added ${credits} credits to user ${userId}. New balance: ${newBalance}`);
+        if (session.mode === "subscription") {
+          // Subscription checkout: record the subscription in Firestore.
+          // Credits are granted via invoice.paid (fired immediately after for the first invoice).
+          const planId = (session.metadata?.planId ?? "free") as SubscriptionPlanId;
+          const subscriptionId = extractStripeId(session.subscription);
+          const customerId = extractStripeId(session.customer);
+
+          await setOrgSubscription(orgId, {
+            planId,
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscriptionId,
+            status: "active",
+          });
+          console.log(`Subscription checkout completed for org ${orgId}, plan ${planId}`);
+
         } else {
-          console.warn("Checkout completed but missing metadata:", session.metadata);
+          // One-time payment: add to org balance (same ledger as getCredits / deductOrgCredits)
+          const userId = session.metadata?.userId;
+          const credits = parseInt(session.metadata?.credits || "0", 10);
+
+          if (credits > 0) {
+            const newBalance = await addOrgCredits(
+              credits,
+              `Compra de ${credits} créditos${userId ? ` (uid ${userId})` : ""} · session ${session.id}`,
+              orgId
+            );
+            console.log(`Added ${credits} org credits for ${orgId}. New balance: ${newBalance}`);
+          } else {
+            console.warn("One-time checkout completed but missing credits metadata:", session.metadata);
+          }
         }
+
+        try {
+          const billing = await extractBillingFromCheckoutSession(session.id);
+          if (billing) {
+            await mergeOrgStripeBillingFields(
+              orgId,
+              billing.stripeCustomerId,
+              billing.stripeDefaultPaymentMethodId
+            );
+            console.log(`[stripeWebhook] Saved Stripe customer/PM for org ${orgId}`);
+          }
+        } catch (billingErr) {
+          console.error("[stripeWebhook] extractBillingFromCheckoutSession:", billingErr);
+        }
+        break;
+      }
+
+      // ── Monthly credit grant (first payment + all renewals) ────────
+      case "invoice.paid": {
+        const invoice = asRecord(event.data.object);
+        // Only process subscription invoices
+        if (!invoice.subscription) {
+          console.log("invoice.paid: skipping, no subscription attached");
+          break;
+        }
+
+        const invoiceId: string = typeof invoice.id === "string" ? invoice.id : "";
+        // planId is stored on the subscription metadata
+        const subscriptionDetails = asRecord(invoice.subscription_details);
+        const subMeta = asRecord(subscriptionDetails.metadata);
+        const lines = asRecord(invoice.lines);
+        const linesData = Array.isArray(lines.data) ? lines.data : [];
+        const line0 = linesData.length > 0 ? asRecord(linesData[0]) : {};
+        const line0Meta = asRecord(line0.metadata);
+
+        const planId = ((subMeta.planId as string) || (line0Meta.planId as string) || "free") as SubscriptionPlanId;
+
+        const orgId: string = (subMeta.orgId as string) || ORG_ID;
+
+        if (!SUBSCRIPTION_CREDITS[planId]) {
+          console.warn(`invoice.paid: unknown planId "${planId}" on invoice ${invoiceId}`);
+          break;
+        }
+
+        await grantSubscriptionCredits(orgId, planId, invoiceId);
+        break;
+      }
+
+      // ── Plan changes (upgrade / downgrade) ────────────────────────
+      case "customer.subscription.updated": {
+        const sub = asRecord(event.data.object);
+        const subMeta = asRecord(sub.metadata);
+        const orgId: string = (subMeta.orgId as string) || ORG_ID;
+        const planId = ((subMeta.planId as string) || "free") as SubscriptionPlanId;
+        const statusRaw = typeof sub.status === "string" ? sub.status : "active";
+        const status =
+          statusRaw === "active" || statusRaw === "past_due" || statusRaw === "canceled" || statusRaw === "trialing"
+            ? statusRaw
+            : "active";
+        const currentPeriodEnd = sub.current_period_end as number | undefined;
+
+        await setOrgSubscription(orgId, {
+          planId,
+          stripeSubscriptionId: typeof sub.id === "string" ? sub.id : "",
+          stripeCustomerId: extractStripeId(sub.customer),
+          status,
+          currentPeriodEnd: currentPeriodEnd
+            ? admin.firestore.Timestamp.fromMillis(currentPeriodEnd * 1000)
+            : undefined,
+        });
+        console.log(`Subscription updated for org ${orgId}: plan=${planId}, status=${status}`);
+        break;
+      }
+
+      // ── Cancellation / expiry ──────────────────────────────────────
+      case "customer.subscription.deleted": {
+        const sub = asRecord(event.data.object);
+        const subMeta = asRecord(sub.metadata);
+        const orgId: string = (subMeta.orgId as string) || ORG_ID;
+
+        await setOrgSubscription(orgId, {
+          planId: "free",
+          stripeSubscriptionId: typeof sub.id === "string" ? sub.id : "",
+          stripeCustomerId: extractStripeId(sub.customer),
+          status: "canceled",
+        });
+        console.log(`Subscription cancelled for org ${orgId}. Reverted to free plan.`);
+        break;
+      }
+
+      case "payment_intent.succeeded": {
+        const pi = event.data.object as { id: string; metadata?: Record<string, string> };
+        if (pi.metadata?.source !== "auto_recharge") {
+          break;
+        }
+        const oid = pi.metadata?.orgId;
+        const credits = parseInt(pi.metadata?.credits || "0", 10);
+        if (!oid || credits <= 0) {
+          break;
+        }
+        await addOrgCreditsForPaymentIntentOnce(oid, credits, pi.id, "Auto-compra créditos");
         break;
       }
 
@@ -1831,6 +3297,394 @@ export const ignoreChatForSync = onRequest({ cors: true, region: REGION }, async
 });
 
 /**
+ * Returns the status of each known alert type (last seen + counters).
+ * Used by the Alerts UI to show a "system status" panel.
+ */
+export const getAlertCatalogStatus = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  if (req.method !== "GET") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const databaseId = "realestate-whatsapp-bot";
+    const orgId = "org_paco_granados";
+    const db = getFirestore(admin.app(), databaseId);
+    const alertsRef = db.collection("organizations").doc(orgId).collection("system_alerts");
+    const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
+
+    const scanLimit = Math.max(50, Math.min(1500, parseInt(String(req.query.limit || "500"), 10) || 500));
+    const now = Date.now();
+    const since24hMs = now - 24 * 60 * 60 * 1000;
+
+    const settingsSnap = await settingsRef.get();
+    const enabledByKey = (settingsSnap.exists ? (settingsSnap.data()?.enabledByKey as Record<string, boolean> | undefined) : undefined) || {};
+    const lastCheckByKey =
+      (settingsSnap.exists ? (settingsSnap.data()?.lastCheckByKey as Record<string, unknown> | undefined) : undefined) || {};
+
+    const snapshot = await alertsRef.orderBy("timestamp", "desc").limit(scanLimit).get();
+
+    type Row = {
+      key: string;
+      subject: string;
+      description: string;
+      autoTest: { kind: "event" } | { kind: "schedule"; every: string };
+      enabled: boolean;
+      lastSeverity: string | null;
+      lastMessage: string | null;
+      lastTimestampMs: number | null;
+      countLast24h: number;
+    };
+
+    const rowsByKey = new Map<string, Row>();
+    for (const item of ALERT_CATALOG) {
+      rowsByKey.set(item.key, {
+        key: item.key,
+        subject: item.subject,
+        description: item.description,
+        autoTest: item.autoTest,
+        enabled: enabledByKey[item.key] !== false,
+        lastSeverity: null,
+        lastMessage: null,
+        lastTimestampMs: null,
+        countLast24h: 0,
+      });
+    }
+
+    const matchKeyForSubject = (subject: string): string | null => {
+      if (!subject) return null;
+      if (subject.startsWith("STATUS REPORT:")) return "status_report";
+      const exact = ALERT_CATALOG.find(a => a.subject === subject);
+      return exact ? exact.key : null;
+    };
+
+    snapshot.forEach((snapDoc: FirebaseFirestore.QueryDocumentSnapshot) => {
+      const data = snapDoc.data() as {
+        subject?: string;
+        message?: string;
+        severity?: string;
+        timestamp?: admin.firestore.Timestamp;
+      };
+      const subject = String(data.subject || "");
+      const key = matchKeyForSubject(subject);
+      if (!key) return;
+
+      const row = rowsByKey.get(key);
+      if (!row) return;
+
+      const tsMs =
+        data.timestamp && typeof (data.timestamp as any).toMillis === "function"
+          ? (data.timestamp as any).toMillis()
+          : null;
+
+      if (tsMs !== null && tsMs >= since24hMs) {
+        row.countLast24h += 1;
+      }
+
+      if (row.lastTimestampMs === null && tsMs !== null) {
+        row.lastTimestampMs = tsMs;
+        row.lastSeverity = data.severity ? String(data.severity) : null;
+        row.lastMessage = data.message ? String(data.message) : null;
+      }
+    });
+
+    // Merge in last health-check results (even when no alert was emitted).
+    // Important for "whapi_down": when Whapi recovers, we want to show "healthy" + latest test.
+    for (const [key, rawCheck] of Object.entries(lastCheckByKey)) {
+      const row = rowsByKey.get(key);
+      if (!row) continue;
+      const check = rawCheck as any;
+      const checkedAtMs = typeof check?.checkedAtMs === "number" ? (check.checkedAtMs as number) : null;
+      if (checkedAtMs == null) continue;
+
+      const status = typeof check?.status === "string" ? check.status : "";
+      const details = check?.details;
+      const message =
+        status === "ok"
+          ? "Health-check OK"
+          : status
+            ? `Health-check ${status}`
+            : "Health-check";
+
+      // "Última vez" should reflect last test time (not last failure alert).
+      row.lastTimestampMs = checkedAtMs;
+      row.lastMessage = message;
+      if (status === "ok") {
+        row.lastSeverity = "healthy";
+      } else if (status) {
+        // For failures, default to warning.
+        row.lastSeverity = "warning";
+      }
+
+      // If we have details, keep them as lastMessage in a compact way.
+      if (details != null) {
+        try {
+          const shortDetails = typeof details === "string" ? details : JSON.stringify(details);
+          row.lastMessage = `${message}: ${shortDetails}`.slice(0, 280);
+        } catch {
+          // ignore details serialization errors
+        }
+      }
+    }
+
+    const rows = Array.from(rowsByKey.values());
+    res.status(200).json({ rows, scanned: snapshot.size });
+  } catch (error) {
+    console.error("Error in getAlertCatalogStatus:", error);
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+/**
+ * Enable/disable a specific alert type (by catalog key).
+ */
+export const setAlertEnabled = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const body = (req.body && typeof req.body === "object") ? (req.body as { key?: string; enabled?: boolean }) : {};
+    const key = typeof body.key === "string" ? body.key.trim() : "";
+    const enabled = typeof body.enabled === "boolean" ? body.enabled : undefined;
+
+    if (!key || enabled === undefined) {
+      res.status(400).json({ error: "key and enabled are required" });
+      return;
+    }
+
+    if (!ALERT_CATALOG.some(a => a.key === key)) {
+      res.status(400).json({ error: "Unknown alert key" });
+      return;
+    }
+
+    const databaseId = "realestate-whatsapp-bot";
+    const orgId = "org_paco_granados";
+    const db = getFirestore(admin.app(), databaseId);
+    const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
+
+    await settingsRef.set(
+      {
+        enabledByKey: {
+          [key]: enabled,
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    res.status(200).json({ success: true, key, enabled });
+  } catch (error) {
+    console.error("Error in setAlertEnabled:", error);
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+/**
+ * Run an on-demand check for a specific alert type.
+ * Supports all keys in ALERT_CATALOG.
+ */
+export const runAlertCheck = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN] }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const body = (req.body && typeof req.body === "object") ? (req.body as { key?: string }) : {};
+    const key = typeof body.key === "string" ? body.key.trim() : "";
+    if (!key) {
+      res.status(400).json({ error: "key is required" });
+      return;
+    }
+    if (!ALERT_CATALOG.some(a => a.key === key)) {
+      res.status(400).json({ error: "Unknown alert key" });
+      return;
+    }
+
+    const checkedAt = new Date().toISOString();
+    const checkedAtMsBase = Date.now();
+
+    const databaseId = "realestate-whatsapp-bot";
+    const orgId = "org_paco_granados";
+    const db = getFirestore(admin.app(), databaseId);
+    const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
+    const alertsRef = db.collection("organizations").doc(orgId).collection("system_alerts");
+
+    const persistLastCheck = async (params: { status: "ok" | "error"; details: any; checkedAtMs?: number }) => {
+      try {
+        await settingsRef.set(
+          {
+            lastCheckByKey: {
+              [key]: {
+                status: params.status,
+                checkedAt,
+                checkedAtMs: params.checkedAtMs ?? checkedAtMsBase,
+                details: params.details ?? null,
+              },
+            },
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } catch (e) {
+        console.warn("Failed to persist lastCheckByKey for runAlertCheck:", e);
+      }
+    };
+
+    // Guardrail: rate-limit per key to prevent spam.
+    try {
+      const settingsSnap = await settingsRef.get();
+      const lastCheckByKey = (settingsSnap.exists ? (settingsSnap.data()?.lastCheckByKey as Record<string, any> | undefined) : undefined) || {};
+      const lastMs = typeof lastCheckByKey?.[key]?.checkedAtMs === "number" ? (lastCheckByKey[key].checkedAtMs as number) : null;
+      if (lastMs != null && checkedAtMsBase - lastMs < 60_000) {
+        res.status(429).json({
+          ok: false,
+          key,
+          error: "Rate limited: espera 60s antes de volver a ejecutar este check.",
+        });
+        return;
+      }
+    } catch (e) {
+      // If rate-limit read fails, proceed with the check.
+      console.warn("Rate-limit read failed, proceeding:", e);
+    }
+
+    if (key === "whapi_down") {
+      const whapiStatus = await checkWhapiHealth();
+      await persistLastCheck({
+        status: whapiStatus.status === "ok" ? "ok" : "error",
+        details: { kind: "whapi_health_check", synthetic: false, result: whapiStatus.details ?? null },
+      });
+
+      if (whapiStatus.status === "ok") {
+        res.status(200).json({ ok: true, key, status: "ok", checkedAt, details: whapiStatus.details });
+        return;
+      }
+      res.status(200).json({ ok: true, key, status: "error", checkedAt, details: whapiStatus.details });
+      return;
+    }
+
+    if (
+      key === "sync_failed" ||
+      key === "sync_error" ||
+      key === "sync_task_error" ||
+      key === "sync_discrepancies"
+    ) {
+      const startedAt = Date.now();
+      try {
+        const result = await syncConversationsWithWhapi({ silent: true });
+        const ok = (result.errors?.length || 0) === 0;
+        const details = {
+          kind: "sync_health_check",
+          synthetic: true,
+          chatsChecked: result.chatsChecked,
+          discrepanciesFound: result.discrepanciesFound,
+          errors: result.errors,
+          durationMs: Date.now() - startedAt,
+        };
+
+        await persistLastCheck({ status: ok ? "ok" : "error", details });
+
+        if (ok) {
+          res.status(200).json({ ok: true, key, status: "ok", checkedAt, details });
+          return;
+        }
+        res.status(200).json({ ok: true, key, status: "error", checkedAt, details });
+        return;
+      } catch (e: any) {
+        const details = { kind: "sync_health_check", synthetic: true, error: e?.message || String(e), durationMs: Date.now() - startedAt };
+        await persistLastCheck({ status: "error", details });
+
+        res.status(200).json({ ok: true, key, status: "error", checkedAt, details });
+        return;
+      }
+    }
+
+    if (key === "manual_test_alert") {
+      // Synthetic check: verify we can write a test alert to Firestore (no email).
+      const startedAt = Date.now();
+      try {
+        const docRef = await alertsRef.add({
+          subject: "Prueba Manual de Alerta",
+          message: "Synthetic check OK (Firestore write).",
+          details: { synthetic: true, kind: "manual_test_alert", checkedAt },
+          severity: "info",
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          resolved: true,
+        });
+        const details = {
+          kind: "manual_test_alert_check",
+          synthetic: true,
+          wroteToFirestore: true,
+          alertId: docRef.id,
+          durationMs: Date.now() - startedAt,
+        };
+        await persistLastCheck({ status: "ok", details });
+        res.status(200).json({ ok: true, key, status: "ok", checkedAt, details });
+        return;
+      } catch (e: any) {
+        const details = {
+          kind: "manual_test_alert_check",
+          synthetic: true,
+          wroteToFirestore: false,
+          error: e?.message || String(e),
+          durationMs: Date.now() - startedAt,
+        };
+        await persistLastCheck({ status: "error", details });
+        res.status(200).json({ ok: true, key, status: "error", checkedAt, details });
+        return;
+      }
+    }
+
+    // Default synthetic check: look for occurrences of this alert in the last 6 hours.
+    const windowHours = 6;
+    const sinceMs = Date.now() - windowHours * 60 * 60 * 1000;
+    const catalogItem = ALERT_CATALOG.find((a) => a.key === key);
+    const subject = catalogItem?.subject || "";
+
+    const recentSnapshot = await alertsRef.orderBy("timestamp", "desc").limit(200).get();
+    const recentMatches: Array<{ subject: string; message: string; severity: string; timestampMs: number; id: string }> = [];
+    recentSnapshot.forEach((docSnap) => {
+      const data = docSnap.data() as any;
+      const tsMs =
+        data.timestamp && typeof data.timestamp?.toMillis === "function"
+          ? (data.timestamp.toMillis() as number)
+          : null;
+      if (tsMs == null || tsMs < sinceMs) return;
+      const s = String(data.subject || "");
+      const isMatch = key === "status_report" ? s.startsWith("STATUS REPORT:") : s === subject;
+      if (!isMatch) return;
+      recentMatches.push({
+        id: docSnap.id,
+        subject: s,
+        message: String(data.message || ""),
+        severity: String(data.severity || ""),
+        timestampMs: tsMs,
+      });
+    });
+
+    const ok = recentMatches.length === 0;
+    const details = {
+      kind: "recent_occurrence_check",
+      synthetic: true,
+      windowHours,
+      sinceMs,
+      subject,
+      recentCount: recentMatches.length,
+      examples: recentMatches.slice(0, 5),
+    };
+    await persistLastCheck({ status: ok ? "ok" : "error", details });
+
+    res.status(200).json({ ok: true, key, status: ok ? "ok" : "error", checkedAt, details });
+  } catch (error) {
+    console.error("Error in runAlertCheck:", error);
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+/**
  * Get audit logs with optional filtering
  */
 export const getAuditLogs = onRequest({ cors: true, region: REGION }, async (req, res) => {
@@ -1842,10 +3696,36 @@ export const getAuditLogs = onRequest({ cors: true, region: REGION }, async (req
   try {
     const { entityType, entityId, action, userId, isSystemAction, limit } = req.query;
 
+    const allowedEntityTypes: AuditEntityType[] = [
+      "lead",
+      "conversation",
+      "listing",
+      "qualified_lead",
+      "system_config",
+    ];
+    const allowedActions: AuditAction[] = [
+      "create",
+      "update",
+      "delete",
+      "status_change",
+      "bot_toggle",
+      "message_sent",
+      "qualification_change",
+    ];
+
+    const entityTypeValue =
+      typeof entityType === "string" && allowedEntityTypes.includes(entityType as AuditEntityType)
+        ? (entityType as AuditEntityType)
+        : undefined;
+    const actionValue =
+      typeof action === "string" && allowedActions.includes(action as AuditAction)
+        ? (action as AuditAction)
+        : undefined;
+
     const logs = await getAuditLogsFromService({
-      entityType: entityType as any,
+      entityType: entityTypeValue,
       entityId: entityId as string | undefined,
-      action: action as any,
+      action: actionValue,
       userId: userId as string | undefined,
       isSystemAction: isSystemAction === "true" ? true : isSystemAction === "false" ? false : undefined,
       limit: limit ? parseInt(limit as string, 10) : undefined,
@@ -1892,371 +3772,6 @@ export const getSystemUsers = onRequest({ cors: true, region: REGION }, async (r
   }
 });
 
-// ==================== VAPI ENDPOINTS ====================
-
-/**
- * Handle VAPI Tool Calls (Function Calling)
- * Used during the call for dynamic lookups (Inbound property search)
- */
-export const vapiApiHandler = onRequest({ cors: true, region: REGION }, async (req, res) => {
-  try {
-    const { message } = req.body;
-
-    // Check if it's a tool call
-    if (message?.type === "tool-calls" || message?.toolCalls) {
-      const toolCalls = message.toolCalls || [];
-      const results = [];
-
-      for (const toolCall of toolCalls) {
-        if (toolCall.function.name === "find_listing") {
-          const args = toolCall.function.arguments || {};
-          const query = args.query || args.reference;
-          const street = args.street;
-          const price = args.price ? Number(args.price) : undefined;
-          const rooms = args.rooms ? Number(args.rooms) : undefined;
-
-          console.log(`VAPI Tool Call: Searching for listing with: ref="${query}", street="${street}", price="${price}", rooms="${rooms}"`);
-
-          let listing: ListingRow | null = null;
-          let multipleResults: ListingRow[] = [];
-
-          // 1. Try search by listing code exactly if provided
-          if (query) {
-            listing = await fetchListingByCode(query);
-          }
-
-          // 2. If not found by code, try by other criteria
-          if (!listing && (street || price || rooms)) {
-            multipleResults = await searchListings({ street, price, rooms });
-            if (multipleResults.length === 1) {
-              listing = multipleResults[0];
-            }
-          }
-
-          if (listing) {
-            results.push({
-              toolCallId: toolCall.id,
-              result: JSON.stringify({
-                found: true,
-                listingCode: listing.listingCode,
-                description: listing.description,
-                features: listing.features,
-                operationType: listing.operationType,
-                link: listing.link,
-                rentability: listing.profitabilityReport || "No disponible",
-                price: listing.price,
-                rooms: listing.rooms,
-                address: listing.address,
-                m2: listing.m2,
-                idealistaDescription: listing.idealistaDescription
-              })
-            });
-          } else if (multipleResults.length > 1) {
-            results.push({
-              toolCallId: toolCall.id,
-              result: JSON.stringify({
-                found: false,
-                multipleOptions: true,
-                count: multipleResults.length,
-                options: multipleResults.map((r) => ({
-                  listingCode: r.listingCode,
-                  address: r.address,
-                  price: r.price,
-                  rooms: r.rooms
-                })),
-                message: "He encontrado varias propiedades que coinciden. Por favor, confirma con el cliente cuál de estas es (puedes leerle las direcciones o precios)."
-              })
-            });
-          } else {
-            results.push({
-              toolCallId: toolCall.id,
-              result: JSON.stringify({
-                found: false,
-                multipleOptions: false,
-                message: "No encontré ninguna propiedad con esos datos. Por favor, pide al cliente la referencia que aparece en el panel derecho del anuncio de Idealista, o bien confirma la calle y precio exacto."
-              })
-            });
-          }
-        }
-      }
-
-      res.status(200).json({ results });
-      return;
-    }
-
-    res.status(200).json({ status: "ok" });
-  } catch (error) {
-    console.error("VAPI API Handler Error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-/**
- * Handle VAPI Webhooks (Call Status & Analysis)
- * Used to update Firestore when a call ends
- */
-// --- Helper Functions ---
-
-/**
- * Robustly extracts details from a VAPI call object, handling different response structures
- */
-function extractVapiCallDetails(vCall: any) {
-  const analysis = vCall.analysis || {};
-  const artifact = vCall.artifact || {};
-
-  // 1. Extract Transcript
-  const transcript = vCall.transcript || analysis.transcript || artifact.transcript;
-
-  // 2. Extract Structured Data
-  let sd: any = analysis.structuredData || {};
-
-  // If we have structuredOutputs (often in API response), merge them
-  const structuredOutputs = artifact.structuredOutputs;
-  if (structuredOutputs && typeof structuredOutputs === 'object') {
-    for (const key in structuredOutputs) {
-      const item = structuredOutputs[key];
-      if (item && typeof item === 'object' && item.name) {
-        sd[item.name] = item.result;
-      }
-    }
-  }
-
-  // 3. Extract Summary
-  let summary = vCall.summary || analysis.summary || artifact.summary;
-  if (!summary && sd.notes) {
-    summary = sd.notes;
-  }
-
-  // 4. Metadata
-  const isQualified = sd.is_qualified === true;
-  const customerName = sd.name || vCall.customer?.name;
-  const listingCode = vCall.assistantOverrides?.variableValues?.LISTING_CODE || sd.listing_code;
-
-  return { transcript, summary, sd, isQualified, customerName, listingCode };
-}
-
-export const vapiWebhook = onRequest({ cors: true, region: REGION }, async (req, res) => {
-  try {
-    const { message } = req.body;
-
-    if (message?.type === "end-of-call-report") {
-      const call = message.call;
-      const analysis = message.analysis;
-      const phone = call.customer?.number;
-      const callId = call.id;
-      const recordingUrl = call.recordingUrl || call.artifact?.recordingUrl;
-
-      console.log(`VAPI Webhook: Call ended for ${phone}. Status: ${call.status}, Recording: ${recordingUrl}`);
-
-      if (!phone) {
-        res.status(200).send();
-        return;
-      }
-
-      // Use the combined extracting logic to be ultra-safe
-      const { transcript, summary, sd, isQualified, customerName, listingCode: extractedListingCode } = extractVapiCallDetails({
-        ...call,
-        analysis: message.analysis || call.analysis,
-        artifact: call.artifact
-      });
-
-      // Map VAPI fields to our LeadSummary structure
-      const leadSummary: LeadSummary = {
-        name: customerName,
-        people: sd.people,
-        income: sd.income,
-        pets: sd.pets,
-        paymentMethod: sd.payment_method,
-        dates: sd.move_in_date,
-        visitAvailability: sd.availability,
-        notes: sd.notes || analysis?.summary,
-      };
-
-      // 2. Find the lead in Firestore OR create if it's a new lead from inbound
-      let lead = await findLeadByPhone(phone);
-      let chatId = lead?.chatId || normalizeToCanonicalChatId(phone);
-      let listingCode = lead?.listingCode;
-
-      // If for some reason we still don't have a listingCode (inbound call for first time)
-      // we try to get it from call variables or our analysis
-      if (!listingCode) {
-        listingCode = extractedListingCode || call.assistantOverrides?.variableValues?.LISTING_CODE;
-      }
-
-      const status: QualificationStatus = isQualified ? "qualified" : "rejected";
-
-      // Prepare state for summary building
-      // We need to fetch listing data to have a complete state for buildQualifiedLeadMessage
-      let listing = null;
-      if (listingCode) {
-        listing = await fetchListingByCode(listingCode);
-      }
-
-      const tempState: ConversationState = {
-        phone,
-        chatId,
-        listingCode,
-        name: customerName,
-        operationType: listing?.operationType || "Venta",
-        description: listing?.description,
-        address: listing?.address,
-        history: [], // Not needed for message building
-        pendingUserMessages: [],
-        isFinished: true,
-        qualificationStatus: isQualified,
-      };
-
-      const notificationBody = buildQualifiedLeadMessage(tempState, leadSummary) + (recordingUrl ? `\n\nGrabación: ${recordingUrl}` : "");
-
-      // 3. Save to calls collection
-      await saveCall({
-        phone,
-        chatId,
-        name: customerName,
-        listingCode,
-        transcript,
-        summary,
-        isQualified,
-        recordingUrl,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        callId,
-        structuredData: sd,
-      });
-
-      if (lead) {
-        // Update existing lead
-        await updateLeadStatus({
-          chatId: lead.chatId,
-          name: customerName,
-          qualificationStatus: status,
-          recordings: recordingUrl ? [recordingUrl] : [],
-          conversationSummary: isQualified ? notificationBody : undefined,
-        });
-      } else if (listingCode) {
-        // Register new lead from VAPI inbound call
-        await updateLeadChatInfo({
-          phone,
-          listingCode,
-          chatId,
-          operationType: tempState.operationType || "Venta",
-          name: customerName,
-          qualificationStatus: status,
-          recordings: recordingUrl ? [recordingUrl] : [],
-          vapiCallId: callId,
-          tags: ["vapi-inbound"],
-        });
-      }
-
-      // 4. Reconstruct / Update Conversation history
-      const historyTranscript = transcript || "Transcripción no disponible";
-      const newHistoryItem: HistoryItem = {
-        role: "user", // Representing the voice call input
-        text: `[LLAMADA FINALIZADA]\n\nTranscripción: ${historyTranscript}\n\nGrabación: ${recordingUrl || "N/A"}`,
-        timestamp: Date.now(),
-      };
-
-      const existingConv = await getConversationByChatId(chatId);
-      const updatedHistory = existingConv ? [...(existingConv.history || [])] : [];
-      updatedHistory.push(newHistoryItem);
-
-      await appendConversationRow({
-        phone: phone,
-        chatId: chatId,
-        listingCode: listingCode,
-        history: updatedHistory,
-        name: customerName,
-        qualified: isQualified,
-        isFinished: true,
-        recordings: recordingUrl ? [recordingUrl] : [],
-        vapiCallId: callId,
-      });
-
-      // Save qualified status to leads (SOT)
-      if (isQualified) {
-        const notificationNumberRaw = NOTIFICATION_NUMBER.value();
-        if (notificationNumberRaw) {
-          const numbers = notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean);
-          for (const num of numbers) {
-            await sendTextMessage({ to: num, body: notificationBody });
-          }
-        }
-      }
-    }
-
-    res.status(200).send();
-  } catch (error) {
-    console.error("VAPI Webhook Error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-/**
- * Manually sync historical calls from VAPI to Firestore
- */
-export const syncVapiCalls = onRequest({ cors: true, region: REGION }, async (req, res) => {
-  try {
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
-    console.log(`Starting VAPI sync for last ${limit} calls...`);
-
-    const vapiCalls = await listCalls(limit);
-
-    if (!Array.isArray(vapiCalls)) {
-      throw new Error("Invalid response from VAPI: expected an array of calls");
-    }
-
-    let syncedCount = 0;
-    let skippedCount = 0;
-
-    for (const vCall of vapiCalls) {
-      const callId = vCall.id;
-
-      // Check if call already exists in Firestore to avoid duplicates
-      const existingCall = await findCallByVapiId(callId);
-
-      if (existingCall) {
-        skippedCount++;
-        continue;
-      }
-
-      const phone = vCall.customer?.number;
-      if (!phone) {
-        skippedCount++;
-        continue;
-      }
-
-      const { transcript, summary, sd, isQualified, customerName, listingCode } = extractVapiCallDetails(vCall);
-
-      // Normalize chatId
-      const chatId = normalizeToCanonicalChatId(phone);
-
-      await saveCall({
-        phone,
-        chatId,
-        name: customerName,
-        listingCode,
-        transcript,
-        summary,
-        isQualified,
-        recordingUrl: vCall.recordingUrl,
-        timestamp: vCall.createdAt ? admin.firestore.Timestamp.fromDate(new Date(vCall.createdAt)) : admin.firestore.FieldValue.serverTimestamp(),
-        callId,
-        structuredData: sd,
-      });
-
-      syncedCount++;
-    }
-
-    res.status(200).json({
-      success: true,
-      message: `Sync completed: ${syncedCount} calls synced, ${skippedCount} skipped.`,
-      details: { syncedCount, skippedCount }
-    });
-  } catch (error) {
-    console.error("VAPI Sync Error:", error);
-    res.status(500).json({ error: "Sync Failed", details: error instanceof Error ? error.message : String(error) });
-  }
-});
-
 // ==================== FIRESTORE TRIGGERS (AUDIT LOG) ====================
 
 const DATABASE_ID = "realestate-whatsapp-bot";
@@ -2264,8 +3779,11 @@ const DATABASE_ID = "realestate-whatsapp-bot";
 /**
  * Helper to detect changes between two document snapshots
  */
-function extractDocChanges(before: any, after: any): { field: string; oldValue: any; newValue: any }[] {
-  const changes: { field: string; oldValue: any; newValue: any }[] = [];
+function extractDocChanges(
+  before: Record<string, unknown> | undefined,
+  after: Record<string, unknown> | undefined
+): { field: string; oldValue: unknown; newValue: unknown }[] {
+  const changes: { field: string; oldValue: unknown; newValue: unknown }[] = [];
   const b = before || {};
   const a = after || {};
 
@@ -2294,6 +3812,7 @@ export const onLeadWritten = onDocumentWritten({
   document: "organizations/{orgId}/leads/{leadId}",
   database: DATABASE_ID,
   region: REGION,
+  secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN],
 }, async (event) => {
   const before = event.data?.before.data();
   const after = event.data?.after.data();
@@ -2312,6 +3831,87 @@ export const onLeadWritten = onDocumentWritten({
     after?.updatedBy,
     after?.userName
   );
+
+  // Reliable notification path for qualified leads (covers bot + manual qualification).
+  const becameQualified = before?.qualificationStatus !== "qualified" && after?.qualificationStatus === "qualified";
+  if (!becameQualified) return;
+
+  // Apply listing qualification filters (if any) via AI before notifying agents.
+  if (after?.listingCode) {
+    try {
+      const listing = await fetchListingByCode(after.listingCode);
+      if (listing) {
+        const hasFilters =
+          (listing.operationType === "Alquiler" && (listing.minMonthlyIncome != null || listing.maxPeople != null)) ||
+          (listing.operationType === "Venta" && listing.requireMortgageApproved === true);
+
+        if (hasFilters) {
+          const summaryForFilter = typeof after.conversationSummary === "string" && after.conversationSummary.trim()
+            ? after.conversationSummary
+            : `Teléfono: ${after.phone || "N/D"}\nNombre: ${after.name || "Sin nombre"}`;
+
+          const filterResult = await checkLeadPassesFilters({
+            conversationSummary: summaryForFilter,
+            operationType: listing.operationType,
+            minMonthlyIncome: listing.minMonthlyIncome,
+            maxPeople: listing.maxPeople,
+            requireMortgageApproved: listing.requireMortgageApproved,
+          });
+
+          if (!filterResult.pass) {
+            console.log(`Lead ${event.params.leadId} filtered out by listing criteria: ${filterResult.reason}`);
+            // Update lead to rejected so it surfaces correctly in the UI
+            const leadDocRef = event.data?.after.ref;
+            if (leadDocRef) {
+              await leadDocRef.update({
+                qualificationStatus: "rejected",
+                rejectionReason: filterResult.reason,
+              });
+            }
+            return;
+          }
+
+          console.log(`Lead ${event.params.leadId} passed listing filters: ${filterResult.reason}`);
+        }
+      }
+    } catch (filterError) {
+      // Fail-open: if something goes wrong with the filter, proceed with notification
+      console.error("Error applying listing qualification filters; proceeding with notification", filterError);
+    }
+  }
+
+  const notificationNumberRaw = NOTIFICATION_NUMBER.value();
+  const agentNums = notificationNumberRaw
+    ? notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean)
+    : [];
+  if (agentNums.length === 0) {
+    console.warn("No NOTIFICATION_NUMBER configured; qualified lead summary not sent", event.params.leadId);
+    return;
+  }
+
+  const summaryText = typeof after?.conversationSummary === "string" && after.conversationSummary.trim()
+    ? after.conversationSummary
+    : compactMessage([
+      "Lead cualificado ✅",
+      `Teléfono: ${after?.phone || "N/D"}`,
+      `Nombre: ${after?.name || "Sin nombre"}`,
+      after?.listingCode ? `Anuncio: ${after.listingCode}` : "",
+    ]);
+  const templateSid = getAgentNotificationTemplateSid();
+
+  for (const num of agentNums) {
+    try {
+      await sendAgentNotificationMessage({
+        to: num,
+        body: summaryText,
+        templateSid,
+        context: `onLeadWritten:${after?.chatId || event.params.leadId}`,
+      });
+      console.log(`Notification sent for qualified lead to ${num}`, after?.chatId || event.params.leadId);
+    } catch (error) {
+      console.error(`Error sending notification to ${num}`, error);
+    }
+  }
 });
 
 export const onConversationWritten = onDocumentWritten({

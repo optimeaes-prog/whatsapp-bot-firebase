@@ -2,28 +2,82 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Edit, Trash2, Power, PowerOff, CheckCircle, XCircle, Users, MapPin, ExternalLink, ChevronDown, ChevronRight, MessageSquare, CheckSquare, Square, Filter, Search } from "lucide-react";
-import type { Listing, ListingFormData, OperationType, ListingClosureReason, QualifiedLead } from "../types";
+import type { Listing, ListingFormData, OperationType, ListingClosureReason, Lead } from "../types";
 import { getListings, createListing, updateListing, deleteListing, deactivateListing, reactivateListing } from "../services/listings";
 import { getConversations } from "../services/conversations";
-import { getQualifiedLeadsByListingCode, getQualifiedLeads } from "../services/qualifiedLeads";
+import {
+  getQualifiedLeadsByListingCode,
+  getLeads,
+  filterQualifiedLeads,
+} from "../services/leads";
 import { cn } from "../lib/utils";
+import { composeListingAddress, normalizeForSearch } from "../lib/addressNormalize";
+import { metricTheme, qualificationStatusClasses } from "../lib/metricTheme";
 import { PageHeader, PageLoading, Button, FilterCard } from "../components/ui";
 import { OperationTypeBadge } from "../components/StatusBadges";
+
+type AddressSuggestionOption = {
+  label: string;
+  street: string;
+  city: string;
+  province: string;
+  postalCode: string;
+  country: string;
+  countryCode: string;
+};
+
+function parsePhotonFeature(f: { properties?: Record<string, string | undefined> }): AddressSuggestionOption | null {
+  const p = f.properties || {};
+  const name = typeof p.name === "string" ? p.name : "";
+  const street = typeof p.street === "string" ? p.street : "";
+  const housenumber = typeof p.housenumber === "string" ? p.housenumber : "";
+  const city = typeof p.city === "string" ? p.city : "";
+  const postcode = typeof p.postcode === "string" ? p.postcode : "";
+  const state = typeof p.state === "string" ? p.state : "";
+  const rawCountryCode = typeof p.countrycode === "string" ? p.countrycode.toUpperCase() : "";
+  const country =
+    (typeof p.country === "string" && p.country) ||
+    (rawCountryCode === "ES" ? "España" : rawCountryCode) ||
+    "España";
+  if (!city && !state) return null;
+  const streetLine = [street, housenumber].filter(Boolean).join(" ").trim() || (name && !street ? name : street) || "";
+  const label = [streetLine || name, city, postcode, state].filter(Boolean).join(", ");
+  return {
+    label,
+    street: streetLine,
+    city,
+    province: state,
+    postalCode: postcode,
+    country,
+    countryCode: rawCountryCode,
+  };
+}
 
 const emptyFormData: ListingFormData = {
   description: "",
   listingCode: "",
+  referencia: "",
   link: "", // Se generará automáticamente al guardar
   operationType: "Venta",
   features: "",
   idealistaDescription: "",
+  quickQualificationEnabled: false,
   price: "",
   m2: "",
   rooms: "",
   address: "",
+  street: "",
+  city: "",
+  province: "",
+  postalCode: "",
+  country: "España",
+  provinceNormalized: "",
   profitabilityReportAvailable: false,
   profitabilityReport: "",
   agentName: "",
+  minMonthlyIncome: undefined,
+  maxPeople: undefined,
+  requireMortgageApproved: false,
 };
 
 // Razones de cierre con etiquetas para mostrar
@@ -49,11 +103,14 @@ export function Listings() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   // Estados para autocompletado de dirección
-  const [addressSuggestions, setAddressSuggestions] = useState<string[]>([]);
+  const [addressSuggestionOptions, setAddressSuggestionOptions] = useState<AddressSuggestionOption[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [isSelecting, setIsSelecting] = useState(false);
+  const [addressSearchEnabled, setAddressSearchEnabled] = useState(false);
   const suggestionsRef = useRef<HTMLDivElement>(null);
+  const featuresRef = useRef<HTMLTextAreaElement>(null);
+  const featuresGhostRef = useRef<HTMLDivElement>(null);
 
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive">("active");
   const [filterOperationType, setFilterOperationType] = useState<"all" | OperationType>("all");
@@ -72,12 +129,13 @@ export function Listings() {
   const [deactivateModalOpen, setDeactivateModalOpen] = useState(false);
   const [deactivatingListing, setDeactivatingListing] = useState<Listing | null>(null);
   const [closureReason, setClosureReason] = useState<ListingClosureReason | "">("");
-  const [selectedQualifiedLead, setSelectedQualifiedLead] = useState<QualifiedLead | null>(null);
+  const [selectedQualifiedLead, setSelectedQualifiedLead] = useState<Lead | null>(null);
   const [closureNotes, setClosureNotes] = useState("");
-  const [qualifiedLeadsForListing, setQualifiedLeadsForListing] = useState<QualifiedLead[]>([]);
+  const [qualifiedLeadsForListing, setQualifiedLeadsForListing] = useState<Lead[]>([]);
   const [loadingQualifiedLeads, setLoadingQualifiedLeads] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
   const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
+  const [expandedAddresses, setExpandedAddresses] = useState<Record<string, boolean>>({});
 
   const [isOperationTypeDropdownOpen, setIsOperationTypeDropdownOpen] = useState(false);
   const [isClosureReasonDropdownOpen, setIsClosureReasonDropdownOpen] = useState(false);
@@ -87,7 +145,7 @@ export function Listings() {
   const formatPrice = (price: string | undefined, type: OperationType): string => {
     if (!price) return "";
     // Remove existing € or €/mes
-    let clean = price.split("€")[0].trim();
+    const clean = price.split("€")[0].trim();
     if (!clean) return "";
 
     if (type === "Alquiler") {
@@ -97,9 +155,101 @@ export function Listings() {
     }
   };
 
+  const normalizeBulletsOnePerLine = (value: string): string => {
+    return value
+      .replaceAll("\r\n", "\n")
+      .split("\n")
+      .map((line) => {
+        // Importante: no hacer `trim()` del final, porque si no el usuario no puede
+        // escribir espacios (p.ej. el espacio entre palabras se vuelve "trailing"
+        // hasta que se escriba el siguiente carácter).
+        if (!line.trim()) return "";
+
+        // Si la línea es solo un bullet (con o sin espacios), mantenla como "• "
+        if (/^\s*([-*•–—]+)\s*$/.test(line)) return "• ";
+
+        // Si ya trae bullet, lo sustituimos por "• " preservando el resto (incl. espacios finales)
+        const bulletMatch = line.match(/^\s*([-*•–—]+)\s*(.*)$/);
+        if (bulletMatch) return `• ${bulletMatch[2]}`;
+
+        // Si no trae bullet, lo añadimos (quitando solo espacios iniciales)
+        return `• ${line.replace(/^\s+/, "")}`;
+      })
+      .join("\n");
+  };
+
+  const updateFeaturesGhost = (value: string) => {
+    const ghost = featuresGhostRef.current;
+    if (!ghost) return;
+
+    if (!value.trim()) {
+      ghost.style.display = "none";
+      return;
+    }
+
+    const lines = value.replaceAll("\r\n", "\n").split("\n").length;
+    ghost.style.display = "block";
+    ghost.style.top = `calc(0.5rem + ${lines} * 1.25rem)`;
+  };
+
+  const normalizeFeaturesTextareaInPlace = (el: HTMLTextAreaElement) => {
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const before = el.value.slice(0, start);
+    const after = el.value.slice(end);
+
+    const normalizedAll = normalizeBulletsOnePerLine(el.value);
+    if (normalizedAll === el.value) {
+      updateFeaturesGhost(el.value);
+      return;
+    }
+
+    const normalizedBefore = normalizeBulletsOnePerLine(before);
+    el.value = normalizedAll;
+    const cursor = normalizedBefore.length;
+    el.selectionStart = cursor;
+    el.selectionEnd = cursor;
+    // Si había selección, la perdemos por simplicidad (normalmente se escribe sin selección).
+    // Mantener una selección exacta aquí implica mapear offsets entre strings.
+    if (after.length === 0) {
+      // no-op
+    }
+    updateFeaturesGhost(el.value);
+  };
+
+  const handleFeaturesKeyDown: React.KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+
+    const el = e.currentTarget;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const before = el.value.slice(0, start);
+    const after = el.value.slice(end);
+
+    el.value = normalizeBulletsOnePerLine(`${before}\n• ${after}`);
+    updateFeaturesGhost(el.value);
+
+    requestAnimationFrame(() => {
+      const target = featuresRef.current;
+      if (!target) return;
+      const cursor = start + "\n• ".length;
+      target.selectionStart = cursor;
+      target.selectionEnd = cursor;
+    });
+  };
+
   useEffect(() => {
     loadListings();
   }, []);
+
+  useEffect(() => {
+    const el = featuresRef.current;
+    if (!el) return;
+    // Mantener textarea sincronizado cuando se abre/edita el modal
+    el.value = formData.features ?? "";
+    updateFeaturesGhost(el.value);
+  }, [modalOpen, editingId, formData.features]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedListingSearch(listingSearch), 300);
@@ -125,10 +275,11 @@ export function Listings() {
       setListings(data);
 
       try {
-        const [conversations, qualifieds] = await Promise.all([
+        const [conversations, allLeads] = await Promise.all([
           getConversations(),
-          getQualifiedLeads()
+          getLeads(),
         ]);
+        const qualifieds = filterQualifiedLeads(allLeads);
         
         const cCounts: Record<string, number> = {};
         const rCounts: Record<string, number> = {};
@@ -172,32 +323,42 @@ export function Listings() {
     setFormData(emptyFormData);
     setEditingId(null);
     setModalOpen(true);
-    setAddressSuggestions([]);
+    setAddressSuggestionOptions([]);
     setShowSuggestions(false);
     setIsSelecting(false);
+    setAddressSearchEnabled(false);
   }
 
   function openEditModal(listing: Listing) {
     setFormData({
       description: listing.description,
       listingCode: listing.listingCode,
+      referencia: listing.referencia,
       link: listing.link || "",
       operationType: listing.operationType,
       features: listing.features,
       idealistaDescription: listing.idealistaDescription || "",
+    quickQualificationEnabled: listing.quickQualificationEnabled === true,
       price: listing.price || "",
       m2: listing.m2 || "",
       rooms: listing.rooms || "",
       address: listing.address || "",
+      street: listing.street || "",
+      city: listing.city || "",
+      province: listing.province || "",
+      postalCode: listing.postalCode || "",
+      country: listing.country || "España",
+      provinceNormalized: listing.provinceNormalized || "",
       profitabilityReportAvailable: listing.profitabilityReportAvailable,
       profitabilityReport: listing.profitabilityReport,
       agentName: listing.agentName || "",
     });
     setEditingId(listing.id);
     setModalOpen(true);
-    setAddressSuggestions([]);
+    setAddressSuggestionOptions([]);
     setShowSuggestions(false);
     setIsSelecting(false);
+    setAddressSearchEnabled(false);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -205,10 +366,25 @@ export function Listings() {
     setSaving(true);
 
     try {
+      const composed =
+        formData.street || formData.city || formData.province || formData.postalCode
+          ? composeListingAddress({
+              street: formData.street,
+              postalCode: formData.postalCode,
+              city: formData.city,
+              province: formData.province,
+              country: formData.country,
+            })
+          : "";
+      const addressLine = composed.trim() || formData.address?.trim() || "";
+      const provinceNorm = formData.province ? normalizeForSearch(formData.province) : "";
+
       const dataToSave = {
         ...formData,
+        address: addressLine,
+        provinceNormalized: provinceNorm,
         price: formatPrice(formData.price, formData.operationType),
-        link: `https://www.idealista.com/inmueble/${formData.listingCode}`
+        link: `https://www.idealista.com/inmueble/${formData.listingCode}`,
       };
 
       if (editingId) {
@@ -296,7 +472,7 @@ export function Listings() {
 
   async function searchAddress(query: string) {
     if (!query || query.length < 3) {
-      setAddressSuggestions([]);
+      setAddressSuggestionOptions([]);
       setShowSuggestions(false);
       return;
     }
@@ -304,30 +480,29 @@ export function Listings() {
     setLoadingSuggestions(true);
     try {
       console.log("Searching address for:", query);
-      // Remove trailing slash and lang param which might cause 400
-      const response = await fetch(`https://photon.komoot.io/api?q=${encodeURIComponent(query)}&limit=10`);
+      // Forzar idioma español y pedir más candidatos para filtrar mejor España.
+      const response = await fetch(
+        `https://photon.komoot.io/api?q=${encodeURIComponent(query)}&lang=es&limit=25`
+      );
       if (!response.ok) {
         console.error("Photon API error status:", response.status);
         throw new Error("Network response was not ok");
       }
 
       const data = await response.json();
-      const suggestions = data.features
-        .filter((f: any) => f.properties.city || f.properties.state) // Filter out very vague results
-        .map((f: any) => {
-          const { name, street, housenumber, city, postcode, state } = f.properties;
-
-          // Construir dirección amigable
-          const main = name || street;
-          const detail = [housenumber, city, postcode, state].filter(Boolean).join(", ");
-
-          return detail ? `${main}, ${detail}` : main;
-        });
-
-      const uniqueSuggestions = Array.from(new Set(suggestions as string[]));
-      console.log("Found suggestions:", uniqueSuggestions.length);
-      setAddressSuggestions(uniqueSuggestions);
-      setShowSuggestions(uniqueSuggestions.length > 0);
+      const options: AddressSuggestionOption[] = [];
+      const seen = new Set<string>();
+      for (const f of data.features as { properties?: Record<string, string | undefined> }[]) {
+        const parsed = parsePhotonFeature(f);
+        if (!parsed || seen.has(parsed.label)) continue;
+        seen.add(parsed.label);
+        options.push(parsed);
+      }
+      const optionsFromSpain = options.filter((opt) => opt.countryCode === "ES");
+      const prioritizedOptions = (optionsFromSpain.length > 0 ? optionsFromSpain : options).slice(0, 10);
+      console.log("Found suggestions:", options.length);
+      setAddressSuggestionOptions(prioritizedOptions);
+      setShowSuggestions(prioritizedOptions.length > 0);
     } catch (error) {
       console.error("Error fetching address suggestions:", error);
     } finally {
@@ -342,17 +517,21 @@ export function Listings() {
       return;
     }
 
+    if (!addressSearchEnabled) {
+      return;
+    }
+
     const timer = setTimeout(() => {
       if (formData.address && formData.address.length >= 3) {
         searchAddress(formData.address);
       } else {
-        setAddressSuggestions([]);
+        setAddressSuggestionOptions([]);
         setShowSuggestions(false);
       }
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [formData.address]);
+  }, [formData.address, addressSearchEnabled, isSelecting]);
 
   const filteredListings = useMemo(() => {
     const q = debouncedListingSearch.trim().toLowerCase();
@@ -365,7 +544,12 @@ export function Listings() {
       const haystack = [
         listing.description,
         listing.listingCode,
+        listing.referencia,
         listing.address,
+        listing.street,
+        listing.city,
+        listing.province,
+        listing.postalCode,
         listing.agentName,
         listing.features,
         listing.idealistaDescription,
@@ -464,7 +648,7 @@ export function Listings() {
         title="Anuncios"
         subtitle={`Mostrando ${filteredListings.length} de ${listings.length} anuncios`}
         actions={
-          <Button onClick={openCreateModal} className="flex w-full items-center justify-center gap-2 sm:w-auto">
+          <Button size="lg" onClick={openCreateModal} className="flex w-full items-center justify-center gap-2 sm:w-auto">
             <Plus size={20} />
             <span>Nuevo Anuncio</span>
           </Button>
@@ -495,7 +679,7 @@ export function Listings() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
             <input
               type="text"
-              placeholder="Buscar por título, ID Idealista, dirección, agente o descripción..."
+              placeholder="Buscar por título, ID, referencia, dirección, agente o descripción..."
               value={listingSearch}
               onChange={(e) => setListingSearch(e.target.value)}
               className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow"
@@ -679,15 +863,24 @@ export function Listings() {
                 <div className="p-3 sm:p-4 flex flex-col md:flex-row gap-4 items-center">
                   <div className="flex-1 min-w-0 flex flex-col gap-2.5">
                     {/* Header: Title & Badges */}
-                    <div className="flex items-center gap-2 flex-wrap">
+                    <div
+                      className="flex items-center gap-2 flex-wrap cursor-pointer"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openEditModal(listing)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openEditModal(listing);
+                        }
+                      }}
+                      title="Editar anuncio"
+                    >
                       <h3 className={cn("font-bold text-lg leading-tight truncate", isActive ? "text-gray-900" : "text-gray-500")}>
                         {listing.description}
                       </h3>
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <OperationTypeBadge type={listing.operationType} className="py-1 text-xs font-bold" />
-                        <span className={cn("px-2 py-1 text-xs font-bold rounded-full flex items-center gap-1", isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
-                          {isActive ? "Activo" : "Inactivo"}
-                        </span>
+                        <OperationTypeBadge type={listing.operationType} />
                       </div>
                     </div>
 
@@ -709,27 +902,40 @@ export function Listings() {
                         )}
                       </div>
 
-                      <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm ml-auto sm:ml-0">
-                        <span className="text-gray-400 font-medium">ID</span>
-                        <span className="text-gray-700">{listing.listingCode}</span>
-                        <a
-                          href={listing.link || `https://www.idealista.com/inmueble/${listing.listingCode}`}
-                          target="_blank" rel="noopener noreferrer"
-                          className="text-gray-400 hover:text-primary-600 transition-colors ml-0.5"
-                          onClick={(e) => e.stopPropagation()}
-                          title="Ver en Idealista"
-                        >
-                          <ExternalLink size={12} />
-                        </a>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm">
+                          <span className="text-gray-400 font-medium">Ref</span>
+                          <span className="text-gray-700">{listing.referencia || listing.listingCode}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm">
+                          <span className="text-gray-400 font-medium">ID</span>
+                          <span className="text-gray-700">{listing.listingCode}</span>
+                          <a
+                            href={listing.link || `https://www.idealista.com/inmueble/${listing.listingCode}`}
+                            target="_blank" rel="noopener noreferrer"
+                            className="text-gray-400 hover:text-primary-600 transition-colors ml-0.5"
+                            onClick={(e) => e.stopPropagation()}
+                            title="Ver en Idealista"
+                          >
+                            <ExternalLink size={12} />
+                          </a>
+                        </div>
                       </div>
                     </div>
 
                     {/* Address & Description Toggle */}
                     <div className="flex flex-col gap-1.5">
                       {listing.address && (
-                        <div className="flex items-start gap-1 text-xs text-gray-500/80 truncate">
-                          <MapPin size={14} className="text-gray-400 mt-0.5 flex-shrink-0" />
-                          <span className="hover:text-gray-700 transition-colors">{listing.address}</span>
+                        <div>
+                          <button
+                            type="button"
+                            aria-expanded={!!expandedAddresses[listing.id]}
+                            onClick={() => setExpandedAddresses(prev => ({ ...prev, [listing.id]: !prev[listing.id] }))}
+                            className="flex items-start gap-1 text-xs text-gray-500/80 hover:text-gray-700 transition-colors cursor-pointer"
+                          >
+                            <MapPin size={14} className="text-gray-400 mt-0.5 flex-shrink-0" />
+                            <span className={expandedAddresses[listing.id] ? "" : "truncate"}>{listing.address}</span>
+                          </button>
                         </div>
                       )}
 
@@ -758,7 +964,7 @@ export function Listings() {
 
                     {/* Closure info (inactive only) */}
                     {!isActive && listing.closureInfo && (
-                      <div className="mt-1 text-[11px] font-bold text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full inline-block self-start border border-rose-100">
+                      <div className={cn(qualificationStatusClasses.rejected, "mt-1 inline-flex flex-wrap items-center gap-x-1 self-start max-w-full text-left")}>
                         {closureReasonLabels[listing.closureInfo.reason]}
                         {listing.closureInfo.qualifiedLeadName && <> · {listing.closureInfo.qualifiedLeadName}</>}
                       </div>
@@ -774,15 +980,15 @@ export function Listings() {
                       <div className="flex gap-5 sm:gap-6">
                         <div className="flex flex-col items-center md:items-end min-w-fit" title="Conversaciones">
                           <div className="flex items-baseline gap-1.5">
-                            <MessageSquare size={20} className="text-gray-500" />
-                            <span className="text-xl font-bold text-gray-900 tracking-tight">{convCount}</span>
+                            <MessageSquare size={20} className={metricTheme.conversations.listIcon} />
+                            <span className={cn("text-xl font-bold tracking-tight", metricTheme.conversations.listValue)}>{convCount}</span>
                           </div>
                           <span className="text-[11px] font-bold text-gray-400 tracking-wide">Conversaciones</span>
                         </div>
                         <div className="flex flex-col items-center md:items-end min-w-fit" title="Cualificados">
                           <div className="flex items-baseline gap-1.5">
-                            <CheckCircle size={20} className="text-emerald-500" />
-                            <span className="text-xl font-bold text-emerald-700 tracking-tight">{qualCount}</span>
+                            <CheckCircle size={20} className={metricTheme.qualified.iconSoft} />
+                            <span className={cn("text-xl font-bold tracking-tight", metricTheme.qualified.value)}>{qualCount}</span>
                           </div>
                           <span className="text-[11px] font-bold text-gray-400 tracking-wide">Cualificados</span>
                         </div>
@@ -796,20 +1002,20 @@ export function Listings() {
                         <div className="flex flex-col items-center md:items-end min-w-fit" title="% Respuesta">
                           <div className="flex items-baseline gap-1">
                             <div className="flex items-center">
-                              <MessageSquare size={20} className="text-gray-500" />
-                              <span className="text-[10px] font-semibold text-gray-500 ml-0.5">%</span>
+                              <MessageSquare size={20} className={metricTheme.responded.iconSoft} />
+                              <span className={cn("text-[10px] font-semibold ml-0.5", metricTheme.responded.value)}>%</span>
                             </div>
-                            <span className="text-xl font-bold text-gray-900 tracking-tight ml-1">{respRate}%</span>
+                            <span className={cn("text-xl font-bold tracking-tight ml-1", metricTheme.responded.value)}>{respRate}%</span>
                           </div>
                           <span className="text-[11px] font-bold text-gray-400 tracking-wide">% Respuesta</span>
                         </div>
                         <div className="flex flex-col items-center md:items-end min-w-fit" title="% Cualificación">
                           <div className="flex items-baseline gap-1">
                             <div className="flex items-center">
-                              <CheckCircle size={20} className="text-emerald-500" />
-                              <span className="text-[10px] font-semibold text-emerald-600 ml-0.5">%</span>
+                              <CheckCircle size={20} className={metricTheme.qualificationRate.iconSoft} />
+                              <span className={cn("text-[10px] font-semibold ml-0.5", metricTheme.qualificationRate.value)}>%</span>
                             </div>
-                            <span className="text-xl font-bold text-emerald-700 tracking-tight ml-1">{qualRate}%</span>
+                            <span className={cn("text-xl font-bold tracking-tight ml-1", metricTheme.qualificationRate.value)}>{qualRate}%</span>
                           </div>
                           <span className="text-[11px] font-bold text-gray-400 tracking-wide">% Cualificación</span>
                         </div>
@@ -832,21 +1038,32 @@ export function Listings() {
                       <div className="flex items-center gap-3 flex-wrap justify-end">
                         <Button
                           variant="outline"
+                          size="lg"
                           type="button"
-                          onClick={() => navigate(`/leads?ad=${listing.listingCode}&status=non_qualified_all`)}
-                          className="px-5 py-2.5 text-sm font-bold active:scale-95 flex items-center justify-center gap-2 border-gray-300 text-gray-700 hover:bg-gray-50"
+                          onClick={() =>
+                            navigate(
+                              `/leads?status=non_qualified_all&ad=${encodeURIComponent(listing.listingCode)}`
+                            )
+                          }
+                          className="font-bold active:scale-95 flex items-center justify-center gap-2 border-2 border-slate-200 bg-slate-100 text-slate-900 hover:bg-slate-200"
                         >
                           <Users size={18} className="text-gray-500" />
                           <span>No cualificados</span>
                         </Button>
-                        <button
+                        <Button
                           type="button"
-                          onClick={() => navigate(`/cualificados?ad=${listing.listingCode}`)}
-                          className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700/30 rounded-btn text-sm font-bold transition-all active:scale-95 flex items-center justify-center gap-2"
+                          size="lg"
+                          variant="success"
+                          onClick={() =>
+                            navigate(
+                              `/leads?status=qualified&ad=${encodeURIComponent(listing.listingCode)}`
+                            )
+                          }
+                          className="font-bold transition-all active:scale-95 flex items-center justify-center gap-2"
                         >
                           <span>Cualificados</span>
                           <ChevronRight size={20} />
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -859,17 +1076,55 @@ export function Listings() {
 
       {modalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-xl font-semibold text-gray-900">{editingId ? "Editar Anuncio" : "Nuevo Anuncio"}</h2>
-              <button onClick={() => setModalOpen(false)} className="text-gray-400 hover:text-gray-600">
-                <XCircle size={24} />
-              </button>
-            </div>
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden">
+            <div className="max-h-[90vh] overflow-y-auto">
+              <div className="p-6 border-b border-gray-200 flex justify-between items-center">
+                <h2 className="text-xl font-semibold text-gray-900">{editingId ? "Editar Anuncio" : "Nuevo Anuncio"}</h2>
+                <button onClick={() => setModalOpen(false)} className="text-gray-400 hover:text-gray-600">
+                  <XCircle size={24} />
+                </button>
+              </div>
+              <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Identificador Anuncio</label>
                 <input type="text" required value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="input" placeholder="Ej: Piso 2 habitaciones en Fuengirola" />
+              </div>
+
+              <div className="flex items-start justify-between gap-4 rounded-xl border border-gray-200 bg-gray-50/50 px-4 py-3">
+                <div className="min-w-0">
+                  <label htmlFor="quickQualificationEnabled" className="text-sm font-medium text-gray-800">
+                    Cualificación rápida
+                  </label>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Si está activado, cuando entre un interesado por este anuncio se notificará al agente y el asistente hará handoff sin cualificar.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={formData.quickQualificationEnabled === true}
+                  onClick={() => setFormData((prev) => ({ ...prev, quickQualificationEnabled: prev.quickQualificationEnabled !== true }))}
+                  className={cn(
+                    "relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2",
+                    formData.quickQualificationEnabled === true ? "bg-primary-600" : "bg-gray-300"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+                      formData.quickQualificationEnabled === true ? "translate-x-5" : "translate-x-1"
+                    )}
+                  />
+                  <span className="sr-only">Activar cualificación rápida</span>
+                </button>
+                <input
+                  type="checkbox"
+                  id="quickQualificationEnabled"
+                  checked={formData.quickQualificationEnabled === true}
+                  onChange={(e) => setFormData({ ...formData, quickQualificationEnabled: e.target.checked })}
+                  className="sr-only"
+                  tabIndex={-1}
+                />
               </div>
 
               {/* Campo de Dirección con Autocompletado */}
@@ -885,9 +1140,8 @@ export function Listings() {
                     onChange={(e) => {
                       setFormData({ ...formData, address: e.target.value });
                     }}
-                    onFocus={() => {
-                      if (addressSuggestions.length > 0) setShowSuggestions(true);
-                      else if (formData.address && formData.address.length >= 3) searchAddress(formData.address);
+                    onClick={() => {
+                      setAddressSearchEnabled(true);
                     }}
                     className="input !pl-10"
                     placeholder="Calle, número, ciudad..."
@@ -900,31 +1154,120 @@ export function Listings() {
                   )}
                 </div>
 
-                {showSuggestions && addressSuggestions.length > 0 && (
+                {showSuggestions && addressSuggestionOptions.length > 0 && (
                   <div ref={suggestionsRef} className="absolute z-50 mt-1 w-full bg-white rounded-lg shadow-lg border border-gray-200 max-h-60 overflow-y-auto py-1">
-                    {addressSuggestions.map((suggestion, index) => (
+                    {addressSuggestionOptions.map((opt, index) => (
                       <button
                         key={index}
                         type="button"
                         onClick={() => {
                           setIsSelecting(true);
-                          setFormData({ ...formData, address: suggestion });
+                          setFormData({
+                            ...formData,
+                            address: opt.label,
+                            street: opt.street,
+                            city: opt.city,
+                            province: opt.province,
+                            postalCode: opt.postalCode,
+                            country: opt.country,
+                            provinceNormalized: opt.province ? normalizeForSearch(opt.province) : "",
+                          });
                           setShowSuggestions(false);
                         }}
                         className="w-full text-left px-4 py-2 text-sm hover:bg-primary-50 hover:text-primary-700 transition-colors flex items-start gap-2 border-b border-gray-50 last:border-0"
                       >
                         <MapPin size={14} className="mt-0.5 flex-shrink-0 text-gray-400" />
-                        <span>{suggestion}</span>
+                        <span>{opt.label}</span>
                       </button>
                     ))}
                   </div>
                 )}
               </div>
 
+              <p className="text-xs text-gray-500 -mt-2">
+                Busca y elige una sugerencia para rellenar calle, ciudad, provincia y CP; puedes editarlos abajo.
+              </p>
+
+              <details className="rounded-xl border border-gray-100 bg-gray-50/70 px-4 py-3">
+                <summary className="cursor-pointer select-none text-xs font-semibold text-gray-600">
+                  Detalles de dirección (opcional)
+                  <span className="ml-2 font-normal text-gray-400">Calle, ciudad, provincia, CP…</span>
+                </summary>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">Calle y número</label>
+                    <input
+                      type="text"
+                      value={formData.street || ""}
+                      onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                      className="input !text-xs !py-2 !bg-white/90"
+                      placeholder="Ej: Calle Mayor 4"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">Ciudad / municipio</label>
+                    <input
+                      type="text"
+                      value={formData.city || ""}
+                      onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                      className="input !text-xs !py-2 !bg-white/90"
+                      placeholder="Ej: Madrid"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">Provincia</label>
+                    <input
+                      type="text"
+                      value={formData.province || ""}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          province: e.target.value,
+                          provinceNormalized: e.target.value ? normalizeForSearch(e.target.value) : "",
+                        })
+                      }
+                      className="input !text-xs !py-2 !bg-white/90"
+                      placeholder="Ej: Madrid"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">Código postal</label>
+                    <input
+                      type="text"
+                      value={formData.postalCode || ""}
+                      onChange={(e) => setFormData({ ...formData, postalCode: e.target.value })}
+                      className="input !text-xs !py-2 !bg-white/90"
+                      placeholder="Ej: 28013"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 mb-1">País</label>
+                    <input
+                      type="text"
+                      value={formData.country || ""}
+                      onChange={(e) => setFormData({ ...formData, country: e.target.value })}
+                      className="input !text-xs !py-2 !bg-white/90"
+                      placeholder="España"
+                    />
+                  </div>
+                </div>
+              </details>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">ID Idealista</label>
                   <input type="text" required value={formData.listingCode} onChange={(e) => setFormData({ ...formData, listingCode: e.target.value })} className="input" placeholder="Ej: 110595991" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Referencia</label>
+                  <input 
+                    type="text" 
+                    required
+                    value={formData.referencia} 
+                    onChange={(e) => setFormData({ ...formData, referencia: e.target.value })} 
+                    className="input" 
+                    placeholder="Mismo que ID si no tienen CRM" 
+                  />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del Agente</label>
@@ -974,9 +1317,86 @@ export function Listings() {
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Características importantes (una por línea)</label>
-                <textarea value={formData.features} onChange={(e) => setFormData({ ...formData, features: e.target.value })} className="input min-h-[100px]" placeholder={"- Entrada a la vivienda de tierra\n- Vivienda ocupada\n- Vivienda de temporada"} />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Condiciones a aceptar</label>
+                <div className="relative">
+                  <div
+                    ref={featuresGhostRef}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-0 right-0 text-sm leading-5 text-gray-300"
+                    style={{
+                      display: "none",
+                      top: "0.5rem",
+                      paddingLeft: "0.75rem",
+                      paddingRight: "0.75rem",
+                    }}
+                  >
+                    •
+                  </div>
+                  <textarea
+                    ref={featuresRef}
+                    onKeyDown={handleFeaturesKeyDown}
+                    onInput={(e) => normalizeFeaturesTextareaInPlace(e.currentTarget)}
+                    onBlur={(e) => {
+                      // Leer el valor aquí: si se usa e.currentTarget dentro del updater de setState,
+                      // React puede ejecutarlo cuando el evento ya está reseteado (currentTarget === null).
+                      const raw = e.currentTarget?.value ?? "";
+                      setFormData((prev) => ({ ...prev, features: normalizeBulletsOnePerLine(raw) }));
+                    }}
+                    className="input min-h-[100px] text-sm leading-5"
+                    placeholder={"• Entrada a la vivienda de tierra\n• Vivienda ocupada\n• Vivienda de temporada"}
+                  />
+                </div>
+                <p className="mt-1 text-xs text-gray-500">Una por línea.</p>
               </div>
+
+              {/* Filtros de cualificación (opcionales) */}
+              {formData.operationType === "Alquiler" && (
+                <div className="border border-blue-100 rounded-lg p-4 bg-blue-50 space-y-3">
+                  <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Filtros de cualificación (opcionales)</p>
+                  <p className="text-xs text-blue-600">Si se rellenan, un agente IA decidirá automáticamente si el lead cumple los criterios antes de notificarte.</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Ingresos netos mensuales mínimos (€)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={formData.minMonthlyIncome ?? ""}
+                        onChange={(e) => setFormData({ ...formData, minMonthlyIncome: e.target.value === "" ? undefined : Number(e.target.value) })}
+                        className="input"
+                        placeholder="Ej: 2000"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Máximo número de personas</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={formData.maxPeople ?? ""}
+                        onChange={(e) => setFormData({ ...formData, maxPeople: e.target.value === "" ? undefined : Number(e.target.value) })}
+                        className="input"
+                        placeholder="Ej: 3"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {formData.operationType === "Venta" && (
+                <div className="border border-blue-100 rounded-lg p-4 bg-blue-50">
+                  <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2">Filtros de cualificación (opcionales)</p>
+                  <p className="text-xs text-blue-600 mb-3">Si se activa, un agente IA descartará automáticamente leads sin hipoteca concedida ni pago al contado.</p>
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.requireMortgageApproved ?? false}
+                      onChange={(e) => setFormData({ ...formData, requireMortgageApproved: e.target.checked })}
+                      className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Solo con hipoteca concedida o pago al contado</span>
+                  </label>
+                </div>
+              )}
+
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Precio</label>
@@ -1025,10 +1445,15 @@ export function Listings() {
               )}
 
               <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
-                <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancelar</button>
-                <button type="submit" disabled={saving} className="btn-primary">{saving ? "Guardando..." : "Guardar"}</button>
+                <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>
+                  Cancelar
+                </Button>
+                <Button type="submit" loading={saving}>
+                  Guardar
+                </Button>
               </div>
-            </form>
+              </form>
+            </div>
           </div>
         </div>
       )}
@@ -1039,8 +1464,12 @@ export function Listings() {
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Eliminar anuncio</h3>
             <p className="text-gray-600 mb-6 font-normal">¿Estás seguro de que quieres eliminar este anuncio? Esta acción no se puede deshacer.</p>
             <div className="flex justify-end gap-3">
-              <button onClick={() => setDeleteConfirm(null)} className="btn-secondary">Cancelar</button>
-              <Button variant="danger" onClick={() => handleDelete(deleteConfirm)}>Eliminar</Button>
+              <Button variant="secondary" onClick={() => setDeleteConfirm(null)}>
+                Cancelar
+              </Button>
+              <Button variant="danger" onClick={() => handleDelete(deleteConfirm)}>
+                Eliminar
+              </Button>
             </div>
           </div>
         </div>
@@ -1124,7 +1553,9 @@ export function Listings() {
                         )}
                       >
                         <span className="truncate">
-                          {selectedQualifiedLead ? `${selectedQualifiedLead.name} (${selectedQualifiedLead.phone})` : "Selecciona un lead..."}
+                          {selectedQualifiedLead
+                            ? `${selectedQualifiedLead.name || "Sin nombre"} (${selectedQualifiedLead.phone})`
+                            : "Selecciona un lead..."}
                         </span>
                         <ChevronDown size={16} className={cn("text-gray-400 transition-transform flex-shrink-0 ml-2", isLeadDropdownOpen && "rotate-180")} />
                       </button>
@@ -1143,7 +1574,7 @@ export function Listings() {
                                 className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
                               >
                                 {selectedQualifiedLead?.id === lead.id ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
-                                <span className="text-xs text-gray-700 font-medium">{lead.name} ({lead.phone})</span>
+                                <span className="text-xs text-gray-700 font-medium">{lead.name || "Sin nombre"} ({lead.phone})</span>
                               </button>
                             ))}
                           </div>
@@ -1161,12 +1592,25 @@ export function Listings() {
             </div>
 
             <div className="flex justify-end gap-3 p-6 border-t border-gray-200">
-              <button onClick={() => { setDeactivateModalOpen(false); setDeactivatingListing(null); }} className="btn-secondary">Cancelar</button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setDeactivateModalOpen(false);
+                  setDeactivatingListing(null);
+                }}
+              >
+                Cancelar
+              </Button>
               <Button
                 onClick={handleDeactivate}
-                disabled={!closureReason || deactivating || ((closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified") && !selectedQualifiedLead)}
+                disabled={
+                  !closureReason ||
+                  ((closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified") &&
+                    !selectedQualifiedLead)
+                }
+                loading={deactivating}
               >
-                {deactivating ? "Desactivando..." : "Desactivar"}
+                Desactivar
               </Button>
             </div>
           </div>

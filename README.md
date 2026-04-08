@@ -44,6 +44,26 @@ firebase functions:config:set notification.number="34XXXXXXXXX"
 firebase functions:config:set openai.model="gpt-4o"
 ```
 
+#### Twilio: plantilla de fallback para notificaciones a agente (fuera de 24h)
+
+Cuando Twilio rechaza un mensaje libre por estar fuera de la ventana de 24h, el backend reintenta con una plantilla de WhatsApp si está configurado `TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION`.
+
+Requisitos de la plantilla:
+- Debe usar una sola variable `{{1}}` (resumen completo de la notificación).
+- Debe terminar con texto fijo (no puede acabar en variable).
+
+Ejemplo de cuerpo para aprobación en Twilio/Meta:
+
+```text
+Nuevo aviso Proplead:
+{{1}}
+
+— Proplead
+```
+
+Ejemplo de variable para la vista previa de aprobación:
+- `1`: `Lead cualificado ✅ | Nombre: Ana | Tel: +34600111222 | Anuncio: 123456789`
+
 ### 4. Poblar la base de datos con datos de ejemplo
 
 ```bash
@@ -107,8 +127,11 @@ whatsapp_bot_firebase/
 
 ## Endpoints de Functions
 
+### WhatsApp
 - `POST /webhook` - Webhook para recibir mensajes de Whapi
 - `POST /newLead` - Crear nuevo lead y enviar mensajes iniciales
+
+### Sistema
 - `GET /healthz` - Health check
 
 ## Colecciones de Firestore

@@ -3,17 +3,18 @@
 @theme {
   /* Botones: casi rectangulares, un pelín menos redondeo que rounded-lg (8px) */
   --radius-btn: 0.3125rem;
-  --color-primary-50: #FFF9EB;
-  --color-primary-100: #FEF0C7;
-  --color-primary-200: #FEE08A;
-  --color-primary-300: #FCCC4D;
-  --color-primary-400: #F8B82D;
-  --color-primary-500: #F5A623;
-  --color-primary-600: #D98A06;
-  --color-primary-700: #B66E07;
-  --color-primary-800: #935609;
-  --color-primary-900: #78460D;
-  --color-primary-950: #45260A;
+  /* Brand orange (logo): #FFB03F */
+  --color-primary-50: #FFF7E6;
+  --color-primary-100: #FFEBC2;
+  --color-primary-200: #FFD58A;
+  --color-primary-300: #FFC04D;
+  --color-primary-400: #FFB84A;
+  --color-primary-500: #FFB03F;
+  --color-primary-600: #E8992C;
+  --color-primary-700: #C97F1E;
+  --color-primary-800: #A96616;
+  --color-primary-900: #7A4A10;
+  --color-primary-950: #4A2C08;
 }
 
 :root {
@@ -28,15 +29,6 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-}
-
-/* Custom component classes */
-.btn-primary {
-  @apply bg-primary-500 hover:bg-primary-600 text-white font-medium py-2 px-4 rounded-btn transition-colors;
-}
-
-.btn-secondary {
-  @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-btn transition-colors;
 }
 
 .card {
@@ -97,6 +89,7 @@ body {
   position: absolute;
   height: 4px;
   width: 100%;
+  /* neutral track (Tailwind slate-200) */
   background: #e2e8f0;
   border-radius: 2px;
   z-index: 1;
@@ -118,7 +111,7 @@ body {
   width: 16px;
   border-radius: 50%;
   background: white;
-  border: 2px solid #D98A06; /* primary-600 */
+  border: 2px solid var(--color-primary-600);
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
   pointer-events: auto;
   appearance: none;
@@ -132,5 +125,5 @@ body {
 
 .range-slider-input::-webkit-slider-thumb:active {
   transform: scale(1.2);
-  background: #FEF0C7; /* primary-100 */
+  background: var(--color-primary-100);
 }

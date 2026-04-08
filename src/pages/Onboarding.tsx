@@ -4,18 +4,26 @@ import { CheckCircle, Lock, ArrowRight, Calendar, Mail, Clock, Coins, ChevronDow
 import { getOrganizationSettings, updateOrganizationSettings } from "../services/organization";
 import type { OrganizationSettings } from "../services/organization";
 import { PopupModal, useCalendlyEventListener } from "react-calendly";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { getUserCredits, getCreditPackages, createCheckoutSession, formatPrice } from "../services/credits";
 import type { CreditPackage } from "../types";
-import { CreditCard, Loader2, AlertCircle } from "lucide-react";
+import { CreditCard, AlertCircle } from "lucide-react";
 import { cn } from "../lib/utils";
-import { PageLoading } from "../components/ui";
+import { Button, PageLoading } from "../components/ui";
 
 export function Onboarding() {
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<OrganizationSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [showCalendlyModal, setShowCalendlyModal] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({
+    1: true,
+    2: true,
+    3: true,
+    4: true,
+    5: true,
+  });
 
   // Form states for step 1
   const [agencyName, setAgencyName] = useState("");
@@ -107,6 +115,27 @@ export function Onboarding() {
     }
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const update = () => setIsDesktop(mq.matches);
+    update();
+    mq.addEventListener?.("change", update);
+    return () => mq.removeEventListener?.("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    if (!settings?.onboardingStep) return;
+    const cs = settings.onboardingStep;
+    setExpandedSteps((prev) => ({ ...prev, [cs]: true }));
+  }, [isDesktop, settings?.onboardingStep]);
+
+  function toggleStep(step: number) {
+    if (!isDesktop) return;
+    setExpandedSteps((prev) => ({ ...prev, [step]: !prev[step] }));
+  }
+
   const handleSaveStep1 = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -135,7 +164,7 @@ export function Onboarding() {
     if (e) e.preventDefault();
     setSaving(true);
     await updateOrganizationSettings({
-      onboardingStep: 5 // 5 means step 5: waiting for bot activation
+      onboardingStep: 5 // 5 means step 5: waiting for assistant activation
     });
     await loadSettings();
     setSaving(false);
@@ -171,24 +200,58 @@ export function Onboarding() {
         <p className="text-gray-600">Completa estos pasos para empezar a utilizar tu agente de inteligencia artificial.</p>
       </div>
 
-      <div className="relative border-l-2 border-gray-200 ml-4 space-y-12 pb-4">
+      <div className={cn(
+        "pb-4",
+        isDesktop
+          ? "rounded-2xl border border-gray-200 bg-white shadow-sm divide-y divide-gray-100"
+          : "relative border-l-2 border-gray-200 ml-4 space-y-12"
+      )}>
         
         {/* Paso 1 */}
-        <div className={`ml-8 relative transition-all duration-300 ${currentStep >= 1 ? 'opacity-100' : 'opacity-60'}`}>
-          <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-            currentStep > 1 ? 'border-green-500 text-green-500' : 
-            currentStep === 1 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400'
-          }`}>
-            {currentStep > 1 ? <CheckCircle size={22} className="text-green-500" /> : <span className="font-bold text-lg">1</span>}
-          </div>
-          
-          <div className={`card p-6 shadow-sm border ${currentStep === 1 ? 'border-primary-500 ring-1 ring-primary-500' : 'border-gray-100'}`}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold flex items-center gap-3">
-                Datos de tu Inmobiliaria
-              </h2>
+        <div className={cn(
+          "transition-all duration-300",
+          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 1 ? "opacity-100" : "opacity-60"}`
+        )}>
+          {!isDesktop && (
+            <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
+              currentStep > 1 ? 'border-emerald-500 text-emerald-500' : 
+              currentStep === 1 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400'
+            }`}>
+              {currentStep > 1 ? <CheckCircle size={22} className="text-emerald-500" /> : <span className="font-bold text-lg">1</span>}
             </div>
+          )}
+
+          <div className={cn(
+            "card shadow-sm border",
+            isDesktop ? "p-0" : `p-6 ${currentStep === 1 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 1 ? "border-primary-300" : "border-gray-100")
+          )}>
+            <button
+              type="button"
+              onClick={() => toggleStep(1)}
+              className={cn(
+                "w-full flex items-center justify-between text-left",
+                isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
+                isDesktop && "hover:bg-gray-50 rounded-t-2xl"
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full border",
+                  currentStep > 1 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
+                  currentStep === 1 ? "border-primary-500 bg-primary-500 text-white" :
+                  "border-gray-200 text-gray-400 bg-gray-50"
+                )}>
+                  {currentStep > 1 ? <CheckCircle size={18} className="text-emerald-600" /> : <span className="font-bold">1</span>}
+                </div>
+                <h2 className="text-lg sm:text-xl font-semibold">Datos de tu Inmobiliaria</h2>
+              </div>
+              {isDesktop && (
+                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[1] ? "rotate-180" : "")} />
+              )}
+            </button>
             
+            <div className={cn(isDesktop && !expandedSteps[1] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
             <form onSubmit={handleSaveStep1} className={currentStep > 1 && !saving ? "pointer-events-none opacity-80" : ""}>
               <div className="space-y-4 mb-4">
                 <div>
@@ -258,49 +321,80 @@ export function Onboarding() {
               </div>
               
               {currentStep === 1 && (
-                <button 
-                  type="submit" disabled={saving}
-                  className="btn-primary w-full sm:w-auto flex items-center justify-center gap-2 mt-6"
+                <Button
+                  type="submit"
+                  loading={saving}
+                  className="w-full sm:w-auto flex items-center justify-center gap-2 mt-6"
                 >
-                  {saving ? "Guardando..." : "Guardar y Continuar"}
-                  {!saving && <ArrowRight size={18} />}
-                </button>
+                  Guardar y Continuar
+                  <ArrowRight size={18} />
+                </Button>
               )}
             </form>
+            </div>
           </div>
         </div>
 
         {/* Paso 2 */}
-        <div className={`ml-8 relative transition-all duration-300 ${currentStep >= 2 ? 'opacity-100' : 'opacity-60'}`}>
-          <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-            currentStep > 2 ? 'border-green-500 text-green-500' : 
-            currentStep === 2 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
-          }`}>
-            {currentStep > 2 ? <CheckCircle size={22} className="text-green-500" /> : currentStep === 2 ? <span className="font-bold text-lg">2</span> : <Lock size={16} />}
-          </div>
-          
-          <div className={`card p-6 shadow-sm border ${currentStep === 2 ? 'border-primary-500 ring-1 ring-primary-500' : 'border-gray-100'}`}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold flex items-center gap-3">
-                Llamada de Onboarding
-              </h2>
+        <div className={cn(
+          "transition-all duration-300",
+          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 2 ? "opacity-100" : "opacity-60"}`
+        )}>
+          {!isDesktop && (
+            <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
+              currentStep > 2 ? 'border-emerald-500 text-emerald-500' : 
+              currentStep === 2 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
+            }`}>
+              {currentStep > 2 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 2 ? <span className="font-bold text-lg">2</span> : <Lock size={16} />}
             </div>
+          )}
+          
+          <div className={cn(
+            "card shadow-sm border",
+            isDesktop ? "p-0" : `p-6 ${currentStep === 2 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 2 ? "border-primary-300" : "border-gray-100")
+          )}>
+            <button
+              type="button"
+              onClick={() => toggleStep(2)}
+              className={cn(
+                "w-full flex items-center justify-between text-left",
+                isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
+                isDesktop && "hover:bg-gray-50"
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full border",
+                  currentStep > 2 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
+                  currentStep === 2 ? "border-primary-500 bg-primary-500 text-white" :
+                  "border-gray-200 text-gray-400 bg-gray-50"
+                )}>
+                  {currentStep > 2 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 2 ? <span className="font-bold">2</span> : <Lock size={14} />}
+                </div>
+                <h2 className="text-lg sm:text-xl font-semibold">Llamada de Onboarding</h2>
+              </div>
+              {isDesktop && (
+                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[2] ? "rotate-180" : "")} />
+              )}
+            </button>
             
+            <div className={cn(isDesktop && !expandedSteps[2] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
             <p className="text-gray-600 mb-6">Agenda una llamada corta de 15 minutos para conectar el asistente a tu WhatsApp y ultimar detalles técnicos.</p>
             
             {currentStep === 2 && (
-              <button 
+              <Button
                 onClick={() => setShowCalendlyModal(true)}
-                className="btn-primary flex items-center justify-center w-full sm:w-auto gap-2"
+                className="w-full sm:w-auto flex items-center justify-center gap-2"
               >
                 <Calendar size={18} />
                 Agendar Llamada
-              </button>
+              </Button>
             )}
 
             {currentStep > 2 && (
-              <div className="bg-green-50 text-green-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-green-200">
-                <CheckCircle size={20} className="text-green-600" />
+              <div className="bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+                <CheckCircle size={20} className="text-emerald-600" />
                 <span className="font-medium">Llamada agendada correctamente.</span>
               </div>
             )}
@@ -309,25 +403,55 @@ export function Onboarding() {
                 Completa el paso anterior para desbloquear la agenda.
               </div>
             )}
+            </div>
           </div>
         </div>
 
         {/* Paso 3 */}
-        <div className={`ml-8 relative transition-all duration-300 ${currentStep >= 3 ? 'opacity-100' : 'opacity-60'}`}>
-          <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-            currentStep > 3 ? 'border-green-500 text-green-500' : 
-            currentStep === 3 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
-          }`}>
-            {currentStep > 3 ? <CheckCircle size={22} className="text-green-500" /> : currentStep === 3 ? <span className="font-bold text-lg">3</span> : <Lock size={16} />}
-          </div>
-
-          <div className={`card p-6 shadow-sm border ${currentStep === 3 ? 'border-primary-500 ring-1 ring-primary-500' : 'border-gray-100'}`}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold flex items-center gap-3">
-                Conectar con Idealista
-              </h2>
+        <div className={cn(
+          "transition-all duration-300",
+          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 3 ? "opacity-100" : "opacity-60"}`
+        )}>
+          {!isDesktop && (
+            <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
+              currentStep > 3 ? 'border-emerald-500 text-emerald-500' : 
+              currentStep === 3 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
+            }`}>
+              {currentStep > 3 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 3 ? <span className="font-bold text-lg">3</span> : <Lock size={16} />}
             </div>
+          )}
+
+          <div className={cn(
+            "card shadow-sm border",
+            isDesktop ? "p-0" : `p-6 ${currentStep === 3 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 3 ? "border-primary-300" : "border-gray-100")
+          )}>
+            <button
+              type="button"
+              onClick={() => toggleStep(3)}
+              className={cn(
+                "w-full flex items-center justify-between text-left",
+                isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
+                isDesktop && "hover:bg-gray-50"
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full border",
+                  currentStep > 3 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
+                  currentStep === 3 ? "border-primary-500 bg-primary-500 text-white" :
+                  "border-gray-200 text-gray-400 bg-gray-50"
+                )}>
+                  {currentStep > 3 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 3 ? <span className="font-bold">3</span> : <Lock size={14} />}
+                </div>
+                <h2 className="text-lg sm:text-xl font-semibold">Conectar con Idealista</h2>
+              </div>
+              {isDesktop && (
+                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[3] ? "rotate-180" : "")} />
+              )}
+            </button>
             
+            <div className={cn(isDesktop && !expandedSteps[3] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
             {currentStep >= 3 && (
               <form onSubmit={handleSaveStep3} className={currentStep > 3 && !saving ? "pointer-events-none opacity-80" : ""}>
                 <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
@@ -358,13 +482,14 @@ export function Onboarding() {
                 </div>
 
                 {currentStep === 3 && (
-                  <button 
-                    type="submit" disabled={saving}
-                    className="btn-primary w-full sm:w-auto flex items-center justify-center gap-2 mt-6"
+                  <Button
+                    type="submit"
+                    loading={saving}
+                    className="w-full sm:w-auto flex items-center justify-center gap-2 mt-6"
                   >
-                    {saving ? "Completando..." : "Completar Onboarding"}
-                    {!saving && <CheckCircle size={18} />}
-                  </button>
+                    Completar Onboarding
+                    <CheckCircle size={18} />
+                  </Button>
                 )}
               </form>
             )}
@@ -379,30 +504,60 @@ export function Onboarding() {
               </div>
             )}
             {currentStep > 3 && (
-               <div className="mt-4 bg-green-50 text-green-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-green-200">
-                <CheckCircle size={20} className="text-green-600" />
+               <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+                <CheckCircle size={20} className="text-emerald-600" />
                 <span className="font-medium">Sincronización de Idealista configurada.</span>
               </div>
             )}
+            </div>
           </div>
         </div>
 
         {/* Paso 4 - Créditos */}
-        <div className={`ml-8 relative transition-all duration-300 ${currentStep >= 4 ? 'opacity-100' : 'opacity-60'}`}>
-          <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-            currentStep > 4 ? 'border-green-500 text-green-500' : 
-            currentStep === 4 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
-          }`}>
-            {currentStep > 4 ? <CheckCircle size={22} className="text-green-500" /> : currentStep === 4 ? <span className="font-bold text-lg">4</span> : <Lock size={16} />}
-          </div>
-
-          <div className={`card p-6 shadow-sm border ${currentStep === 4 ? 'border-primary-500 ring-1 ring-primary-500' : 'border-gray-100'}`}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold flex items-center gap-3">
-                Sistema de Créditos
-              </h2>
+        <div className={cn(
+          "transition-all duration-300",
+          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 4 ? "opacity-100" : "opacity-60"}`
+        )}>
+          {!isDesktop && (
+            <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
+              currentStep > 4 ? 'border-emerald-500 text-emerald-500' : 
+              currentStep === 4 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
+            }`}>
+              {currentStep > 4 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 4 ? <span className="font-bold text-lg">4</span> : <Lock size={16} />}
             </div>
+          )}
+
+          <div className={cn(
+            "card shadow-sm border",
+            isDesktop ? "p-0" : `p-6 ${currentStep === 4 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 4 ? "border-primary-300" : "border-gray-100")
+          )}>
+            <button
+              type="button"
+              onClick={() => toggleStep(4)}
+              className={cn(
+                "w-full flex items-center justify-between text-left",
+                isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
+                isDesktop && "hover:bg-gray-50"
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full border",
+                  currentStep > 4 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
+                  currentStep === 4 ? "border-primary-500 bg-primary-500 text-white" :
+                  "border-gray-200 text-gray-400 bg-gray-50"
+                )}>
+                  {currentStep > 4 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 4 ? <span className="font-bold">4</span> : <Lock size={14} />}
+                </div>
+                <h2 className="text-lg sm:text-xl font-semibold">Sistema de Créditos</h2>
+              </div>
+              {isDesktop && (
+                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[4] ? "rotate-180" : "")} />
+              )}
+            </button>
             
+            <div className={cn(isDesktop && !expandedSteps[4] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
             {currentStep >= 4 && (
               <div className={currentStep > 4 && !saving ? "pointer-events-none opacity-80" : ""}>
                 <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
@@ -411,19 +566,19 @@ export function Onboarding() {
                     Funciona con Créditos
                   </h3>
                   <p className="mb-3 text-sm text-primary-800">
-                    Cada conversación (hilo completo) generada con tus leads cuesta <strong>2 créditos</strong>.
+                    Cada conversación (hilo completo) generada con tus leads cuesta <strong>3 créditos</strong>.
                   </p>
                   <p className="rounded-lg border border-primary-200 bg-white p-3 text-sm text-primary-800 shadow-sm">
-                    <strong>Ejemplo práctico:</strong> Si para un anuncio recibes 100 personas interesadas que te escriben, se gestionarán 100 conversaciones automáticamente, usando <strong>200 créditos</strong>.
+                    <strong>Ejemplo práctico:</strong> Si para un anuncio recibes 100 personas interesadas que te escriben, se gestionarán 100 conversaciones automáticamente, usando <strong>300 créditos</strong>.
                   </p>
                 </div>
 
                 {searchParams.get("payment") === "success" && (
-                  <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center gap-3">
-                    <CheckCircle className="text-green-600" size={20} />
+                  <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-3">
+                    <CheckCircle className="text-emerald-600" size={20} />
                     <div>
-                      <p className="font-semibold text-green-800 text-sm">¡Pago completado!</p>
-                      <p className="text-sm text-green-700">Tus créditos han sido añadidos a tu cuenta.</p>
+                      <p className="font-semibold text-emerald-800 text-sm">¡Pago completado!</p>
+                      <p className="text-sm text-emerald-700">Tus créditos han sido añadidos a tu cuenta.</p>
                     </div>
                   </div>
                 )}
@@ -462,21 +617,16 @@ export function Onboarding() {
                         </div>
                         <p className="text-xs text-gray-500 mb-3 font-medium">créditos</p>
                         <p className="text-lg font-bold text-primary-600 mb-3">{formatPrice(pkg.amount, pkg.currency)}</p>
-                        <button
+                        <Button
                           disabled={purchaseLoading !== null || currentStep > 4}
-                          className={cn(
-                            "w-full py-1.5 px-3 rounded-btn text-xs font-semibold flex items-center justify-center gap-2 transition-colors border",
-                            pkg.id === "credits_100"
-                              ? "bg-primary-600 text-white border-primary-600 hover:bg-primary-700"
-                              : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
-                          )}
+                          loading={purchaseLoading === pkg.id}
+                          variant={pkg.id === "credits_100" ? "primary" : "outline"}
+                          size="sm"
+                          className="w-full text-xs font-semibold"
                         >
-                          {purchaseLoading === pkg.id ? (
-                            <><Loader2 className="animate-spin" size={12} /> Procesando</>
-                          ) : (
-                            <><CreditCard size={12} /> Comprar</>
-                          )}
-                        </button>
+                          <CreditCard size={12} />
+                          Comprar
+                        </Button>
                       </div>
                     ))}
                   </div>
@@ -489,15 +639,16 @@ export function Onboarding() {
                       Saldo actual: <strong className="text-amber-600">{creditsLoading ? "..." : credits} créditos</strong>
                     </div>
                     <div className="flex flex-col items-end">
-                      <button 
+                      <Button
                         onClick={() => handleSaveStep4()}
-                        disabled={saving || credits === 0}
-                        className="btn-primary flex items-center justify-center gap-2 text-sm"
+                        disabled={credits === 0}
+                        loading={saving}
+                        className="flex items-center justify-center gap-2 text-sm"
                         title={credits === 0 ? "Adquiere tu primer paquete para continuar" : ""}
                       >
-                        {saving ? "Confirmando..." : "Confirmar saldo y continuar"}
-                        {!saving && <ArrowRight size={16} />}
-                      </button>
+                        Confirmar saldo y continuar
+                        <ArrowRight size={16} />
+                      </Button>
                       {credits === 0 && (
                         <p className="text-xs text-orange-600 mt-1.5 font-medium">Requiere adquirir saldo primero</p>
                       )}
@@ -513,30 +664,60 @@ export function Onboarding() {
               </div>
             )}
             {currentStep > 4 && (
-               <div className="mt-4 bg-green-50 text-green-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-green-200">
-                <CheckCircle size={20} className="text-green-600" />
+               <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+                <CheckCircle size={20} className="text-emerald-600" />
                 <span className="font-medium">Has aceptado el funcionamiento de créditos.</span>
               </div>
             )}
+            </div>
           </div>
         </div>
 
         {/* Paso 5 */}
-        <div className={`ml-8 relative transition-all duration-300 ${currentStep >= 5 ? 'opacity-100' : 'opacity-60'}`}>
-          <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-            currentStep > 5 ? 'border-green-500 text-green-500' : 
-            currentStep === 5 ? 'border-orange-500 bg-orange-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
-          }`}>
-            {currentStep > 5 ? <CheckCircle size={22} className="text-green-500" /> : currentStep === 5 ? <span className="font-bold text-lg">5</span> : <Lock size={16} />}
-          </div>
-
-          <div className={`card p-6 shadow-sm border ${currentStep === 5 ? 'border-orange-500 ring-1 ring-orange-500' : 'border-gray-100'}`}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold flex items-center gap-3">
-                Activación del Asistente
-              </h2>
+        <div className={cn(
+          "transition-all duration-300",
+          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 5 ? "opacity-100" : "opacity-60"}`
+        )}>
+          {!isDesktop && (
+            <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
+              currentStep > 5 ? 'border-emerald-500 text-emerald-500' : 
+              currentStep === 5 ? 'border-orange-500 bg-orange-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
+            }`}>
+              {currentStep > 5 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 5 ? <span className="font-bold text-lg">5</span> : <Lock size={16} />}
             </div>
+          )}
+
+          <div className={cn(
+            "card shadow-sm border",
+            isDesktop ? "p-0" : `p-6 ${currentStep === 5 ? "border-orange-500 ring-1 ring-orange-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 5 ? "border-orange-300" : "border-gray-100")
+          )}>
+            <button
+              type="button"
+              onClick={() => toggleStep(5)}
+              className={cn(
+                "w-full flex items-center justify-between text-left",
+                isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
+                isDesktop && "hover:bg-gray-50"
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full border",
+                  currentStep > 5 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
+                  currentStep === 5 ? "border-orange-500 bg-orange-500 text-white" :
+                  "border-gray-200 text-gray-400 bg-gray-50"
+                )}>
+                  {currentStep > 5 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 5 ? <span className="font-bold">5</span> : <Lock size={14} />}
+                </div>
+                <h2 className="text-lg sm:text-xl font-semibold">Activación del Asistente</h2>
+              </div>
+              {isDesktop && (
+                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[5] ? "rotate-180" : "")} />
+              )}
+            </button>
             
+            <div className={cn(isDesktop && !expandedSteps[5] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
             {currentStep === 5 && (
                <div className="bg-orange-50 text-orange-800 p-5 rounded-lg border border-orange-200 animate-pulse">
                 <h3 className="font-bold mb-2 flex items-center gap-2">
@@ -555,27 +736,30 @@ export function Onboarding() {
               </div>
             )}
             {currentStep > 5 && (
-               <div className="mt-4 bg-green-50 text-green-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-green-200">
-                <CheckCircle size={20} className="text-green-600" />
+               <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+                <CheckCircle size={20} className="text-emerald-600" />
                 <span className="font-medium">¡Asistente activado y funcionando!</span>
               </div>
             )}
+            </div>
           </div>
         </div>
       </div>
 
       {isCompleted && (
-        <div className="mt-12 bg-green-50 border border-green-200 rounded-xl p-8 text-center shadow-sm ml-4 lg:ml-0">
-          <div className="mx-auto w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
-            <CheckCircle className="text-green-600 w-8 h-8" />
+        <div className="mt-12 bg-emerald-50 border border-emerald-200 rounded-xl p-8 text-center shadow-sm ml-4 lg:ml-0">
+          <div className="mx-auto w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mb-4">
+            <CheckCircle className="text-emerald-600 w-8 h-8" />
           </div>
-          <h3 className="text-2xl font-bold text-green-900 mb-2">¡Todo Listo!</h3>
-          <p className="text-green-800 mb-6 max-w-lg mx-auto text-sm sm:text-base">
+          <h3 className="text-2xl font-bold text-emerald-900 mb-2">¡Todo Listo!</h3>
+          <p className="text-emerald-800 mb-6 max-w-lg mx-auto text-sm sm:text-base">
             Has completado todos los pasos de configuración. Ahora Proplead está listo para atender y cualificar a tus leads automáticamente las 24 horas.
           </p>
-          <a href="/dashboard" className="btn-primary inline-flex items-center gap-2">
-            Ir al Dashboard <ArrowRight size={18} />
-          </a>
+          <Link to="/dashboard">
+            <Button className="inline-flex items-center gap-2">
+              Ir al Dashboard <ArrowRight size={18} />
+            </Button>
+          </Link>
         </div>
       )}
 

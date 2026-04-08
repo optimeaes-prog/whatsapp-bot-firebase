@@ -3,10 +3,12 @@ import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 
+import { CALENDLY_PAT, CALENDLY_WEBHOOK_SIGNING_KEY } from "./secrets";
+
 const REGION = "europe-west1";
 
 export const calendlyWebhook = onRequest(
-  { cors: true, region: REGION, secrets: ["SMTP_PASS"] },
+  { cors: true, region: REGION, secrets: ["SMTP_PASS", CALENDLY_WEBHOOK_SIGNING_KEY, CALENDLY_PAT] },
   async (req, res) => {
     try {
       if (req.method !== "POST") {
@@ -34,7 +36,7 @@ export const calendlyWebhook = onRequest(
       const v1 = v1Part.split("=")[1];
 
       // Recreate the signature to verify
-      const webhookSigningKey = process.env.CALENDLY_WEBHOOK_SIGNING_KEY || "";
+      const webhookSigningKey = CALENDLY_WEBHOOK_SIGNING_KEY.value() || "";
       if (!webhookSigningKey) {
         console.error("CALENDLY_WEBHOOK_SIGNING_KEY not set in environment");
         res.status(500).json({ error: "Missing webhook signing key in environment" });
@@ -66,7 +68,7 @@ export const calendlyWebhook = onRequest(
         let startTime = "";
         
         // Fetch event details to get the start_time
-        const pat = process.env.CALENDLY_CLIENT_SECRET || process.env.CALENDLY_CLIENT_ID || ""; // Since user might have put PAT in one of these
+        const pat = CALENDLY_PAT.value() || "";
         // Ideally we fetch from the API, but let's do a quick fetch
         if (eventUri) {
           try {

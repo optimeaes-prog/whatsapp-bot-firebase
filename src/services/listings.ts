@@ -89,14 +89,22 @@ export async function createListing(data: ListingFormData): Promise<string> {
       addDoc(collection(db, COLLECTION_NAME), {
         description: data.description,
         listingCode: data.listingCode,
+        referencia: (data as any).referencia,
         link: data.link,
         operationType: data.operationType,
         features: data.features,
         idealistaDescription: (data as any).idealistaDescription || "",
+        quickQualificationEnabled: (data as any).quickQualificationEnabled === true,
         price: (data as any).price || "",
         m2: (data as any).m2 || "",
         rooms: (data as any).rooms || "",
         address: (data as any).address || "",
+        street: (data as any).street || "",
+        city: (data as any).city || "",
+        province: (data as any).province || "",
+        postalCode: (data as any).postalCode || "",
+        country: (data as any).country || "",
+        provinceNormalized: (data as any).provinceNormalized || "",
         agentName: (data as any).agentName || "",
         profitabilityReportAvailable: data.profitabilityReportAvailable,
         profitabilityReport: data.profitabilityReport,
@@ -126,14 +134,22 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
 
   if (data.description !== undefined) updateData.description = data.description;
   if (data.listingCode !== undefined) updateData.listingCode = data.listingCode;
+  if ((data as any).referencia !== undefined) updateData.referencia = (data as any).referencia;
   if (data.link !== undefined) updateData.link = data.link;
   if (data.operationType !== undefined) updateData.operationType = data.operationType;
   if (data.features !== undefined) updateData.features = data.features;
   if ((data as any).idealistaDescription !== undefined) updateData.idealistaDescription = (data as any).idealistaDescription;
+  if ((data as any).quickQualificationEnabled !== undefined) updateData.quickQualificationEnabled = (data as any).quickQualificationEnabled === true;
   if ((data as any).price !== undefined) updateData.price = (data as any).price;
   if ((data as any).m2 !== undefined) updateData.m2 = (data as any).m2;
   if ((data as any).rooms !== undefined) updateData.rooms = (data as any).rooms;
   if ((data as any).address !== undefined) updateData.address = (data as any).address;
+  if ((data as any).street !== undefined) updateData.street = (data as any).street;
+  if ((data as any).city !== undefined) updateData.city = (data as any).city;
+  if ((data as any).province !== undefined) updateData.province = (data as any).province;
+  if ((data as any).postalCode !== undefined) updateData.postalCode = (data as any).postalCode;
+  if ((data as any).country !== undefined) updateData.country = (data as any).country;
+  if ((data as any).provinceNormalized !== undefined) updateData.provinceNormalized = (data as any).provinceNormalized;
   if ((data as any).agentName !== undefined) updateData.agentName = (data as any).agentName;
   if (data.profitabilityReportAvailable !== undefined) updateData.profitabilityReportAvailable = data.profitabilityReportAvailable;
   if (data.profitabilityReport !== undefined) updateData.profitabilityReport = data.profitabilityReport;

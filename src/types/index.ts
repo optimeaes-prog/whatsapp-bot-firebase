@@ -22,6 +22,7 @@ export type Listing = {
   id: string;
   description: string;
   listingCode: string;
+  referencia: string;                     // Referencia del anuncio (normalmente igual a listingCode si no tienen CRM propio)
   link: string;
   operationType: OperationType;
   features: string;
@@ -30,11 +31,27 @@ export type Listing = {
   isActive: boolean;                      // true = activo, false = inactivo
   closureInfo?: ListingClosureInfo;       // Info de cierre (solo si isActive = false)
   idealistaDescription?: string;          // Descripción manual de Idealista
+  /** Si está activo, al resolver el anuncio se notifica al agente y se hace handoff sin cualificación */
+  quickQualificationEnabled?: boolean;
   price?: string;                         // Precio
   m2?: string;                            // Metros cuadrados
   rooms?: string;                         // Habitaciones
-  address?: string;                       // Dirección normalizada
+  /** Línea única para mostrar / legado; puede componerse desde los campos estructurados al guardar */
+  address?: string;
+  /** Vía y número (p. ej. Calle Mayor 12) */
+  street?: string;
+  city?: string;
+  province?: string;
+  postalCode?: string;
+  /** Por defecto ES / España en UI */
+  country?: string;
+  /** Derivado de province para búsqueda por voz (minúsculas, sin acentos) */
+  provinceNormalized?: string;
   agentName?: string;                     // Nombre del agente responsable
+  // Filtros de cualificación (opcionales, se aplican antes de notificar al agente)
+  minMonthlyIncome?: number;             // Alquiler: ingresos netos mensuales mínimos exigidos
+  maxPeople?: number;                    // Alquiler: máximo de personas permitidas
+  requireMortgageApproved?: boolean;     // Venta: solo hipoteca concedida o pago al contado
   createdAt: Timestamp;
   updatedAt: Timestamp;
 };
@@ -84,32 +101,6 @@ export type Conversation = {
   botDisabled?: boolean;
 };
 
-export type QualifiedLead = {
-  id: string;
-  phone: string;
-  chatId: string;
-  listingCode: string;
-  conversationSummary: string;
-  name: string;
-  qualified: boolean;
-  createdAt: Timestamp;
-};
-
-export type Call = {
-  id: string;
-  phone: string;
-  chatId: string;
-  name?: string;
-  listingCode?: string;
-  transcript?: string;
-  summary?: string;
-  isQualified: boolean;
-  recordingUrl?: string;
-  timestamp: Timestamp;
-  callId: string;
-  structuredData?: any;
-};
-
 export type BotStyle = {
   id: string;
   name: string;
@@ -154,6 +145,24 @@ export type CreditPackage = {
   amount: number;       // Price in cents (e.g., 500 = €5.00)
   credits: number;      // Credits to add (e.g., 50)
   currency: "eur" | "usd" | "gbp";
+};
+
+export type SubscriptionPlanId = "free" | "plus" | "pro" | "pro_plus" | "enterprise";
+
+export type SubscriptionPlan = {
+  id: SubscriptionPlanId;
+  name: string;
+  priceMonthly: number | null;    // null = enterprise (contact sales)
+  creditsMonthly: number;
+  bonusCredits: number;
+  conversationsMonthly: number;
+  popular?: boolean;
+};
+
+export type AutoRechargeSettings = {
+  enabled: boolean;
+  thresholdCredits: number;   // Trigger auto-buy when balance drops below this
+  rechargeCredits: number;    // Credits to purchase automatically (100 = €10)
 };
 
 // Audit Log Types

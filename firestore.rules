@@ -25,11 +25,6 @@ service cloud.firestore {
         allow read, write: if request.auth != null;
       }
       
-      // Qualified Leads (formerly cualificados) - authenticated users can read, functions can write
-      match /qualifiedLeads/{qualId} {
-        allow read, write: if request.auth != null;
-      }
-      
       // Bot Config - authenticated users can read/write
       match /botConfig/{configId} {
         allow read, write: if request.auth != null;

@@ -13,7 +13,6 @@ import {
   X,
   Bell,
   History,
-  PhoneIncoming,
   UserCog,
   Shield,
   ChevronDown,
@@ -37,7 +36,6 @@ const mainNavItems: NavItem[] = [
   { href: "/leads", label: "Leads", icon: <Users size={20} /> },
   { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
 
-  { href: "/llamadas", label: "Llamadas", icon: <PhoneIncoming size={20} /> },
   { href: "/creditos", label: "Créditos", icon: <Coins size={20} /> },
 ];
 
@@ -224,6 +222,19 @@ export function Layout({ children }: { children: ReactNode }) {
               </p>
             </div>
           </div>
+
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 mb-3">
+            <Link to="/terms" className="hover:text-gray-700 underline underline-offset-2">
+              Términos
+            </Link>
+            <Link to="/privacy" className="hover:text-gray-700 underline underline-offset-2">
+              Privacidad
+            </Link>
+            <Link to="/cookies" className="hover:text-gray-700 underline underline-offset-2">
+              Cookies
+            </Link>
+          </div>
+
           <button
             onClick={handleSignOut}
             className="flex items-center gap-2 w-full px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-btn transition-colors"

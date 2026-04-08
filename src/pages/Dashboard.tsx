@@ -1,37 +1,112 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Users, MessageSquare, CheckCircle, TrendingUp, Filter, Calendar, MessageCircle, User, Phone, ArrowRight, ChevronDown, CheckSquare, Square } from "lucide-react";
+import { TrendingUp, Filter, Calendar, User, Phone, ArrowRight, ChevronDown, CheckSquare, Square } from "lucide-react";
 import { getListings } from "../services/listings";
-import { getLeads } from "../services/leads";
+import {
+  getLeads,
+  filterQualifiedLeads,
+  qualifiedLeadMetricTimestamp,
+} from "../services/leads";
 import { getConversations } from "../services/conversations";
-import { getQualifiedLeads } from "../services/qualifiedLeads";
 import { formatDate, formatPhone, cn } from "../lib/utils";
-import type { Listing, Lead, Conversation, QualifiedLead } from "../types";
+import { metricTheme } from "../lib/metricTheme";
+import type { Listing, Lead, Conversation } from "../types";
 import { PageHeader } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
 export function Dashboard() {
   const [dateFilter, setDateFilter] = useState("last_30");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
   const [listingFilter, setListingFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [rawData, setRawData] = useState<{
     listings: Listing[];
     leads: Lead[];
     conversations: Conversation[];
-    qualifiedLeads: QualifiedLead[];
   } | null>(null);
 
   const [isDateDropdownOpen, setIsDateDropdownOpen] = useState(false);
   const [isListingDropdownOpen, setIsListingDropdownOpen] = useState(false);
+
+  const getLeadMetricTimestamp = (lead: Lead) =>
+    lead.createdAt ?? lead.firstMessageDate ?? lead.lastMessageDate;
+
+  const getStartOfDay = (date: Date) => {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  const getEndOfDay = (date: Date) => {
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999);
+    return d;
+  };
+
+  const parseDateInput = (value: string) => {
+    if (!value) return null;
+    const [year, month, day] = value.split("-").map(Number);
+    if (!year || !month || !day) return null;
+    return new Date(year, month - 1, day);
+  };
+
+  const getDateRange = () => {
+    const now = new Date();
+
+    if (dateFilter === "today") return { start: getStartOfDay(now), end: getEndOfDay(now) };
+    if (dateFilter === "yesterday") {
+      const y = new Date(now);
+      y.setDate(y.getDate() - 1);
+      return { start: getStartOfDay(y), end: getEndOfDay(y) };
+    }
+    if (dateFilter === "last_7") {
+      const p = new Date(now);
+      p.setDate(p.getDate() - 7);
+      return { start: getStartOfDay(p), end: getEndOfDay(now) };
+    }
+    if (dateFilter === "last_30") {
+      const p = new Date(now);
+      p.setDate(p.getDate() - 30);
+      return { start: getStartOfDay(p), end: getEndOfDay(now) };
+    }
+    if (dateFilter === "custom") {
+      const startDate = parseDateInput(customStartDate);
+      const endDate = parseDateInput(customEndDate);
+      if (!startDate || !endDate) return null;
+      if (startDate <= endDate) {
+        return { start: getStartOfDay(startDate), end: getEndOfDay(endDate) };
+      }
+      return { start: getStartOfDay(endDate), end: getEndOfDay(startDate) };
+    }
+
+    return null;
+  };
+
+  const formatShortDate = (date: Date) =>
+    date.toLocaleDateString("es-ES", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+
+  const hasUserResponseAfterFirstAssistant = (conversation: Conversation) => {
+    const history = conversation.history || [];
+    const firstAssistant = history.find((msg) => msg.role === "assistant");
+    if (!firstAssistant) return false;
+    const assistantTs = Number(firstAssistant.timestamp || 0);
+    return history.some(
+      (msg) => msg.role === "user" && Number(msg.timestamp || 0) > assistantTs
+    );
+  };
   useEffect(() => {
     async function loadStats() {
       try {
-        const [listings, leads, conversations, qualifiedLeads] = await Promise.all([
+        const [listings, leads, conversations] = await Promise.all([
           getListings(),
           getLeads(),
           getConversations(),
-          getQualifiedLeads(),
         ]);
-        setRawData({ listings, leads, conversations, qualifiedLeads });
+        setRawData({ listings, leads, conversations });
       } catch (error) {
         console.error("Error loading stats:", error);
       } finally {
@@ -51,16 +126,7 @@ export function Dashboard() {
       filteredLeads = filteredLeads.filter(l => l.listingCode === listingFilter);
     }
 
-    const getStartOfDay = (date: Date) => { const d = new Date(date); d.setHours(0, 0, 0, 0); return d; };
-    const getEndOfDay = (date: Date) => { const d = new Date(date); d.setHours(23, 59, 59, 999); return d; };
-    
-    let range: {start: Date, end: Date} | null = null;
-    const now = new Date();
-    
-    if (dateFilter === "today") range = { start: getStartOfDay(now), end: getEndOfDay(now) };
-    else if (dateFilter === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); range = { start: getStartOfDay(y), end: getEndOfDay(y) }; }
-    else if (dateFilter === "last_7") { const p = new Date(now); p.setDate(p.getDate() - 7); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
-    else if (dateFilter === "last_30") { const p = new Date(now); p.setDate(p.getDate() - 30); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
+    const range = getDateRange();
 
     const isWithinRange = (ts: any, r: {start: Date, end: Date} | null) => {
       if (!r) return true;
@@ -70,13 +136,17 @@ export function Dashboard() {
     };
 
     if (range) {
-      filteredLeads = filteredLeads.filter(l => isWithinRange(l.createdAt, range));
+      filteredLeads = filteredLeads.filter(l => isWithinRange(getLeadMetricTimestamp(l), range));
     }
 
     return filteredLeads
-      .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
+      .sort((a, b) => {
+        const aMs = getLeadMetricTimestamp(a)?.toMillis?.() || 0;
+        const bMs = getLeadMetricTimestamp(b)?.toMillis?.() || 0;
+        return bMs - aMs;
+      })
       .slice(0, 6);
-  }, [rawData, dateFilter, listingFilter]);
+  }, [rawData, dateFilter, listingFilter, customStartDate, customEndDate]);
 
   const stats = useMemo(() => {
     if (!rawData) return {
@@ -86,27 +156,19 @@ export function Dashboard() {
       totalMensajes: 0
     };
 
-    let { listings, leads, conversations, qualifiedLeads } = rawData;
+    let { listings, leads, conversations } = rawData;
 
     // Filter by Ad (Listing Code)
     if (listingFilter !== "all") {
       listings = listings.filter(l => l.listingCode === listingFilter);
       leads = leads.filter(l => l.listingCode === listingFilter);
       conversations = conversations.filter(c => c.listingCode === listingFilter);
-      qualifiedLeads = qualifiedLeads.filter(q => q.listingCode === listingFilter);
     }
 
+    const leadsAfterListingFilter = leads;
+
     // Filter by Date Range
-    const getStartOfDay = (date: Date) => { const d = new Date(date); d.setHours(0, 0, 0, 0); return d; };
-    const getEndOfDay = (date: Date) => { const d = new Date(date); d.setHours(23, 59, 59, 999); return d; };
-    
-    let range: {start: Date, end: Date} | null = null;
-    const now = new Date();
-    
-    if (dateFilter === "today") range = { start: getStartOfDay(now), end: getEndOfDay(now) };
-    else if (dateFilter === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); range = { start: getStartOfDay(y), end: getEndOfDay(y) }; }
-    else if (dateFilter === "last_7") { const p = new Date(now); p.setDate(p.getDate() - 7); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
-    else if (dateFilter === "last_30") { const p = new Date(now); p.setDate(p.getDate() - 30); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
+    const range = getDateRange();
 
     const isWithinRange = (ts: any, r: {start: Date, end: Date} | null) => {
       if (!r) return true;
@@ -116,9 +178,15 @@ export function Dashboard() {
     };
 
     if (range) {
-      leads = leads.filter(l => isWithinRange(l.createdAt, range));
+      leads = leads.filter(l => isWithinRange(getLeadMetricTimestamp(l), range));
       conversations = conversations.filter(c => isWithinRange(c.lastMessage, range));
-      qualifiedLeads = qualifiedLeads.filter(q => isWithinRange(q.createdAt, range));
+    }
+
+    let qualifiedLeads = filterQualifiedLeads(leadsAfterListingFilter);
+    if (range) {
+      qualifiedLeads = qualifiedLeads.filter((q) =>
+        isWithinRange(qualifiedLeadMetricTimestamp(q), range)
+      );
     }
 
     const anunciosActivos = listings.filter(l => l.isActive !== false).length;
@@ -134,8 +202,8 @@ export function Dashboard() {
     const totalConversionesToQualified = vendidosACualificados + alquiladosACualificados;
     const conversionRate = qualifiedLeads.length > 0 ? Math.round((totalConversionesToQualified / qualifiedLeads.length) * 100) : 0;
 
-    const respondidos = conversations.filter(c => c.history?.some(msg => msg.role === "user")).length;
-    const tasaRespuesta = leads.length > 0 ? Math.round((respondidos / leads.length) * 100) : 0;
+    const respondidos = conversations.filter(hasUserResponseAfterFirstAssistant).length;
+    const tasaRespuesta = conversations.length > 0 ? Math.round((respondidos / conversations.length) * 100) : 0;
     const totalMensajes = conversations.reduce((acc, c) => acc + (c.messageCount || 0), 0);
 
     return {
@@ -154,12 +222,24 @@ export function Dashboard() {
       tasaRespuesta,
       totalMensajes,
     };
-  }, [rawData, dateFilter, listingFilter]);
+  }, [rawData, dateFilter, listingFilter, customStartDate, customEndDate]);
 
   const uniqueListings = useMemo(() => {
     if (!rawData) return [];
     return Array.from(new Set(rawData.listings.map(l => l.listingCode).filter(Boolean)));
   }, [rawData]);
+
+  const selectedDateRangeLabel = useMemo(() => {
+    if (dateFilter === "all") return "Todas las fechas";
+    if (dateFilter === "today") return "Hoy";
+    if (dateFilter === "yesterday") return "Ayer";
+    if (dateFilter === "last_7") return "Últimos 7 días";
+    if (dateFilter === "last_30") return "Últimos 30 días";
+
+    const range = getDateRange();
+    if (!range) return "Rango personalizado (pendiente de seleccionar)";
+    return `${formatShortDate(range.start)} - ${formatShortDate(range.end)}`;
+  }, [dateFilter, customStartDate, customEndDate]);
 
   if (loading) {
     return (
@@ -169,7 +249,7 @@ export function Dashboard() {
         {/* Layout Skeleton */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <div className="lg:col-span-1 grid grid-cols-1 gap-6">
-            {[1, 2, 3].map((i) => (
+            {[1, 2, 3, 4].map((i) => (
               <div key={i} className="card animate-pulse h-[220px] flex flex-col items-center justify-center">
                 <div className="h-3 bg-gray-200 rounded w-24 mb-6"></div>
                 <div className="h-12 bg-gray-300 rounded w-40"></div>
@@ -179,10 +259,9 @@ export function Dashboard() {
           <div className="lg:col-span-2 card animate-pulse h-full flex flex-col items-center p-8">
             <div className="h-6 bg-gray-200 rounded w-48 mb-12"></div>
             <div className="space-y-4 w-full px-12">
-              <div className="h-16 bg-gray-100 rounded-2xl w-full"></div>
-              <div className="h-16 bg-gray-100 rounded-2xl w-[75%] mx-auto"></div>
-              <div className="h-16 bg-gray-100 rounded-2xl w-[50%] mx-auto"></div>
-              <div className="h-16 bg-gray-100 rounded-2xl w-[25%] mx-auto"></div>
+              <div className="h-24 bg-gray-100 rounded-2xl w-full"></div>
+              <div className="h-24 bg-gray-100 rounded-2xl w-[75%] mx-auto"></div>
+              <div className="h-24 bg-gray-100 rounded-2xl w-[50%] mx-auto"></div>
             </div>
           </div>
         </div>
@@ -192,11 +271,11 @@ export function Dashboard() {
 
 
 
+  /** Embudo sin Leads (el total de leads va en la tarjeta lateral) */
   const funnelData = [
-    { label: "Leads", count: stats.leads, color: "bg-slate-100", textColor: "text-slate-700", icon: <Users size={18} /> },
-    { label: "Conversaciones", count: stats.conversaciones, color: "bg-indigo-50", textColor: "text-indigo-700", icon: <MessageSquare size={18} /> },
-    { label: "Respondidas", count: stats.respondidos, color: "bg-sky-50", textColor: "text-sky-700", icon: <MessageCircle size={18} /> },
-    { label: "Cualificados", count: stats.cualificados, color: "bg-emerald-50", textColor: "text-emerald-700", icon: <CheckCircle size={18} /> },
+    { label: "Conversaciones", count: stats.conversaciones, color: metricTheme.conversations.funnelBg, textColor: metricTheme.conversations.funnelText },
+    { label: "Respondidas", count: stats.respondidos, color: metricTheme.responded.funnelBg, textColor: metricTheme.responded.funnelText },
+    { label: "Cualificados", count: stats.cualificados, color: metricTheme.qualified.funnelBg, textColor: metricTheme.qualified.funnelText },
   ];
 
 
@@ -220,7 +299,8 @@ export function Dashboard() {
                   {dateFilter === "today" ? "Hoy" : 
                    dateFilter === "yesterday" ? "Ayer" : 
                    dateFilter === "last_7" ? "Últimas 7 días" : 
-                   dateFilter === "last_30" ? "Últimas 30 días" : "Todos"}
+                   dateFilter === "last_30" ? "Últimas 30 días" :
+                   dateFilter === "custom" ? "Rango personalizado" : "Todos"}
                   <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isDateDropdownOpen && "rotate-180")} />
                 </div>
               </div>
@@ -234,6 +314,7 @@ export function Dashboard() {
                     { value: "yesterday", label: "Ayer" },
                     { value: "last_7", label: "Últimos 7 días" },
                     { value: "last_30", label: "Últimos 30 días" },
+                    { value: "custom", label: "Rango personalizado" },
                     { value: "all", label: "Todos" }
                   ].map(option => (
                     <button
@@ -248,6 +329,28 @@ export function Dashboard() {
                       <span className="text-xs text-gray-700 font-medium">{option.label}</span>
                     </button>
                   ))}
+                  {dateFilter === "custom" && (
+                    <div className="mt-2 border-t border-gray-100 pt-2 space-y-2">
+                      <label className="block">
+                        <span className="text-[11px] font-semibold text-gray-500">Desde</span>
+                        <input
+                          type="date"
+                          value={customStartDate}
+                          onChange={(e) => setCustomStartDate(e.target.value)}
+                          className="mt-1 w-full rounded-md border border-gray-200 px-2 py-1.5 text-xs text-gray-700 focus:border-primary-500 focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-[11px] font-semibold text-gray-500">Hasta</span>
+                        <input
+                          type="date"
+                          value={customEndDate}
+                          onChange={(e) => setCustomEndDate(e.target.value)}
+                          className="mt-1 w-full rounded-md border border-gray-200 px-2 py-1.5 text-xs text-gray-700 focus:border-primary-500 focus:outline-none"
+                        />
+                      </label>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -302,10 +405,15 @@ export function Dashboard() {
         </div>
         }
       />
+      <div className="mb-4 -mt-3 sm:mb-6">
+        <p className="text-xs font-semibold text-gray-500">
+          Rango seleccionado: <span className="text-gray-700">{selectedDateRangeLabel}</span>
+        </p>
+      </div>
 
 
 
-      {/* Columna Izquierda: KPIs y Mensajes */}
+      {/* Columna izquierda: KPIs */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-stretch">
         <div className="lg:col-span-1 grid grid-cols-1 gap-6">
           {/* Tasa de Cualificación */}
@@ -313,7 +421,7 @@ export function Dashboard() {
             <div className="text-center z-10 w-full">
               <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Tasa de cualificación</p>
               <div className="relative inline-block">
-                <p className="text-4xl sm:text-5xl font-bold text-violet-600">{stats.tasaCualificacion}%</p>
+                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.qualificationRate.value)}>{stats.tasaCualificacion}%</p>
               </div>
             </div>
           </div>
@@ -323,7 +431,17 @@ export function Dashboard() {
             <div className="text-center z-10 w-full">
               <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Tasa de respuesta</p>
               <div className="relative inline-block">
-                <p className="text-4xl sm:text-5xl font-bold text-sky-600">{stats.tasaRespuesta}%</p>
+                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.responded.value)}>{stats.tasaRespuesta}%</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Leads */}
+          <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
+            <div className="text-center z-10 w-full">
+              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Leads</p>
+              <div className="relative inline-block">
+                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.messages.kpiLeads)}>{stats.leads}</p>
               </div>
             </div>
           </div>
@@ -333,16 +451,16 @@ export function Dashboard() {
             <div className="text-center z-10 w-full">
               <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Mensajes totales</p>
               <div className="relative inline-block">
-                <p className="text-4xl sm:text-5xl font-bold text-emerald-600">{stats.totalMensajes}</p>
+                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.messages.kpiValue)}>{stats.totalMensajes}</p>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="lg:col-span-2 card p-8 flex flex-col items-center justify-between border-t-4 border-primary-500 bg-gradient-to-b from-white to-slate-50/30">
+        <div className="lg:col-span-2 card p-8 flex flex-col items-center border-t-4 border-primary-500 bg-gradient-to-b from-white to-slate-50/30">
           <div className="w-full">
-            <h2 className="text-2xl font-bold text-gray-900 mb-2 w-full text-center">Embudo de conversión</h2>
-            <p className="text-xs text-gray-400 text-center mb-12 font-medium tracking-wider">Flujo de interacción total</p>
+            <h2 className="text-2xl font-bold text-gray-900 mb-1.5 w-full text-center">Embudo de conversión</h2>
+            <p className="text-xs text-gray-400 text-center mb-7 font-medium tracking-wider">Flujo de interacción total</p>
             
             <div className="flex flex-col gap-3 w-full max-w-[800px] mx-auto">
               {funnelData.map((step, i) => {
@@ -360,14 +478,14 @@ export function Dashboard() {
                     {conversionRate !== null && (
                       <div className="h-10 flex items-center justify-center -my-3 z-20">
                         <div className="text-[11px] font-bold bg-white border-2 border-slate-100 text-slate-500 px-3 py-1 rounded-full flex items-center gap-1.5 transition-transform">
-                          <TrendingUp size={12} className="text-indigo-500" />
-                          <span className="text-indigo-600">{conversionRate}%</span>
+                          <TrendingUp size={12} className={metricTheme.conversion.icon} />
+                          <span className={metricTheme.conversion.text}>{conversionRate}%</span>
                         </div>
                       </div>
                     )}
                     <div 
                       className={cn(
-                        "relative h-16 transition-all duration-1000 ease-out flex items-center justify-center",
+                        "relative h-24 sm:h-28 transition-all duration-1000 ease-out flex items-center justify-center",
                         step.color,
                         step.textColor,
                         "rounded-2xl border-2 border-slate-50"
@@ -375,31 +493,13 @@ export function Dashboard() {
                       style={{ width: `${width}%` }}
                     >
                       <div className="flex flex-col items-center justify-center text-center px-4 z-10 w-full space-y-0">
-                        <span className="font-bold text-3xl leading-none">{step.count}</span>
+                        <span className="font-bold text-4xl leading-none">{step.count}</span>
                         <span className="font-bold tracking-wide text-gray-500/80 text-[11px] leading-tight whitespace-nowrap">{step.label.charAt(0).toUpperCase() + step.label.slice(1).toLowerCase()}</span>
                       </div>
                     </div>
                   </div>
                 );
               })}
-            </div>
-          </div>
-
-          <div className="mt-10 pt-8 border-t-2 border-dashed border-gray-100 w-full">
-            <div className="flex justify-between items-end mb-3 px-1">
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-gray-400">Eficiencia final</span>
-                <span className="text-2xl font-bold text-emerald-600 leading-none">
-                  {funnelData[0].count > 0 ? Math.round((funnelData[3].count / funnelData[0].count) * 100) : 0}%
-                </span>
-              </div>
-              <span className="text-[10px] font-bold text-gray-400 pb-1">Total leads vs cualificados</span>
-            </div>
-            <div className="h-3 bg-slate-100 rounded-full overflow-hidden flex shadow-inner border border-gray-50">
-              <div 
-                className="h-full bg-gradient-to-r from-emerald-400 to-emerald-600 transition-all duration-1500 ease-out" 
-                style={{ width: `${funnelData[0].count > 0 ? (funnelData[3].count / funnelData[0].count) * 100 : 0}%` }}
-              ></div>
             </div>
           </div>
         </div>

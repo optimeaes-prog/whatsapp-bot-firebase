@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { CheckCircle, AlertCircle, Building2, Users, Phone, Mail } from "lucide-react";
 import { getPendingOnboards, confirmOnboarding } from "../services/organization";
 import type { OrganizationSettings } from "../services/organization";
-import { PageHeader, PageContainer, PageLoading } from "../components/ui";
+import { Button, PageHeader, PageContainer, PageLoading } from "../components/ui";
 
 export function AdminOnboards() {
   const [pending, setPending] = useState<(OrganizationSettings & { id: string })[]>([]);
@@ -55,8 +55,8 @@ export function AdminOnboards() {
 
       {pending.length === 0 ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-          <div className="mx-auto w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mb-4">
-            <CheckCircle className="text-green-500 w-8 h-8" />
+          <div className="mx-auto w-16 h-16 bg-emerald-50 rounded-full flex items-center justify-center mb-4">
+            <CheckCircle className="text-emerald-500 w-8 h-8" />
           </div>
           <h3 className="text-xl font-semibold text-gray-900 mb-2">Todo al día</h3>
           <p className="text-gray-500 max-w-md mx-auto">
@@ -113,23 +113,15 @@ export function AdminOnboards() {
                 </div>
 
                 <div className="p-4 bg-gray-50 border-t border-gray-100 mt-auto">
-                  <button
+                  <Button
+                    type="button"
                     onClick={() => handleConfirm(org.id)}
-                    disabled={isProcessing}
-                    className="w-full flex items-center justify-center gap-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2.5 rounded-btn text-sm font-semibold transition-colors disabled:opacity-70"
+                    loading={isProcessing}
+                    className="w-full py-2.5 text-sm font-semibold"
                   >
-                    {isProcessing ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-                        Activando...
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle size={18} />
-                        Confirmar y Activar Asistente
-                      </>
-                    )}
-                  </button>
+                    <CheckCircle size={18} />
+                    {isProcessing ? "Activando..." : "Confirmar y Activar Asistente"}
+                  </Button>
                 </div>
               </div>
             );

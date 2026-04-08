@@ -1,8 +1,8 @@
-import { defineString } from "firebase-functions/params";
 import axios from "axios";
+import { defineString } from "firebase-functions/params";
+import { TWILIO_AUTH_TOKEN } from "../secrets";
 
 const TWILIO_ACCOUNT_SID = defineString("TWILIO_ACCOUNT_SID");
-const TWILIO_AUTH_TOKEN = defineString("TWILIO_AUTH_TOKEN");
 const TWILIO_WHATSAPP_NUMBER = defineString("TWILIO_WHATSAPP_NUMBER");
 
 // Content Template SIDs for initial contact (business-initiated messages)
@@ -20,12 +20,21 @@ type SendTextResult = {
   messageId?: string;
 };
 
+type SendTextWithTemplateFallbackParams = SendTextParams & {
+  /** Optional template SID used when Twilio rejects free-form text outside 24h window. */
+  templateSid?: string;
+  /** Log context to make traces easier to follow. */
+  context?: string;
+};
+
 type SendTemplateParams = {
   to: string;
   chatId?: string;
   language: "es" | "en";
   variables: Record<string, string>;
   mediaUrl?: string;
+  /** Optional explicit ContentSid override */
+  templateSid?: string;
 };
 
 function getTwilioCredentials() {
@@ -76,6 +85,69 @@ export async function sendText(params: SendTextParams): Promise<SendTextResult> 
   };
 }
 
+function twilioErrorCode(error: unknown): number | undefined {
+  if (!axios.isAxiosError(error)) return undefined;
+  const code = error.response?.data?.code;
+  return typeof code === "number" ? code : undefined;
+}
+
+function twilioErrorMessage(error: unknown): string {
+  if (!axios.isAxiosError(error)) return "";
+  const message = error.response?.data?.message;
+  return typeof message === "string" ? message : "";
+}
+
+export function isTwilioOutside24hWindowError(error: unknown): boolean {
+  const code = twilioErrorCode(error);
+  if (code === 63016) return true;
+  const message = twilioErrorMessage(error).toLowerCase();
+  return (
+    message.includes("outside the allowed window") ||
+    message.includes("outside the customer service window") ||
+    (message.includes("whatsapp") && message.includes("template"))
+  );
+}
+
+/**
+ * Send text first. If Twilio rejects due to 24h window, retry with a template.
+ */
+export async function sendTextWithTemplateFallback(
+  params: SendTextWithTemplateFallbackParams
+): Promise<SendTextResult & { usedTemplateFallback: boolean }> {
+  try {
+    const direct = await sendText(params);
+    return { ...direct, usedTemplateFallback: false };
+  } catch (error) {
+    if (!isTwilioOutside24hWindowError(error)) {
+      throw error;
+    }
+
+    if (!params.templateSid) {
+      console.warn(
+        `[twilio] Outside 24h window for ${params.to}${params.context ? ` (${params.context})` : ""}; ` +
+        "TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION is not configured, cannot fallback to template."
+      );
+      throw error;
+    }
+
+    console.warn(
+      `[twilio] Outside 24h window for ${params.to}${params.context ? ` (${params.context})` : ""}; ` +
+      `retrying with template ${params.templateSid}.`
+    );
+
+    const fallback = await sendTemplate({
+      to: params.to,
+      chatId: params.chatId,
+      // Language is ignored when templateSid is provided, but type requires it.
+      language: "es",
+      templateSid: params.templateSid,
+      variables: { "1": params.body },
+    });
+
+    return { ...fallback, usedTemplateFallback: true };
+  }
+}
+
 /**
  * Send a template-based WhatsApp message via Twilio API
  * Used for business-initiated messages (outside the 24h window)
@@ -86,7 +158,7 @@ export async function sendTemplate(params: SendTemplateParams): Promise<SendText
   const toWhatsApp = formatWhatsAppNumber(params.to);
   const fromWhatsApp = formatWhatsAppNumber(fromNumber);
 
-  const templateSid = params.language === "en" ? TEMPLATE_SID_EN : TEMPLATE_SID_ES;
+  const templateSid = params.templateSid || (params.language === "en" ? TEMPLATE_SID_EN : TEMPLATE_SID_ES);
 
   const postData: Record<string, string> = {
     From: fromWhatsApp,
@@ -113,4 +185,37 @@ export async function sendTemplate(params: SendTemplateParams): Promise<SendText
     chatId: params.chatId || params.to,
     messageId: data.sid,
   };
+}
+
+type CreateContentTemplateParams = {
+  friendlyName: string;
+  language: "es" | "en";
+  /** Sample values for variables, required for WhatsApp approval when using {{1}}, {{2}}, ... */
+  variables?: Record<string, string>;
+  /** Twilio Content API types payload */
+  types: Record<string, unknown>;
+};
+
+export async function createContentTemplate(params: CreateContentTemplateParams): Promise<{ contentSid: string }> {
+  const { accountSid, authToken } = getTwilioCredentials();
+
+  const response = await axios.post(
+    `https://content.twilio.com/v1/Content`,
+    {
+      friendly_name: params.friendlyName,
+      language: params.language,
+      variables: params.variables,
+      types: params.types,
+    },
+    {
+      auth: { username: accountSid, password: authToken },
+      headers: { "Content-Type": "application/json" },
+    }
+  );
+
+  const data = response.data as { sid?: string };
+  if (!data?.sid) {
+    throw new Error("Twilio Content API did not return sid");
+  }
+  return { contentSid: data.sid };
 }

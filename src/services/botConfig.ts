@@ -7,12 +7,12 @@ import { getOrganizationBasePath } from "../lib/organization";
 const CONFIG_DOC_ID = "config";
 const COLLECTION_NAME = `${getOrganizationBasePath()}/botConfig`;
 
-// Default bot styles
+// Default assistant styles
 export const DEFAULT_STYLES: BotStyle[] = [
   {
     id: "directo",
     name: "Directo y Eficiente",
-    description: "Mensajes cortos, sin relleno, agrupa preguntas. Estilo actual del bot.",
+    description: "Mensajes cortos, sin relleno, agrupa preguntas. Estilo actual del asistente.",
     promptModifier: `- Mensajes CORTOS y DIRECTOS. Máximo 2-3 líneas por mensaje.
 - NO repitas información que el usuario acaba de dar.
 - NO hagas resúmenes innecesarios ("Entonces, para resumir...").

@@ -1,7 +1,8 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-import { Call, ListingRow, BotConfig, BotStyle, ConversationState, QualificationStatus, HistoryItem, OperationType } from "../types";
+import { ListingRow, ListingForResolution, BotConfig, BotStyle, ConversationState, QualificationStatus, HistoryItem, OperationType } from "../types";
 import { getChatIdVariants, normalizeToCanonicalChatId } from "../utils";
+import { normalizeForSearch } from "../utils/addressNormalize";
 
 
 // Initialize Firestore with specific database once
@@ -13,8 +14,6 @@ const getDb = () => {
   if (!firestoreInstance) {
     // Use the modular API to get a named database
     firestoreInstance = getFirestore(admin.app(), DATABASE_ID);
-    // Configure Firestore to ignore undefined properties
-    firestoreInstance.settings({ ignoreUndefinedProperties: true });
   }
   return firestoreInstance;
 };
@@ -25,14 +24,14 @@ const getOrgDb = () => {
   return getDb().collection("organizations").doc(ORG_ID);
 };
 
-// Listings
-export async function fetchListingByCode(listingCode: string): Promise<ListingRow | null> {
-  const snapshot = await getOrgDb().collection("listings").where("listingCode", "==", listingCode).get();
-  if (snapshot.empty) {
-    return null;
-  }
-  const doc = snapshot.docs[0];
-  const data = doc.data();
+function buildLeadDocId(phone: string, listingCode: string): string {
+  // Firestore document IDs cannot contain "/" and should be stable for idempotent upserts.
+  const safePhone = String(phone || "").trim().replace(/[^\d+]/g, "");
+  const safeListing = String(listingCode || "").trim().replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `lead_${safePhone}_${safeListing}`;
+}
+
+function listingRowFromDoc(data: FirebaseFirestore.DocumentData): ListingRow {
   return {
     description: data.description || "",
     listingCode: data.listingCode || "",
@@ -45,51 +44,178 @@ export async function fetchListingByCode(listingCode: string): Promise<ListingRo
     m2: data.m2,
     rooms: data.rooms,
     address: data.address,
+    street: data.street,
+    city: data.city,
+    province: data.province,
+    postalCode: data.postalCode,
+    country: data.country,
+    provinceNormalized: data.provinceNormalized,
     idealistaDescription: data.idealistaDescription,
+    quickQualificationEnabled: data.quickQualificationEnabled === true,
+    agentName: data.agentName,
+    minMonthlyIncome: typeof data.minMonthlyIncome === "number" ? data.minMonthlyIncome : undefined,
+    maxPeople: typeof data.maxPeople === "number" ? data.maxPeople : undefined,
+    requireMortgageApproved: data.requireMortgageApproved === true,
   };
 }
 
+// Listings
+export async function fetchListingByCode(listingCode: string): Promise<ListingRow | null> {
+  const snapshot = await getOrgDb().collection("listings")
+    .where("listingCode", "==", listingCode)
+    .where("isActive", "==", true)
+    .get();
+  if (snapshot.empty) {
+    return null;
+  }
+  const doc = snapshot.docs[0];
+  return listingRowFromDoc(doc.data());
+}
+
+export async function listActiveListingsForResolution(params?: {
+  operationType?: OperationType;
+  limit?: number;
+}): Promise<ListingForResolution[]> {
+  let query: admin.firestore.Query = getOrgDb().collection("listings").where("isActive", "==", true);
+  if (params?.operationType) {
+    query = query.where("operationType", "==", params.operationType);
+  }
+  const snapshot = await query.get();
+  const rows = snapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      listingCode: data.listingCode || "",
+      operationType: data.operationType as OperationType | undefined,
+      description: data.description || "",
+      address: data.address || "",
+      street: data.street || "",
+      city: data.city || "",
+      province: data.province || "",
+      price: data.price,
+      link: data.link || "",
+    } as ListingForResolution;
+  }).filter((row) => !!row.listingCode);
+  const limit = typeof params?.limit === "number" && params.limit > 0 ? params.limit : rows.length;
+  return rows.slice(0, limit);
+}
+
 export async function searchListings(filters: {
+  operationType?: OperationType;
+  province?: string;
   street?: string;
   price?: number;
   rooms?: number;
+  m2?: number;
+  candidateListingCodes?: string[];
 }): Promise<ListingRow[]> {
-  let query: admin.firestore.Query = getOrgDb().collection("listings");
+  let query: admin.firestore.Query = getOrgDb().collection("listings")
+    .where("isActive", "==", true);
 
-  if (filters.price !== undefined) {
-    query = query.where("price", "==", filters.price);
+  if (filters.operationType) {
+    query = query.where("operationType", "==", filters.operationType);
+  }
+
+  const snapshot = await query.get();
+  let results = snapshot.docs.map((doc) => listingRowFromDoc(doc.data()));
+
+  if (filters.candidateListingCodes && filters.candidateListingCodes.length > 0) {
+    const allowed = new Set(filters.candidateListingCodes.map((c) => String(c).trim()).filter(Boolean));
+    results = results.filter((r) => allowed.has(r.listingCode));
+  }
+
+  if (filters.province) {
+    const want = normalizeForSearch(filters.province);
+    results = results.filter((r) => {
+      const stored =
+        (typeof r.provinceNormalized === "string" && r.provinceNormalized
+          ? normalizeForSearch(r.provinceNormalized)
+          : "") ||
+        (r.province ? normalizeForSearch(r.province) : "");
+      if (stored) {
+        return stored === want || stored.includes(want) || want.includes(stored);
+      }
+      if (r.address) {
+        return normalizeForSearch(r.address).includes(want);
+      }
+      return false;
+    });
+  }
+
+  if (filters.street) {
+    const normalize = (value: string) =>
+      value
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim();
+
+    const STOP_WORDS = new Set(["de", "del", "la", "las", "los", "el", "en", "y", "a", "un", "una", "calle", "paseo", "avenida", "avda", "plaza", "camino", "carretera"]);
+
+    const searchWords = normalize(filters.street)
+      .split(/\s+/)
+      .filter((w) => w.length > 1 && !STOP_WORDS.has(w));
+
+    if (searchWords.length > 0) {
+      const addressText = (r: ListingRow) => [r.street, r.address].filter(Boolean).join(", ") || r.address || "";
+      // Score each listing by how many significant search words appear in its address
+      const scored = results
+        .filter((r) => !!addressText(r))
+        .map((r) => {
+          const addr = normalize(addressText(r));
+          const hits = searchWords.filter((w) => addr.includes(w)).length;
+          return { listing: r, hits, ratio: hits / searchWords.length };
+        });
+
+      // Exact substring match first (original behavior)
+      const searchStreet = normalize(filters.street);
+      const exactMatches = scored.filter((s) => normalize(addressText(s.listing)).includes(searchStreet));
+      if (exactMatches.length > 0) {
+        results = exactMatches.map((s) => s.listing);
+      } else {
+        // Fuzzy: keep listings where at least 50% of significant words match
+        const fuzzy = scored.filter((s) => s.ratio >= 0.5 && s.hits >= 1);
+        if (fuzzy.length > 0) {
+          fuzzy.sort((a, b) => b.ratio - a.ratio || b.hits - a.hits);
+          results = fuzzy.map((s) => s.listing);
+        } else {
+          // No street match at all — don't filter by street so other filters can still narrow
+          // (rooms, price, m2 will take over)
+        }
+      }
+    }
   }
 
   if (filters.rooms !== undefined) {
-    query = query.where("rooms", "==", filters.rooms);
+    const targetRooms = Number(filters.rooms);
+    results = results.filter((r) => {
+      const listingRooms = Number(r.rooms);
+      return Number.isFinite(listingRooms) && listingRooms === targetRooms;
+    });
   }
 
-  // Firestore doesn't support multiple inequalities or full-text easily.
-  // If street is provided, we fetch and filter in memory if needed, or use a basic 'where'.
-  // But if price or rooms are provided, we already have a more restricted set.
-
-  const snapshot = await query.get();
-  let results = snapshot.docs.map(doc => {
-    const data = doc.data();
-    return {
-      description: data.description || "",
-      listingCode: data.listingCode || "",
-      link: data.link || "",
-      operationType: data.operationType as OperationType,
-      features: data.features || "",
-      profitabilityReportAvailable: data.profitabilityReportAvailable || false,
-      profitabilityReport: data.profitabilityReport || "",
-      price: data.price,
-      m2: data.m2,
-      rooms: data.rooms,
-      address: data.address,
-      idealistaDescription: data.idealistaDescription,
+  if (filters.price !== undefined) {
+    // Price can vary slightly depending on listing refreshes or spoken rounding.
+    const maxDelta = 150;
+    const parsePrice = (value: unknown): number | undefined => {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value !== "string") return undefined;
+      const cleaned = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
+      const parsed = Number(cleaned);
+      return Number.isFinite(parsed) ? parsed : undefined;
     };
-  });
+    results = results.filter((r) => {
+      const listingPrice = parsePrice(r.price);
+      return listingPrice !== undefined && Math.abs(listingPrice - filters.price!) <= maxDelta;
+    });
+  }
 
-  if (filters.street) {
-    const searchStreet = filters.street.toLowerCase();
-    results = results.filter(r => r.address && r.address.toLowerCase().includes(searchStreet));
+  if (filters.m2 !== undefined) {
+    const targetM2 = Number(filters.m2);
+    const maxDeltaM2 = 10;
+    results = results.filter((r) => {
+      const listingM2 = Number(r.m2);
+      return Number.isFinite(listingM2) && Math.abs(listingM2 - targetM2) <= maxDeltaM2;
+    });
   }
 
   return results;
@@ -136,7 +262,7 @@ export async function findLeadByPhone(phone: string): Promise<{
   hasResponse?: boolean;
 } | null> {
   // Get most recent lead for this phone
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("leads")
     .where("phone", "==", phone)
     .orderBy("lastMessageDate", "desc")
@@ -163,13 +289,16 @@ export async function createLead(data: {
   phone: string;
   listingCode: string;
   chatId: string;
-  operationType: OperationType;
+  operationType?: OperationType;
   name?: string;
   qualificationStatus?: QualificationStatus;
   tags?: string[];
   recordings?: string[];
+  leadSource?: string;
+  listingResolutionStatus?: "pending" | "resolved" | "failed";
 }): Promise<void> {
-  await getOrgDb().collection("leads").add({
+  const docId = buildLeadDocId(data.phone, data.listingCode);
+  await getOrgDb().collection("leads").doc(docId).set({
     phone: data.phone,
     listingCode: data.listingCode,
     chatId: data.chatId,
@@ -177,43 +306,143 @@ export async function createLead(data: {
     name: data.name,
     qualificationStatus: data.qualificationStatus,
     tags: data.tags,
+    leadSource: data.leadSource,
+    listingResolutionStatus: data.listingResolutionStatus,
     hasResponse: false,
     recordings: data.recordings || [],
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     firstMessageDate: admin.firestore.FieldValue.serverTimestamp(),
     lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
+/**
+ * Create a lead+conversation placeholder for call→WhatsApp handoff.
+ * Uses a sentinel listingCode until we can resolve the listing from user text.
+ */
+export async function createPendingCallLead(params: {
+  phone: string;
+  chatId: string;
+  name?: string;
+}): Promise<void> {
+  const sentinelListingCode = "__pending__";
+
+  // Upsert lead (by phone+listingCode sentinel) so ensureConversationState treats it as a lead.
+  await updateLeadChatInfo({
+    phone: params.phone,
+    listingCode: sentinelListingCode,
+    chatId: params.chatId,
+    name: params.name,
+    qualificationStatus: "not_qualified",
+    tags: ["lead", "call", "pending-listing"],
+    recordings: [],
   });
+
+  // Add extra metadata on the lead doc (by chatId) if possible.
+  const snapshot = await getOrgDb().collection("leads").where("chatId", "==", params.chatId).limit(1).get();
+  if (!snapshot.empty) {
+    await snapshot.docs[0].ref.set(
+      {
+        leadSource: "call",
+        listingResolutionStatus: "pending",
+      },
+      { merge: true }
+    );
+  }
+
+  // Ensure there's a conversation doc to buffer messages into
+  await upsertConversation(params.chatId, {
+    phone: params.phone,
+    chatId: params.chatId,
+    listingCode: sentinelListingCode,
+    history: [],
+    pendingUserMessages: [],
+    isFinished: false,
+    botDisabled: false,
+    type: "lead",
+    tags: ["lead", "call", "pending-listing"],
+  } as Partial<ConversationState>);
+}
+
+export async function updateLeadListingByChatId(params: {
+  chatId: string;
+  phone: string;
+  listingCode: string;
+  operationType?: OperationType;
+  name?: string;
+  listingResolutionStatus: "resolved" | "failed";
+  tags?: string[];
+}): Promise<void> {
+  const snapshot = await getOrgDb().collection("leads").where("chatId", "==", params.chatId).limit(1).get();
+  if (snapshot.empty) {
+    console.warn(`No lead found with chatId ${params.chatId} to update listing`);
+    return;
+  }
+
+  await snapshot.docs[0].ref.set(
+    {
+      phone: params.phone,
+      listingCode: params.listingCode,
+      ...(params.operationType ? { operationType: params.operationType } : {}),
+      name: params.name,
+      listingResolutionStatus: params.listingResolutionStatus,
+      tags: params.tags,
+      lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Store call→WhatsApp capture details (optional, for audit/debug).
+ */
+export async function upsertCallIntent(params: {
+  callSid: string;
+  fromPhone: string;
+  capturedName?: string;
+  createdAtMs?: number;
+}): Promise<void> {
+  const docRef = getOrgDb().collection("callIntents").doc(params.callSid);
+  await docRef.set(
+    {
+      callSid: params.callSid,
+      fromPhone: params.fromPhone,
+      capturedName: params.capturedName,
+      createdAtMs: params.createdAtMs ?? Date.now(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 export async function updateLeadChatInfo(params: {
   phone: string;
   listingCode: string;
   chatId: string;
-  operationType: OperationType;
+  operationType?: OperationType;
   name?: string;
   qualificationStatus?: QualificationStatus;
   tags?: string[];
   recordings?: string[];
-  vapiCallId?: string;
 }): Promise<void> {
-  const snapshot = await getDb()
-    .collection("leads")
-    .where("phone", "==", params.phone)
-    .where("listingCode", "==", params.listingCode)
-    .get();
-
-  if (snapshot.empty) {
-    // Create new lead if not found
-    await createLead(params);
-    return;
-  }
-
-  const docRef = snapshot.docs[0].ref;
+  const docId = buildLeadDocId(params.phone, params.listingCode);
+  const docRef = getOrgDb().collection("leads").doc(docId);
+  const snap = await docRef.get();
   const updateData: Record<string, unknown> = {
+    phone: params.phone,
+    listingCode: params.listingCode,
     chatId: params.chatId,
-    operationType: params.operationType,
     lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
   };
+  if (!snap.exists) {
+    const ts = admin.firestore.FieldValue.serverTimestamp();
+    updateData.createdAt = ts;
+    updateData.firstMessageDate = ts;
+    updateData.hasResponse = false;
+  }
+  if (params.operationType !== undefined) {
+    updateData.operationType = params.operationType;
+  }
 
   if (params.name !== undefined) {
     updateData.name = params.name;
@@ -231,11 +460,7 @@ export async function updateLeadChatInfo(params: {
     updateData.recordings = admin.firestore.FieldValue.arrayUnion(...params.recordings);
   }
 
-  if (params.vapiCallId !== undefined) {
-    updateData.vapiCallId = params.vapiCallId;
-  }
-
-  await docRef.update(updateData);
+  await docRef.set(updateData, { merge: true });
 }
 
 // Conversations
@@ -280,7 +505,7 @@ async function findAllConversationVariants(chatId: string): Promise<[string, Con
 
 export async function getConversationByPhoneAndListing(phone: string, listingCode: string): Promise<ConversationState | null> {
   // Use leads collection to find the chatId because it has a composite index on [phone, listingCode]
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("leads")
     .where("phone", "==", phone)
     .where("listingCode", "==", listingCode)
@@ -400,7 +625,6 @@ export async function appendConversationRow(params: {
   qualified?: boolean | null;
   isFinished?: boolean;
   recordings?: string[];
-  vapiCallId?: string;
 }): Promise<void> {
   await upsertConversation(params.chatId, {
     phone: params.phone,
@@ -410,7 +634,6 @@ export async function appendConversationRow(params: {
     qualificationStatus: params.qualified ?? null,
     isFinished: params.isFinished,
     recordings: params.recordings,
-    vapiCallId: params.vapiCallId,
   } as Partial<ConversationState>);
 }
 
@@ -504,7 +727,7 @@ export async function updateLeadStatus(params: {
   notes?: string;
   conversationSummary?: string;
 }): Promise<void> {
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("leads")
     .where("chatId", "==", params.chatId)
     .get();
@@ -544,6 +767,16 @@ export async function updateLeadStatus(params: {
     updateData.conversationSummary = params.conversationSummary;
   }
 
+  const hasConversationAnalysisFields =
+    params.pets !== undefined ||
+    params.income !== undefined ||
+    params.paymentMethod !== undefined ||
+    params.notes !== undefined ||
+    params.conversationSummary !== undefined;
+  if (hasConversationAnalysisFields) {
+    updateData.lastAnalyzedAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+
   if (params.recordings !== undefined) {
     updateData.recordings = admin.firestore.FieldValue.arrayUnion(...params.recordings);
   }
@@ -555,7 +788,7 @@ export async function updateLeadStatus(params: {
  * Add a recording URL to a lead by phone number
  */
 export async function addRecordingByPhone(phone: string, recordingUrl: string): Promise<void> {
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("leads")
     .where("phone", "==", phone)
     .orderBy("lastMessageDate", "desc")
@@ -577,7 +810,7 @@ export async function addRecordingByPhone(phone: string, recordingUrl: string): 
  * Mark a lead as having responded
  */
 export async function markLeadAsResponded(chatId: string): Promise<void> {
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("leads")
     .where("chatId", "==", chatId)
     .limit(1)
@@ -933,27 +1166,6 @@ export async function ignoreChat(chatId: string): Promise<void> {
     chatId: canonicalId,
     ignoredAt: admin.firestore.FieldValue.serverTimestamp(),
   });
-}
-
-/**
- * Save a VAPI call report to a dedicated collection
- */
-export async function saveCall(call: Call): Promise<void> {
-  const data = { ...call };
-  if (!data.timestamp) {
-    data.timestamp = admin.firestore.FieldValue.serverTimestamp();
-  }
-  await getOrgDb().collection("calls").add(data);
-}
-
-/**
- * Find a stored call by its VAPI call ID
- */
-export async function findCallByVapiId(callId: string): Promise<Call | null> {
-  const snapshot = await getOrgDb().collection("calls").where("callId", "==", callId).get();
-  if (snapshot.empty) return null;
-  const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() } as Call;
 }
 
 // ==================== LEAD ANALYSIS AGENT ====================

@@ -1,6 +1,7 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { UserCredits, CreditTransaction } from "../types";
+import { createConfirmedOffSessionTopUp, packageIdForCreditAmount } from "./stripeService";
 
 const DATABASE_ID = "realestate-whatsapp-bot";
 
@@ -198,6 +199,11 @@ export async function deductOrgCredits(
     });
 
     console.log(`Deducted ${amount} org credits from ${orgId}. New balance: ${newBalance}`);
+
+    void runOrgAutoRechargeIfNeeded(orgId, newBalance).catch((e) =>
+        console.error("[auto-recharge] runOrgAutoRechargeIfNeeded:", e)
+    );
+
     return newBalance;
 }
 
@@ -234,4 +240,159 @@ export async function addOrgCredits(
 
     console.log(`Added ${amount} org credits to ${orgId}. New balance: ${newBalance}`);
     return newBalance;
+}
+
+// ==================== AUTO-RECHARGE & STRIPE BILLING ====================
+
+export async function mergeOrgStripeBillingFields(
+    orgId: string,
+    stripeCustomerId: string,
+    stripeDefaultPaymentMethodId: string
+): Promise<void> {
+    await getDb()
+        .collection("organizations")
+        .doc(orgId)
+        .set(
+            {
+                stripeCustomerId,
+                stripeDefaultPaymentMethodId,
+            },
+            { merge: true }
+        );
+}
+
+export async function getOrgStripeCustomerId(orgId: string = ORG_ID): Promise<string | undefined> {
+    const doc = await getDb().collection("organizations").doc(orgId).get();
+    return doc.data()?.stripeCustomerId;
+}
+
+export async function getOrgAutoRechargeSettingsForApi(orgId: string = ORG_ID): Promise<{
+    enabled: boolean;
+    thresholdCredits: number;
+    rechargeCredits: number;
+    hasSavedCard: boolean;
+}> {
+    const doc = await getDb().collection("organizations").doc(orgId).get();
+    const d = doc.data() ?? {};
+    return {
+        enabled: !!d.autoRechargeEnabled,
+        thresholdCredits:
+            typeof d.autoRechargeThresholdCredits === "number" ? d.autoRechargeThresholdCredits : 20,
+        rechargeCredits: typeof d.autoRechargeCredits === "number" ? d.autoRechargeCredits : 100,
+        hasSavedCard: !!(d.stripeCustomerId && d.stripeDefaultPaymentMethodId),
+    };
+}
+
+export async function saveOrgAutoRechargeSettings(
+    orgId: string,
+    settings: { enabled: boolean; thresholdCredits: number; rechargeCredits: number }
+): Promise<void> {
+    const allowed = new Set([50, 100, 200]);
+    const recharge = allowed.has(settings.rechargeCredits) ? settings.rechargeCredits : 100;
+    const threshold = Math.max(0, Math.min(50000, Math.floor(settings.thresholdCredits)));
+    await getDb()
+        .collection("organizations")
+        .doc(orgId)
+        .set(
+            {
+                autoRechargeEnabled: settings.enabled,
+                autoRechargeThresholdCredits: threshold,
+                autoRechargeCredits: recharge,
+            },
+            { merge: true }
+        );
+}
+
+/**
+ * Idempotent credit grant for a PaymentIntent (auto-recharge + webhook backup).
+ */
+export async function addOrgCreditsForPaymentIntentOnce(
+    orgId: string,
+    credits: number,
+    paymentIntentId: string,
+    description: string
+): Promise<boolean> {
+    const ref = getDb()
+        .collection("organizations")
+        .doc(orgId)
+        .collection("fulfilledPaymentIntents")
+        .doc(paymentIntentId);
+    try {
+        await ref.create({
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    } catch (e: unknown) {
+        const err = e as { code?: number; message?: string };
+        if (err.code === 6 || String(err.message ?? "").includes("ALREADY_EXISTS")) {
+            return false;
+        }
+        throw e;
+    }
+    await addOrgCredits(credits, `${description} · ${paymentIntentId}`, orgId);
+    return true;
+}
+
+export async function runOrgAutoRechargeIfNeeded(orgId: string, balanceAfterDeduction: number): Promise<void> {
+    const orgRef = getDb().collection("organizations").doc(orgId);
+    const snap = await orgRef.get();
+    if (!snap.exists) {
+        return;
+    }
+    const d = snap.data()!;
+    if (!d.autoRechargeEnabled) {
+        return;
+    }
+
+    const threshold =
+        typeof d.autoRechargeThresholdCredits === "number" ? d.autoRechargeThresholdCredits : 20;
+    const rechargeCredits =
+        typeof d.autoRechargeCredits === "number" ? d.autoRechargeCredits : 100;
+
+    if (balanceAfterDeduction >= threshold) {
+        return;
+    }
+
+    const customerId = d.stripeCustomerId as string | undefined;
+    const pmId = d.stripeDefaultPaymentMethodId as string | undefined;
+    if (!customerId || !pmId) {
+        console.warn(
+            `[auto-recharge] org ${orgId}: activada pero sin tarjeta guardada (compra con tarjeta antes)`
+        );
+        return;
+    }
+
+    const lastMs = d.autoRechargeLastAttemptAt?.toMillis?.() ?? 0;
+    if (Date.now() - lastMs < 2 * 60 * 1000) {
+        return;
+    }
+
+    await orgRef.update({
+        autoRechargeLastAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const packageId = packageIdForCreditAmount(rechargeCredits);
+    let pi: Awaited<ReturnType<typeof createConfirmedOffSessionTopUp>>;
+    try {
+        pi = await createConfirmedOffSessionTopUp(orgId, customerId, pmId, packageId);
+    } catch (e) {
+        console.error("[auto-recharge] PaymentIntent error:", e);
+        return;
+    }
+
+    if (pi.status === "succeeded") {
+        const credits = parseInt(pi.metadata?.credits ?? "0", 10);
+        if (credits > 0) {
+            const added = await addOrgCreditsForPaymentIntentOnce(
+                orgId,
+                credits,
+                pi.id,
+                `Auto-compra ${credits} créditos`
+            );
+            if (added) {
+                console.log(`[auto-recharge] org ${orgId} +${credits} créditos (pi ${pi.id})`);
+            }
+        }
+    } else {
+        console.warn(`[auto-recharge] PI ${pi.id} estado ${pi.status}`);
+    }
 }

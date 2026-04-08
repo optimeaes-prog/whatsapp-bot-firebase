@@ -4,7 +4,7 @@ import { Settings, Check, MessageSquare, Loader2, Phone, Home } from "lucide-rea
 import type { BotConfig, BotStyle, MessagingProvider } from "../types";
 import { getBotConfig, updateActiveStyle, updateMessagingProvider, updateOrgName, DEFAULT_STYLES } from "../services/botConfig";
 import { cn } from "../lib/utils";
-import { PageHeader, PageLoading } from "../components/ui";
+import { Button, PageHeader, PageLoading } from "../components/ui";
 
 export function Configuracion() {
   const [config, setConfig] = useState<BotConfig | null>(null);
@@ -111,13 +111,13 @@ export function Configuracion() {
             />
           </div>
           <div className="flex items-end">
-            <button
+            <Button
               onClick={handleUpdateOrgName}
-              disabled={savingOrg || orgName === config?.orgName}
-              className="btn-primary"
+              disabled={orgName === config?.orgName}
+              loading={savingOrg}
             >
-              {savingOrg ? <Loader2 className="animate-spin" size={20} /> : "Guardar"}
-            </button>
+              Guardar
+            </Button>
           </div>
         </div>
       </div>
@@ -141,7 +141,7 @@ export function Configuracion() {
             className={cn(
               "w-full text-left p-5 rounded-btn border-2 transition-all",
               config?.messagingProvider === "whapi" || !config?.messagingProvider
-                ? "border-green-500 bg-green-50"
+                ? "border-emerald-500 bg-emerald-50"
                 : "border-gray-200 hover:border-gray-300 bg-white"
             )}
           >
@@ -150,7 +150,7 @@ export function Configuracion() {
                 <div className="flex items-center gap-2 mb-1">
                   <h3 className="font-semibold text-gray-900">Whapi</h3>
                   {(config?.messagingProvider === "whapi" || !config?.messagingProvider) && (
-                    <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs font-medium rounded-full">
                       Activo
                     </span>
                   )}
@@ -158,7 +158,7 @@ export function Configuracion() {
                 <p className="text-sm text-gray-600">Envía mensajes a través de la API de Whapi Cloud.</p>
               </div>
               {(config?.messagingProvider === "whapi" || !config?.messagingProvider) && (
-                <Check className="text-green-600 ml-2 flex-shrink-0" size={20} />
+                <Check className="text-emerald-600 ml-2 flex-shrink-0" size={20} />
               )}
             </div>
           </button>
@@ -170,7 +170,7 @@ export function Configuracion() {
             className={cn(
               "w-full text-left p-5 rounded-btn border-2 transition-all",
               config?.messagingProvider === "twilio"
-                ? "border-green-500 bg-green-50"
+                ? "border-emerald-500 bg-emerald-50"
                 : "border-gray-200 hover:border-gray-300 bg-white"
             )}
           >
@@ -179,7 +179,7 @@ export function Configuracion() {
                 <div className="flex items-center gap-2 mb-1">
                   <h3 className="font-semibold text-gray-900">Twilio</h3>
                   {config?.messagingProvider === "twilio" && (
-                    <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded-full">
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs font-medium rounded-full">
                       Activo
                     </span>
                   )}
@@ -187,7 +187,7 @@ export function Configuracion() {
                 <p className="text-sm text-gray-600">Envía mensajes a través de la API de Twilio WhatsApp.</p>
               </div>
               {config?.messagingProvider === "twilio" && (
-                <Check className="text-green-600 ml-2 flex-shrink-0" size={20} />
+                <Check className="text-emerald-600 ml-2 flex-shrink-0" size={20} />
               )}
             </div>
           </button>
@@ -201,7 +201,7 @@ export function Configuracion() {
         )}
       </div>
 
-      {/* Bot Style Section */}
+      {/* Asistente Style Section */}
       <div className="border-t pt-8">
         <div className="flex items-center gap-2 mb-4">
           <MessageSquare className="text-primary-500" size={24} />

@@ -11,16 +11,19 @@ import {
   getConversationById
 } from "../services/conversations";
 import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn } from "../lib/utils";
+import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
+import { resolveConversationQualification } from "../lib/conversationQualification";
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
 import { getListings } from "../services/listings";
-import { getQualifiedLeads } from "../services/qualifiedLeads";
+import { getLeads, filterQualifiedLeads } from "../services/leads";
 import type { Listing } from "../types";
-import { InboxShell, PageLoading } from "../components/ui";
+import { Button, InboxShell, PageLoading } from "../components/ui";
 
 export function Conversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
+  const [leadTagsByChatId, setLeadTagsByChatId] = useState<Map<string, string[]>>(new Map());
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "finished">("all");
@@ -49,14 +52,23 @@ export function Conversations() {
 
   async function loadConversations() {
     try {
-      const [data, listingsData, qualifiedData] = await Promise.all([
+      const [data, listingsData, leadsData] = await Promise.all([
         getConversations(),
         getListings(),
-        getQualifiedLeads()
+        getLeads(),
       ]);
       setConversations(data);
       setListings(listingsData);
-      setQualifiedChatIds(new Set(qualifiedData.map(q => q.chatId)));
+      setLeadTagsByChatId(
+        new Map(
+          leadsData
+            .filter((l) => l.chatId)
+            .map((l) => [l.chatId, (l.tags || []).filter((t) => t.toLowerCase() !== "lead")])
+        )
+      );
+      setQualifiedChatIds(
+        new Set(filterQualifiedLeads(leadsData).map((l) => l.chatId))
+      );
       
       setSelectedConversation(prev => {
         if (prev) {
@@ -106,12 +118,12 @@ export function Conversations() {
       setConversations(conversations.map(c => c.id === updatedConv.id ? updatedConv : c));
 
       if (!newValue) {
-        // If re-enabling, trigger bot response if last message was from user
+        // If re-enabling, trigger assistant response if last message was from user
         const lastMsg = updatedConv.history?.[updatedConv.history.length - 1];
         if (lastMsg?.role === "user") {
           try {
             await triggerAssistantResponse(updatedConv.id);
-            // Wait a bit for the bot to respond then reload
+            // Wait a bit for the assistant to respond then reload
             setTimeout(() => loadConversations().then(() => {
               getConversationById(updatedConv.id).then(c => {
                 if (c) setSelectedConversation(c);
@@ -123,7 +135,7 @@ export function Conversations() {
         }
       }
     } catch (error) {
-      console.error("Error toggling bot:", error);
+      console.error("Error toggling assistant:", error);
       toast.error("Error al cambiar el estado del asistente");
     }
   }
@@ -180,6 +192,11 @@ export function Conversations() {
     return Array.from(new Set(listings.map(l => l.listingCode).filter(Boolean))).sort();
   }, [listings]);
 
+  const getConversationListingIdentifier = (conv: Conversation) => {
+    const listing = conv.listingCode ? listingMap.get(conv.listingCode) : undefined;
+    return listing?.description || conv.listingCode || "—";
+  };
+
   const filteredConversations = conversations.filter((conv) => {
     const matchesSearch =
       (conv.phone || "").includes(search) ||
@@ -195,13 +212,12 @@ export function Conversations() {
       filterListing === "all" || 
       conv.listingCode === filterListing;
 
-    const isQualified = conv.qualified === true || (conv as any).qualificationStatus === true || qualifiedChatIds.has(conv.chatId);
-    const isRejected = conv.qualified === false || (conv as any).qualificationStatus === false;
+    const q = resolveConversationQualification(conv, { qualifiedChatIds });
 
-    const matchesQualified = 
+    const matchesQualified =
       filterQualified === "all" ||
-      (filterQualified === "qualified" && isQualified) ||
-      (filterQualified === "not_qualified" && isRejected);
+      (filterQualified === "qualified" && q === "qualified") ||
+      (filterQualified === "not_qualified" && q !== "qualified");
 
     const listing = conv.listingCode ? listingMap.get(conv.listingCode) : null;
     const matchesListingStatus = 
@@ -540,84 +556,98 @@ export function Conversations() {
               <div
                 key={conv.id}
                 className={cn(
-                  "p-4 border-b border-gray-100 hover:bg-gray-50 transition-colors",
+                  "px-3 py-2.5 border-b border-gray-100 hover:bg-gray-50 transition-colors",
                   selectedConversation?.id === conv.id && "bg-gray-100"
                 )}
               >
-                <div className="flex items-start justify-between mb-2">
+                <div className="flex items-start justify-between gap-2">
                   <div
                     className="flex-1 min-w-0 cursor-pointer"
                     onClick={() => setSelectedConversation(conv)}
                   >
-                    <div className="flex items-center gap-2 mb-1">
-                      <h3 className="font-semibold text-gray-900 text-sm truncate">
-                        {conv.name || (conv.phone ? formatPhoneWhatsApp(conv.phone) : conv.id)}
-                      </h3>
-                      {(conv.qualified !== null && conv.qualified !== undefined || (conv as any).qualificationStatus !== undefined || qualifiedChatIds.has(conv.chatId)) && (
-                        <span
-                          className={cn(
-                            "px-1.5 py-0.5 text-xs font-medium rounded",
-                            (conv.qualified === true || (conv as any).qualificationStatus === true || qualifiedChatIds.has(conv.chatId))
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-rose-100 text-rose-700"
-                          )}
-                        >
-                          {(conv.qualified === true || (conv as any).qualificationStatus === true || qualifiedChatIds.has(conv.chatId)) ? "✓" : "✗"}
+                    <div className="flex items-center justify-between gap-2 mb-0.5">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <h3 className="font-semibold text-gray-900 text-sm truncate">
+                          {conv.name || (conv.phone ? formatPhoneWhatsApp(conv.phone) : conv.id)}
+                        </h3>
+                        {(() => {
+                          const q = resolveConversationQualification(conv, { qualifiedChatIds });
+                          if (q === "pending") return null;
+                          return (
+                            <span
+                              className={cn(
+                                "px-1 py-0.5 text-[10px] font-medium rounded",
+                                q === "qualified" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                              )}
+                            >
+                              {q === "qualified" ? "✓" : "✗"}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      {conv.phone && conv.name && (
+                        <span className="text-xs text-gray-500 whitespace-nowrap">
+                          {formatPhoneWhatsApp(conv.phone)}
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500 truncate">
-                      {conv.listingCode}
-                    </p>
+                    <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                      <span className="truncate max-w-[210px]">
+                        {getConversationListingIdentifier(conv)}
+                      </span>
+                      <span className="text-gray-300">•</span>
+                      <span className={cn("whitespace-nowrap inline-flex items-center gap-1", conv.messageCount ? metricTheme.messages.listValue : metricTheme.messages.listMuted)}>
+                        <MessageSquare size={11} className={cn(conv.messageCount ? metricTheme.messages.listIcon : metricTheme.messages.listMuted)} />
+                        {conv.messageCount || 0}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 ml-3">
+                  <div className="flex items-center gap-1.5 ml-2">
                     <div className="flex flex-col items-end">
                       <span className="text-xs text-gray-500 whitespace-nowrap">
                         {conv.lastMessage ? formatDate(conv.lastMessage.toDate()) : "—"}
                       </span>
                       {conv.isFinished && (
-                        <span className="text-xs text-gray-400 mt-1">Finalizada</span>
+                        <span className="text-[10px] text-gray-400 whitespace-nowrap">Finalizada</span>
                       )}
                     </div>
                     <button
                       onClick={(e) => handleDeleteConversation(e, conv)}
-                      className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1.5 rounded-btn transition-colors"
+                      className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1 rounded-btn transition-colors"
                       title="Eliminar conversación"
                     >
-                      <Trash2 size={14} />
+                      <Trash2 size={13} />
                     </button>
                   </div>
                 </div>
-                <div
-                  className="flex flex-wrap gap-1 mt-2"
-                  onClick={() => setSelectedConversation(conv)}
-                >
-                  {conv.tags?.map(tag => (
+                <div className="flex items-center gap-1 mt-1 overflow-hidden" onClick={() => setSelectedConversation(conv)}>
+                  {(leadTagsByChatId.get(conv.chatId) || (conv.tags || []).filter((t) => t.toLowerCase() !== "lead")).slice(0, 3).map(tag => (
                     <span
                       key={tag}
                       className={cn(
-                        "px-1.5 py-0.5 text-[10px] font-medium rounded border",
-                        tag === 'lead' ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
-                          tag === 'non-lead' ? "bg-slate-50 text-slate-600 border-slate-100" :
-                            "bg-amber-50 text-amber-700 border-amber-100"
+                        tag === 'non-lead' ? "px-1.5 py-0.5 text-[10px] font-medium rounded border bg-slate-50 text-slate-600 border-slate-100" :
+                            customLeadTagSm
                       )}
                     >
                       {tag}
                     </span>
                   ))}
-                </div>
-                <div
-                  className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer mt-2"
-                  onClick={() => setSelectedConversation(conv)}
-                >
-                  <MessageSquare size={12} />
-                  <span>{conv.messageCount || 0} mensajes</span>
-                  {conv.botDisabled && (
-                    <span className="flex items-center gap-1 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">
-                      <BotOff size={10} /> Asistente Off
+                  {(leadTagsByChatId.get(conv.chatId) || (conv.tags || []).filter((t) => t.toLowerCase() !== "lead")).length > 3 && (
+                    <span className="px-1.5 py-0.5 text-[10px] font-medium rounded border bg-gray-50 text-gray-600 border-gray-200">
+                      +{(leadTagsByChatId.get(conv.chatId) || (conv.tags || []).filter((t) => t.toLowerCase() !== "lead")).length - 3}
                     </span>
                   )}
                 </div>
+                {conv.botDisabled && (
+                  <div
+                    className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer mt-1"
+                    onClick={() => setSelectedConversation(conv)}
+                  >
+                    <span className="flex items-center gap-1 text-[10px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded">
+                      <BotOff size={10} /> Asistente Off
+                    </span>
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -640,10 +670,17 @@ export function Conversations() {
                 <h2 className="font-semibold text-gray-900 truncate text-sm sm:text-base">
                   {selectedConversation.name || (selectedConversation.phone ? formatPhoneWhatsApp(selectedConversation.phone) : selectedConversation.id)}
                 </h2>
+                {selectedConversation.phone && selectedConversation.name && (
+                  <p className="text-xs text-gray-500 truncate">
+                    {formatPhoneWhatsApp(selectedConversation.phone)}
+                  </p>
+                )}
                 <div className="flex items-center gap-2 text-xs text-gray-500">
                   <span className="truncate">{selectedConversation.listingCode}</span>
                   <span>•</span>
-                  <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} mensajes</span>
+                  <span className={cn("whitespace-nowrap", selectedConversation.messageCount ? metricTheme.messages.listValue : metricTheme.messages.listMuted)}>
+                    {selectedConversation.messageCount || 0} mensajes
+                  </span>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -682,22 +719,23 @@ export function Conversations() {
             {/* Badges - on separate line on mobile */}
             <div className="flex items-center gap-2 mt-2 ml-0 md:ml-0">
               {selectedConversation.isFinished && (
-                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-slate-200 text-slate-700">
+                <span className={conversationHeaderPills.finalized}>
                   Finalizada
                 </span>
               )}
-              {(selectedConversation.qualified !== null && selectedConversation.qualified !== undefined || (selectedConversation as any).qualificationStatus !== undefined || qualifiedChatIds.has(selectedConversation.chatId)) && (
-                <span
-                  className={cn(
-                    "px-2 py-0.5 text-xs font-medium rounded-full",
-                    (selectedConversation.qualified === true || (selectedConversation as any).qualificationStatus === true || qualifiedChatIds.has(selectedConversation.chatId))
-                      ? "bg-emerald-100 text-emerald-700"
-                      : "bg-rose-100 text-rose-700"
-                  )}
-                >
-                  {(selectedConversation.qualified === true || (selectedConversation as any).qualificationStatus === true || qualifiedChatIds.has(selectedConversation.chatId)) ? "Cualificado" : "No interesado"}
-                </span>
-              )}
+              {(() => {
+                const q = resolveConversationQualification(selectedConversation, { qualifiedChatIds });
+                if (q === "pending") return null;
+                return (
+                  <span
+                    className={cn(
+                      q === "qualified" ? conversationHeaderPills.qualified : conversationHeaderPills.notInterested
+                    )}
+                  >
+                    {q === "qualified" ? "Cualificado" : "No interesado"}
+                  </span>
+                );
+              })()}
             </div>
           </div>
 
@@ -747,7 +785,7 @@ export function Conversations() {
             </div>
           </div>
 
-          {/* Input de mensaje manual (solo cuando el bot está desactivado) */}
+          {/* Input de mensaje manual (solo cuando el asistente está desactivado) */}
           {
             selectedConversation.botDisabled && !selectedConversation.isFinished && (
               <div className="p-3 bg-white border-t border-gray-200">
@@ -760,17 +798,15 @@ export function Conversations() {
                     className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-btn focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
                     disabled={sending}
                   />
-                  <button
+                  <Button
                     type="submit"
                     disabled={!newMessage.trim() || sending}
-                    className="p-2 bg-primary-600 text-white rounded-btn hover:bg-primary-700 disabled:opacity-50 transition-colors"
+                    loading={sending}
+                    size="icon"
+                    className="shrink-0"
                   >
-                    {sending ? (
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <Send size={18} />
-                    )}
-                  </button>
+                    <Send size={18} />
+                  </Button>
                 </form>
                 <p className="text-[10px] text-gray-400 mt-2 text-center italic">
                   El asistente está desactivado. Tus mensajes se enviarán directamente al cliente.

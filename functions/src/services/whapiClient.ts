@@ -1,8 +1,8 @@
 import axios from "axios";
 import { defineString } from "firebase-functions/params";
+import { WHAPI_TOKEN } from "../secrets";
 
 const WHAPI_API_URL = defineString("WHAPI_API_URL");
-const WHAPI_TOKEN = defineString("WHAPI_TOKEN");
 
 type SendTextParams = {
   to: string;

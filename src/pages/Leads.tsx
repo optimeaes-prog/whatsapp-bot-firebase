@@ -1,19 +1,50 @@
 import { useEffect, useState, Fragment, useMemo, useRef, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Users, Phone, Search, User, ArrowUpDown, ArrowUp, ArrowDown, MessageSquare, X, Trash2, Download, Settings, Eye, EyeOff, CheckSquare, Square, XCircle, ExternalLink, ChevronDown, ChevronLeft, ChevronRight, Calendar, FileText, Filter } from "lucide-react";
-import type { Lead, Conversation } from "../types";
-import { getLeads, deleteLead } from "../services/leads";
+import { Users, Phone, Search, User, ArrowUpDown, ArrowUp, ArrowDown, MessageSquare, X, Trash2, Download, Settings, Eye, EyeOff, CheckSquare, Square, XCircle, ExternalLink, ChevronDown, Calendar, FileText, Filter, Tags, RefreshCw, Hash } from "lucide-react";
+import type { Lead, Conversation, QualificationStatus } from "../types";
+import { getLeads, deleteLead, deleteLeads, bulkUpdateLeadsQualificationStatus, bulkAddLeadTags, bulkRemoveLeadTag, bulkUpdateLeadsListingCode } from "../services/leads";
 import { getListings } from "../services/listings";
 import { getConversationByChatId, sendMassMessageToWhatsApp } from "../services/conversations";
 
 import { formatDate, formatPhone, cn, formatMessageTime } from "../lib/utils";
+import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
+import { resolveConversationQualification } from "../lib/conversationQualification";
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
 import { LeadEditModal } from "../components/LeadEditModal";
 import { Send } from "lucide-react";
-import { PageHeader, PageLoading, FilterCard } from "../components/ui";
+import { Button, PageHeader, PageLoading, FilterCard, SegmentedControl } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
+
+/** `?status=non_qualified_all` (p. ej. desde Anuncios) = todos salvo cualificados */
+const NON_QUALIFIED_ALL_STATUSES = ["not_qualified", "rejected", "no_response"] as const;
+
+function filterStatusFromUrlParam(status: string | null): string[] {
+  if (!status) return [];
+  if (status === "non_qualified_all") return [...NON_QUALIFIED_ALL_STATUSES];
+  return [status];
+}
+
+const COMPACT_STATUS_VISIBLE_COLUMNS: Record<string, boolean> = {
+  name: true,
+  phone: true,
+  listingCode: false,
+  listingDescription: true,
+  operationType: false,
+  qualificationStatus: true,
+  qualifiedAt: true,
+  lastMessageDate: false,
+  messageCount: true,
+  pets: true,
+  income: true,
+  paymentMethod: false,
+  conversationSummary: true,
+  notes: false,
+  chat: true,
+  tags: true,
+  actions: false,
+};
 
 type SortField = "name" | "phone" | "listingCode" | "operationType" | "qualificationStatus" | "lastMessageDate" | "messageCount" | "income";
 type SortDirection = "asc" | "desc";
@@ -39,7 +70,9 @@ export function Leads() {
   const adFromUrl = searchParams.get("ad");
   const statusFromUrl = searchParams.get("status");
   const [filterTipo, setFilterTipo] = useState<"all" | "Venta" | "Alquiler">("all");
-  const [filterStatus, setFilterStatus] = useState<string[]>(statusFromUrl ? [statusFromUrl] : []);
+  const [filterStatus, setFilterStatus] = useState<string[]>(() =>
+    filterStatusFromUrlParam(statusFromUrl)
+  );
   const [filterAnuncio, setFilterAnuncio] = useState<string[]>(adFromUrl ? [adFromUrl] : []);
   const [filterPets, setFilterPets] = useState<"all" | "yes" | "no">("all");
   const [filterPayment, setFilterPayment] = useState<"all" | "Contado" | "Hipoteca">("all");
@@ -81,7 +114,7 @@ export function Leads() {
       notes: true,
       chat: true,
       tags: true,
-      actions: true
+      actions: false
     };
   });
 
@@ -94,7 +127,11 @@ export function Leads() {
       setFilterAnuncio([adFromUrl]);
     }
     if (statusFromUrl) {
-      setFilterStatus([statusFromUrl]);
+      const next = filterStatusFromUrlParam(statusFromUrl);
+      setFilterStatus(next);
+      if (next.length > 0) {
+        setVisibleColumns(COMPACT_STATUS_VISIBLE_COLUMNS);
+      }
     }
   }, [adFromUrl, statusFromUrl]);
   const [sortField, setSortField] = useState<SortField>("lastMessageDate");
@@ -107,6 +144,24 @@ export function Leads() {
   const [isMassMessageModalOpen, setIsMassMessageModalOpen] = useState(false);
   const [massMessageText, setMassMessageText] = useState("");
   const [sendingMassMessage, setSendingMassMessage] = useState(false);
+
+  const [isBulkActionsOpen, setIsBulkActionsOpen] = useState(false);
+  const [activeBulkModal, setActiveBulkModal] = useState<null | "delete" | "status" | "addTags" | "removeTag" | "listing">(null);
+
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeleteAccepted, setBulkDeleteAccepted] = useState(false);
+
+  const [bulkStatus, setBulkStatus] = useState<QualificationStatus>("not_qualified");
+  const [bulkUpdatingStatus, setBulkUpdatingStatus] = useState(false);
+
+  const [bulkTagsInput, setBulkTagsInput] = useState("");
+  const [bulkUpdatingTags, setBulkUpdatingTags] = useState(false);
+
+  const [bulkRemoveTagInput, setBulkRemoveTagInput] = useState("");
+  const [bulkRemovingTag, setBulkRemovingTag] = useState(false);
+
+  const [bulkListingCode, setBulkListingCode] = useState("");
+  const [bulkUpdatingListing, setBulkUpdatingListing] = useState(false);
 
   const [isMobileView, setIsMobileView] = useState(false);
 
@@ -282,6 +337,189 @@ export function Leads() {
     }
   }
 
+  const selectedLeadList = useMemo(() => leads.filter((l) => selectedLeadIds.has(l.id)), [leads, selectedLeadIds]);
+
+  function closeBulkModal() {
+    setActiveBulkModal(null);
+    setIsBulkActionsOpen(false);
+  }
+
+  function downloadSelectedLeadsCsv() {
+    const rows = selectedLeadList;
+    const headers = [
+      "id",
+      "name",
+      "phone",
+      "listingCode",
+      "operationType",
+      "qualificationStatus",
+      "tags",
+      "notes",
+      "createdAt",
+      "lastMessageDate",
+      "chatId",
+    ];
+
+    const escape = (v: unknown) => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return `"${s.replace(/"/g, '""')}"`;
+    };
+
+    const lines = [
+      headers.join(","),
+      ...rows.map((l) => {
+        const createdAt = (l as any).createdAt?.toDate ? (l as any).createdAt.toDate().toISOString() : (l as any).createdAt ? String((l as any).createdAt) : "";
+        const lastMessageDate = (l as any).lastMessageDate?.toDate ? (l as any).lastMessageDate.toDate().toISOString() : (l as any).lastMessageDate ? String((l as any).lastMessageDate) : "";
+        return [
+          escape(l.id),
+          escape(l.name || ""),
+          escape(l.phone || ""),
+          escape(l.listingCode || ""),
+          escape(l.operationType || ""),
+          escape(l.qualificationStatus || ""),
+          escape((l.tags || []).join("|")),
+          escape((l as any).notes || ""),
+          escape(createdAt),
+          escape(lastMessageDate),
+          escape(l.chatId || ""),
+        ].join(",");
+      }),
+    ].join("\n");
+
+    const blob = new Blob([lines], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `leads_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleBulkDelete() {
+    if (!bulkDeleteAccepted) {
+      toast.error("Debes aceptar la advertencia para continuar");
+      return;
+    }
+
+    const ids = Array.from(selectedLeadIds);
+    if (ids.length === 0) return;
+
+    setBulkDeleting(true);
+    try {
+      await deleteLeads(ids, 4);
+      setLeads((prev) => prev.filter((l) => !selectedLeadIds.has(l.id)));
+      setSelectedLeadIds(new Set());
+      toast.success(`Eliminados ${ids.length} leads (y sus conversaciones)`);
+      closeBulkModal();
+      setBulkDeleteAccepted(false);
+    } catch (err) {
+      console.error("Error bulk deleting leads:", err);
+      toast.error("Error al eliminar leads seleccionados");
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
+  async function handleBulkUpdateStatus() {
+    const ids = Array.from(selectedLeadIds);
+    if (ids.length === 0) return;
+
+    setBulkUpdatingStatus(true);
+    try {
+      await bulkUpdateLeadsQualificationStatus(ids, bulkStatus as any, 4);
+      toast.success(`Actualizado estado en ${ids.length} leads`);
+      closeBulkModal();
+      setSelectedLeadIds(new Set());
+      await loadLeads();
+    } catch (err) {
+      console.error("Error bulk updating status:", err);
+      toast.error("Error al actualizar el estado");
+    } finally {
+      setBulkUpdatingStatus(false);
+    }
+  }
+
+  async function handleBulkAddTags() {
+    const ids = Array.from(selectedLeadIds);
+    if (ids.length === 0) return;
+    const tags = bulkTagsInput
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .filter((t) => t.toLowerCase() !== "lead");
+    if (tags.length === 0) {
+      toast.error("Introduce al menos un tag valido (el tag 'lead' no se usa)");
+      return;
+    }
+
+    setBulkUpdatingTags(true);
+    try {
+      await bulkAddLeadTags(ids, tags, 4);
+      toast.success(`Añadidos tags en ${ids.length} leads`);
+      closeBulkModal();
+      setBulkTagsInput("");
+      setSelectedLeadIds(new Set());
+      await loadLeads();
+    } catch (err) {
+      console.error("Error bulk adding tags:", err);
+      toast.error("Error al añadir tags");
+    } finally {
+      setBulkUpdatingTags(false);
+    }
+  }
+
+  async function handleBulkRemoveTag() {
+    const ids = Array.from(selectedLeadIds);
+    if (ids.length === 0) return;
+    const tag = bulkRemoveTagInput.trim();
+    if (!tag) {
+      toast.error("Introduce el tag a quitar");
+      return;
+    }
+
+    setBulkRemovingTag(true);
+    try {
+      await bulkRemoveLeadTag(ids, tag, 4);
+      toast.success(`Quitado tag en ${ids.length} leads`);
+      closeBulkModal();
+      setBulkRemoveTagInput("");
+      setSelectedLeadIds(new Set());
+      await loadLeads();
+    } catch (err) {
+      console.error("Error bulk removing tag:", err);
+      toast.error("Error al quitar tag");
+    } finally {
+      setBulkRemovingTag(false);
+    }
+  }
+
+  async function handleBulkUpdateListingCode() {
+    const ids = Array.from(selectedLeadIds);
+    if (ids.length === 0) return;
+    const next = bulkListingCode.trim();
+    if (!next) {
+      toast.error("Introduce un código de anuncio");
+      return;
+    }
+
+    setBulkUpdatingListing(true);
+    try {
+      await bulkUpdateLeadsListingCode(ids, next, 4);
+      toast.success(`Actualizado anuncio en ${ids.length} leads`);
+      closeBulkModal();
+      setBulkListingCode("");
+      setSelectedLeadIds(new Set());
+      await loadLeads();
+    } catch (err) {
+      console.error("Error bulk updating listing:", err);
+      toast.error("Error al cambiar el anuncio");
+    } finally {
+      setBulkUpdatingListing(false);
+    }
+  }
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       // Toggle direction if same field
@@ -304,8 +542,7 @@ export function Leads() {
     );
   };
 
-  const applyViewShortcut = (status: string | "all") => {
-    // Reset basic filters
+  const resetToAllLeadsView = useCallback(() => {
     setSearch("");
     setFilterTipo("all");
     setFilterAnuncio([]);
@@ -316,35 +553,24 @@ export function Leads() {
     setFilterTags("");
     setSearchParams({});
     setSelectedLeadIds(new Set());
+    setFilterStatus([]);
+    setVisibleColumns((prev) =>
+      Object.keys(prev).reduce<Record<string, boolean>>((acc, key) => ({ ...acc, [key]: true }), {})
+    );
+  }, [setSearchParams]);
 
-    if (status === "all") {
-      setFilterStatus([]);
-      // SHOW ALL COLUMNS for "Todos"
-      setVisibleColumns(Object.keys(visibleColumns).reduce((acc, key) => ({ ...acc, [key]: true }), {}));
-    } else {
-      setFilterStatus([status]);
-      // CONFIGURE SPECIFIC COLUMNS for status views (hiding non-requested ones)
-      setVisibleColumns({
-        name: true,
-        phone: true,
-        listingCode: false, // Hidden
-        listingDescription: true,
-        operationType: false, // Hidden
-        qualificationStatus: true,
-        qualifiedAt: true,
-        lastMessageDate: false, // Hidden
-        messageCount: true,
-        pets: true,
-        income: true,
-        paymentMethod: false, // Hidden
-        conversationSummary: true,
-        notes: false, // Hidden
-        chat: true,
-        tags: true,
-        actions: true
-      });
-    }
-  };
+  /** Varios estados a la vez (OR). Mismo estado otra vez = quita ese filtro. */
+  const toggleQualificationFilter = useCallback((status: string) => {
+    setFilterStatus((prev) => {
+      const next = prev.includes(status) ? prev.filter((s) => s !== status) : [...prev, status];
+      setVisibleColumns((curr) =>
+        next.length > 0
+          ? COMPACT_STATUS_VISIBLE_COLUMNS
+          : Object.keys(curr).reduce<Record<string, boolean>>((acc, key) => ({ ...acc, [key]: true }), {})
+      );
+      return next;
+    });
+  }, []);
 
   const filteredAndSortedLeads = useMemo(() => {
     return leads
@@ -417,6 +643,16 @@ export function Leads() {
       });
   }, [leads, debouncedSearch, filterTipo, filterStatus, filterAnuncio, filterPets, filterPayment, filterMinIncome, filterMaxIncome, filterTags, sortField, sortDirection]);
 
+  /** Última vez que la IA analizó alguna conversación (mascotas, ingresos, forma de pago, resumen…), según `lastAnalyzedAt` en Firestore. */
+  const latestConversationAnalysisAt = useMemo(() => {
+    let maxMs = 0;
+    for (const lead of leads) {
+      const ms = lead.lastAnalyzedAt?.toMillis?.() ?? 0;
+      if (ms > maxMs) maxMs = ms;
+    }
+    return maxMs > 0 ? new Date(maxMs) : null;
+  }, [leads]);
+
   useEffect(() => {
     const el = tableScrollRef.current;
     if (!el) return;
@@ -478,64 +714,66 @@ export function Leads() {
         <PageHeader
           className="flex-col md:flex-row md:items-end"
           title="Leads"
-          subtitle={`Mostrando ${filteredAndSortedLeads.length} de ${leads.length} leads`}
+          subtitle={[
+            `Mostrando ${filteredAndSortedLeads.length} de ${leads.length} leads`,
+            latestConversationAnalysisAt
+              ? `Último análisis: ${formatDate(latestConversationAnalysisAt)}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
           actions={
-            <div className="flex bg-slate-100 p-1 rounded-btn border border-slate-200 shadow-inner w-fit max-w-full overflow-x-auto no-scrollbar">
-                  <button
-                    onClick={() => applyViewShortcut("all")}
-                    className={cn(
-                      "px-5 py-2.5 rounded-btn text-sm font-bold transition-all flex items-center gap-2.5 whitespace-nowrap",
-                      filterStatus.length === 0 
-                        ? "bg-slate-800 text-white shadow-md ring-1 ring-black/5" 
-                        : "text-slate-400 hover:text-slate-600 hover:bg-white/40"
-                    )}
-                  >
-                    <span>Todos</span>
-                  </button>
-                  <button
-                    onClick={() => applyViewShortcut("not_qualified")}
-                    className={cn(
-                      "px-5 py-2.5 rounded-btn text-sm font-bold transition-all flex items-center gap-2.5 whitespace-nowrap",
-                      filterStatus.length === 1 && filterStatus[0] === "not_qualified" 
-                        ? "bg-slate-100 text-slate-700 shadow-md ring-1 ring-slate-200/50" 
-                        : "text-slate-400 hover:text-slate-600 hover:bg-white/40"
-                    )}
-                  >
-                    No Cualificados
-                  </button>
-                  <button
-                    onClick={() => applyViewShortcut("no_response")}
-                    className={cn(
-                      "px-5 py-2.5 rounded-btn text-sm font-bold transition-all flex items-center gap-2.5 whitespace-nowrap",
-                      filterStatus.length === 1 && filterStatus[0] === "no_response" 
-                        ? "bg-sky-100 text-sky-800 shadow-md ring-1 ring-sky-200/50" 
-                        : "text-sky-700/60 hover:text-sky-800 hover:bg-sky-100/50"
-                    )}
-                  >
-                    Sin respuesta
-                  </button>
-                  <button
-                    onClick={() => applyViewShortcut("qualified")}
-                    className={cn(
-                      "px-5 py-2.5 rounded-btn text-sm font-bold transition-all flex items-center gap-2.5 whitespace-nowrap",
-                      filterStatus.length === 1 && filterStatus[0] === "qualified" 
-                        ? "bg-emerald-100 text-emerald-700 shadow-md ring-1 ring-emerald-200/50" 
-                        : "text-emerald-600/60 hover:text-emerald-600 hover:bg-emerald-100/40"
-                    )}
-                  >
-                    Cualificados
-                  </button>
-                  <button
-                    onClick={() => applyViewShortcut("rejected")}
-                    className={cn(
-                      "px-5 py-2.5 rounded-btn text-sm font-bold transition-all flex items-center gap-2.5 whitespace-nowrap",
-                      filterStatus.length === 1 && filterStatus[0] === "rejected" 
-                        ? "bg-rose-100 text-rose-700 shadow-md ring-1 ring-rose-200/50" 
-                        : "text-rose-600/60 hover:text-rose-600 hover:bg-rose-100/40"
-                    )}
-                  >
-                    Rechazados
-                  </button>
+            <div className="max-w-full overflow-x-auto no-scrollbar">
+              <SegmentedControl
+                ariaLabel="Filtro de cualificación"
+                colorScheme="amber"
+                mode="multiple"
+                values={
+                  filterStatus.length === 0
+                    ? new Set(["all"])
+                    : new Set(filterStatus as Array<"not_qualified" | "no_response" | "qualified" | "rejected">)
+                }
+                onToggle={(v) => {
+                  if (v === "all") {
+                    resetToAllLeadsView();
+                    return;
+                  }
+                  toggleQualificationFilter(v);
+                }}
+                options={[
+                  {
+                    value: "all",
+                    label: "Todos",
+                    selectedClassName: "bg-primary-500 text-gray-900",
+                    unselectedClassName: "text-gray-600 hover:bg-gray-50",
+                  },
+                  {
+                    value: "not_qualified",
+                    label: <span className="normal-case">No cualificados</span>,
+                    selectedClassName: "bg-slate-200 text-slate-900",
+                    unselectedClassName: "text-gray-600 hover:bg-gray-50",
+                  },
+                  {
+                    value: "no_response",
+                    label: "Sin respuesta",
+                    selectedClassName: "bg-sky-200 text-sky-900",
+                    unselectedClassName: "text-gray-600 hover:bg-gray-50",
+                  },
+                  {
+                    value: "qualified",
+                    label: "Cualificados",
+                    selectedClassName: "bg-emerald-200 text-emerald-900",
+                    unselectedClassName: "text-gray-600 hover:bg-gray-50",
+                  },
+                  {
+                    value: "rejected",
+                    label: "Rechazados",
+                    selectedClassName: "bg-rose-200 text-rose-900",
+                    unselectedClassName: "text-gray-600 hover:bg-gray-50",
+                  },
+                ]}
+                className="w-fit"
+              />
             </div>
           }
         />
@@ -544,28 +782,103 @@ export function Leads() {
       {/* Floating Action Bar for Mass Messaging */}
       {selectedLeadIds.size > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[90%] max-w-md animate-in fade-in slide-in-from-bottom-4 duration-300">
-          <div className="bg-white rounded-2xl shadow-2xl border border-primary-100 p-4 flex items-center justify-between gap-4">
+          <div className="bg-white rounded-xl shadow-md border border-gray-200 p-3 sm:p-4 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center text-primary-600">
+              <div className="w-10 h-10 bg-primary-50 border border-primary-100 rounded-lg flex items-center justify-center text-primary-700">
                 <Users size={20} />
               </div>
               <div>
-                <p className="text-sm font-bold text-gray-900">{selectedLeadIds.size} seleccionados</p>
+                <p className="text-sm font-bold text-gray-900 leading-tight">{selectedLeadIds.size} seleccionados</p>
                 <button
                   onClick={() => setSelectedLeadIds(new Set())}
-                  className="text-[11px] text-primary-600 font-bold hover:underline"
+                  className="text-[11px] text-gray-600 font-semibold hover:text-gray-800 hover:underline"
                 >
                   Deseleccionar todos
                 </button>
               </div>
             </div>
-            <button
-              onClick={() => setIsMassMessageModalOpen(true)}
-              className="px-5 py-2.5 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 transition-all shadow-lg shadow-primary-500/20 active:scale-95 flex items-center gap-2"
-            >
-              <Send size={16} />
-              <span>Enviar Mensaje</span>
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setIsBulkActionsOpen((v) => !v)}
+                className="px-4 py-2 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 transition-all shadow-sm active:scale-95 flex items-center gap-2"
+              >
+                <ChevronDown size={16} className={cn("transition-transform", isBulkActionsOpen && "rotate-180")} />
+                <span>Acciones</span>
+              </button>
+
+              {isBulkActionsOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsBulkActionsOpen(false)} />
+                  <div className="absolute right-0 bottom-12 z-50 w-56 bg-white rounded-xl shadow-xl border border-gray-200 p-1.5">
+                    <button
+                      onClick={() => {
+                        setIsBulkActionsOpen(false);
+                        setIsMassMessageModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                    >
+                      <Send size={16} className="text-primary-600" />
+                      Enviar mensaje
+                    </button>
+                    <button
+                      onClick={() => {
+                        setBulkStatus("not_qualified");
+                        setActiveBulkModal("status");
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                    >
+                      <RefreshCw size={16} className="text-gray-600" />
+                      Cambiar estado
+                    </button>
+                    <button
+                      onClick={() => setActiveBulkModal("addTags")}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                    >
+                      <Tags size={16} className="text-gray-600" />
+                      Añadir tags
+                    </button>
+                    <button
+                      onClick={() => setActiveBulkModal("removeTag")}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                    >
+                      <Tags size={16} className="text-gray-600" />
+                      Quitar tag
+                    </button>
+                    <button
+                      onClick={() => setActiveBulkModal("listing")}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                    >
+                      <Hash size={16} className="text-gray-600" />
+                      Cambiar anuncio
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsBulkActionsOpen(false);
+                        try {
+                          downloadSelectedLeadsCsv();
+                          toast.success("CSV descargado");
+                        } catch (err) {
+                          console.error("Error exporting CSV:", err);
+                          toast.error("Error al exportar CSV");
+                        }
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                    >
+                      <Download size={16} className="text-gray-600" />
+                      Exportar CSV
+                    </button>
+                    <div className="h-px bg-gray-100 my-1" />
+                    <button
+                      onClick={() => setActiveBulkModal("delete")}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50 rounded-btn transition-colors"
+                    >
+                      <Trash2 size={16} className="text-rose-600" />
+                      Borrar seleccionados
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -874,7 +1187,7 @@ export function Leads() {
                     <span className="text-xs font-semibold text-gray-600 shrink-0">Columnas:</span>
                   </div>
                   <div className="flex items-center gap-1 justify-end flex-1">
-                    <span className="bg-slate-100 text-slate-500 text-[10px] px-1.5 py-0.5 rounded-md font-black shrink-0">
+                    <span className="bg-primary-100 text-primary-700 text-xs font-bold px-2 py-1 rounded-full shrink-0">
                       {Object.values(visibleColumns).filter(Boolean).length}/{Object.keys(visibleColumns).length}
                     </span>
                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-2 shrink-0", isColumnDropdownOpen && "rotate-180")} />
@@ -889,7 +1202,7 @@ export function Leads() {
                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Mostrar/Ocultar</span>
                       <button 
                         onClick={() => {
-                          const allVisible = Object.keys(visibleColumns).reduce((acc, key) => ({ ...acc, [key]: true }), {});
+                          const allVisible = Object.keys(visibleColumns).reduce((acc, key) => ({ ...acc, [key]: key === "actions" ? false : true }), {});
                           setVisibleColumns(allVisible);
                         }}
                         className="text-[10px] text-primary-600 font-bold hover:underline"
@@ -914,8 +1227,7 @@ export function Leads() {
                       { id: "conversationSummary", label: "Ver resumen" },
                       { id: "notes", label: "Notas" },
                       { id: "chat", label: "Chat" },
-                      { id: "tags", label: "Tags" },
-                      { id: "actions", label: "Acciones" }
+                      { id: "tags", label: "Tags" }
                     ].map((col) => (
                       <button
                         key={col.id}
@@ -1032,8 +1344,10 @@ export function Leads() {
 
                   <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
                     <div className="flex items-center gap-1">
-                      <MessageSquare size={12} className="text-primary-500" />
-                      <span>{lead.messageCount || 0} mensajes</span>
+                      <MessageSquare size={12} className={metricTheme.messages.listIconCard} />
+                      <span className={cn(!lead.messageCount && metricTheme.messages.listMuted)}>
+                        {lead.messageCount || 0} mensajes
+                      </span>
                     </div>
                     <span>
                       {lead.lastMessageDate ? formatDate(lead.lastMessageDate.toDate()) : "—"}
@@ -1044,34 +1358,39 @@ export function Leads() {
             </div>
           ) : (
             <div className="hidden md:flex md:flex-col md:flex-1 md:min-h-0 card overflow-hidden p-0 min-h-[200px]">
-              {hScroll.canScroll && (
-                <div
-                  className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 border-b border-gray-100 bg-gray-50/95 text-[11px] sm:text-xs text-gray-600"
-                  role="status"
-                >
-                  <ChevronLeft size={14} className="text-primary-500/70 shrink-0 motion-safe:animate-pulse" aria-hidden />
-                  <span className="font-medium text-center leading-snug">
-                    Desplázate horizontalmente para ver todas las columnas
-                  </span>
-                  <ChevronRight size={14} className="text-primary-500/70 shrink-0 motion-safe:animate-pulse" aria-hidden />
-                </div>
-              )}
-              <div className="relative flex flex-1 min-h-0 min-w-0 flex-col">
+              <div className="flex flex-1 min-h-0 min-w-0 flex-col">
                 <div
                   ref={tableScrollRef}
                   className="min-h-0 flex-1 overflow-auto overscroll-contain"
+                  style={{
+                    boxShadow:
+                      hScroll.canScroll
+                        ? [
+                            !hScroll.atStart ? "inset 14px 0 22px -10px rgba(15, 23, 42, 0.07)" : null,
+                            !hScroll.atEnd ? "inset -14px 0 22px -10px rgba(15, 23, 42, 0.07)" : null,
+                          ]
+                            .filter((s): s is string => Boolean(s))
+                            .join(", ") || undefined
+                        : undefined,
+                  }}
                 >
                 <table className="w-full text-sm border-collapse">
                   <thead className="[&_th]:sticky [&_th]:top-0 [&_th]:z-20 [&_th]:bg-gray-50 [&_th]:border-b [&_th]:border-gray-200">
                     <tr>
                       <th className="px-3 py-2 text-center w-8">
-                        <button onClick={toggleAllSelection} className="text-gray-400 hover:text-primary-600 transition-colors">
+                        <Button
+                          onClick={toggleAllSelection}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-gray-400 hover:text-primary-600 hover:bg-transparent"
+                          title="Seleccionar todos"
+                        >
                           {selectedLeadIds.size === filteredAndSortedLeads.length && filteredAndSortedLeads.length > 0 ? (
                             <CheckSquare size={16} className="text-primary-600" />
                           ) : (
                             <Square size={16} />
                           )}
-                        </button>
+                        </Button>
                       </th>
                       {visibleColumns.name && (
                         <th
@@ -1209,11 +1528,6 @@ export function Leads() {
                           Tags
                         </th>
                       )}
-                      {visibleColumns.actions && (
-                        <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
-                          Acciones
-                        </th>
-                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
@@ -1226,13 +1540,19 @@ export function Leads() {
                         )}
                       >
                         <td className="px-3 py-3 text-center">
-                          <button onClick={() => toggleLeadSelection(lead.id)} className="text-gray-400 hover:text-primary-600 transition-colors">
+                          <Button
+                            onClick={() => toggleLeadSelection(lead.id)}
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-gray-400 hover:text-primary-600 hover:bg-transparent"
+                            title="Seleccionar lead"
+                          >
                             {selectedLeadIds.has(lead.id) ? (
                               <CheckSquare size={16} className="text-primary-600" />
                             ) : (
                               <Square size={16} />
                             )}
-                          </button>
+                          </Button>
                         </td>
                         {visibleColumns.name && (
                           <td className="px-3 py-3 whitespace-nowrap cursor-pointer" onClick={() => openEditModal(lead)}>
@@ -1258,17 +1578,19 @@ export function Leads() {
                           <td className="px-3 py-3 whitespace-nowrap cursor-pointer" onClick={() => openEditModal(lead)}>
                             <div className="flex items-center gap-1 bg-gray-100 px-2 py-0.5 rounded text-[11px] font-bold text-gray-600 border border-gray-200 shadow-sm w-fit">
                               <span className="text-gray-400 font-medium">ID</span>
-                              <span>{lead.listingCode}</span>
-                              <a
-                                href={`https://www.idealista.com/inmueble/${lead.listingCode}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-gray-400 hover:text-primary-700 transition-colors ml-0.5"
-                                title="Ver en Idealista"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <ExternalLink size={10} />
-                              </a>
+                              <span>{lead.listingCode === "__pending__" ? "Pend." : lead.listingCode}</span>
+                              {lead.listingCode && lead.listingCode !== "__pending__" && (
+                                <a
+                                  href={`https://www.idealista.com/inmueble/${lead.listingCode}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-gray-400 hover:text-primary-700 transition-colors ml-0.5"
+                                  title="Ver en Idealista"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <ExternalLink size={10} />
+                                </a>
+                              )}
                             </div>
                           </td>
                         )}
@@ -1305,7 +1627,14 @@ export function Leads() {
                         )}
                         {visibleColumns.messageCount && (
                           <td className="px-3 py-3 whitespace-nowrap text-center cursor-pointer" onClick={() => openEditModal(lead)}>
-                            <span className="text-xs font-medium text-gray-900">{lead.messageCount || 0}</span>
+                            <span
+                              className={cn(
+                                "text-xs font-medium",
+                                lead.messageCount && lead.messageCount > 0 ? metricTheme.messages.listValue : metricTheme.messages.listMuted
+                              )}
+                            >
+                              {lead.messageCount || 0}
+                            </span>
                           </td>
                         )}
                         {visibleColumns.conversationSummary && (
@@ -1369,23 +1698,12 @@ export function Leads() {
                           <td className="px-3 py-3 whitespace-nowrap cursor-pointer" onClick={() => openEditModal(lead)}>
                             <div className="flex flex-wrap gap-1 max-w-[150px]">
                               {lead.tags?.filter((tag: string) => tag.toLowerCase() !== 'lead').map((tag: string) => (
-                                <span key={tag} className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-primary-50 text-primary-600 border border-primary-100">
+                                <span key={tag} className={customLeadTagSm}>
                                   {tag}
                                 </span>
                               ))}
                               {(!lead.tags || lead.tags.length <= 1) && <span className="text-gray-400 text-xs">—</span>}
                             </div>
-                          </td>
-                        )}
-                        {visibleColumns.actions && (
-                          <td className="px-3 py-3 whitespace-nowrap text-center">
-                            <button
-                              onClick={(e) => handleDeleteLead(e, lead)}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-btn transition-colors"
-                              title="Eliminar lead"
-                            >
-                              <Trash2 size={16} />
-                            </button>
                           </td>
                         )}
                       </tr>
@@ -1406,18 +1724,6 @@ export function Leads() {
                   </tbody>
                 </table>
                 </div>
-                {hScroll.canScroll && !hScroll.atStart && (
-                  <div
-                    className="pointer-events-none absolute inset-y-0 left-0 w-10 z-[15] bg-gradient-to-r from-white via-white/90 to-transparent"
-                    aria-hidden
-                  />
-                )}
-                {hScroll.canScroll && !hScroll.atEnd && (
-                  <div
-                    className="pointer-events-none absolute inset-y-0 right-0 w-10 z-[15] bg-gradient-to-l from-white via-white/90 to-transparent"
-                    aria-hidden
-                  />
-                )}
               </div>
             </div>
           )}
@@ -1444,7 +1750,9 @@ export function Leads() {
                   <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
                     <span className="truncate">{selectedConversation.listingCode}</span>
                     <span>•</span>
-                    <span className="whitespace-nowrap">{selectedConversation.messageCount || 0} mensajes</span>
+                    <span className={cn("whitespace-nowrap", selectedConversation.messageCount ? metricTheme.messages.listValue : metricTheme.messages.listMuted)}>
+                      {selectedConversation.messageCount || 0} mensajes
+                    </span>
                   </div>
                 </div>
                 <button
@@ -1465,22 +1773,25 @@ export function Leads() {
               {/* Badges on separate line */}
               <div className="flex items-center gap-2 mt-2">
                 {selectedConversation.isFinished && (
-                  <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-gray-200 text-gray-600">
+                  <span className={conversationHeaderPills.finalized}>
                     Finalizada
                   </span>
                 )}
-                {selectedConversation.qualified !== null && (
-                  <span
-                    className={cn(
-                      "px-2 py-0.5 text-xs font-medium rounded-full",
-                      selectedConversation.qualified
-                        ? "bg-green-100 text-green-700"
-                        : "bg-red-100 text-red-700"
-                    )}
-                  >
-                    {selectedConversation.qualified ? "Cualificado" : "No interesado"}
-                  </span>
-                )}
+                {(() => {
+                  const q = resolveConversationQualification(selectedConversation, {
+                    leadQualificationStatus: selectedLead?.qualificationStatus,
+                  });
+                  if (q === "pending") return null;
+                  return (
+                    <span
+                      className={cn(
+                        q === "qualified" ? conversationHeaderPills.qualified : conversationHeaderPills.notInterested
+                      )}
+                    >
+                      {q === "qualified" ? "Cualificado" : "No interesado"}
+                    </span>
+                  );
+                })()}
               </div>
             </div>
 
@@ -1635,6 +1946,323 @@ export function Leads() {
                   </>
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Borrado masivo */}
+      {activeBulkModal === "delete" && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-rose-50/60">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-rose-100 rounded-lg text-rose-700">
+                  <Trash2 size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900">Borrar en lote</h3>
+                  <p className="text-xs text-gray-600 font-medium">
+                    Se borrarán permanentemente {selectedLeadIds.size} leads y sus conversaciones asociadas
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setBulkDeleteAccepted(false);
+                  closeBulkModal();
+                }}
+                className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-btn transition-colors"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <div className="p-3 bg-rose-50 border border-rose-100 rounded-lg">
+                <p className="text-[11px] text-rose-800 font-semibold leading-relaxed">
+                  ⚠️ ADVERTENCIA: esta acción elimina permanentemente los leads seleccionados y las conversaciones asociadas. No se puede deshacer.
+                </p>
+              </div>
+              <label className="flex items-start gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={bulkDeleteAccepted}
+                  onChange={(e) => setBulkDeleteAccepted(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="font-semibold">
+                  Entiendo que esta acción es irreversible y borrará también las conversaciones asociadas.
+                </span>
+              </label>
+            </div>
+
+            <div className="p-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-2">
+              <button
+                onClick={() => {
+                  setBulkDeleteAccepted(false);
+                  closeBulkModal();
+                }}
+                className="flex-1 px-4 py-2.5 text-sm font-bold text-gray-600 hover:bg-gray-200 rounded-btn transition-colors"
+                disabled={bulkDeleting}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkDeleting || !bulkDeleteAccepted}
+                className="flex-[2] px-4 py-2.5 bg-rose-600 text-white rounded-btn text-sm font-bold hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-rose-500/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                {bulkDeleting ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                    <span>Borrando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={16} />
+                    <span>Borrar {selectedLeadIds.size} leads</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Cambiar estado */}
+      {activeBulkModal === "status" && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-primary-100 rounded-lg text-primary-700">
+                  <RefreshCw size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900">Cambiar estado</h3>
+                  <p className="text-xs text-gray-500 font-medium">Aplicar a {selectedLeadIds.size} leads</p>
+                </div>
+              </div>
+              <Button
+                onClick={closeBulkModal}
+                variant="ghost"
+                size="icon"
+                className="text-gray-400 hover:text-gray-600"
+                title="Cerrar"
+              >
+                <XCircle size={20} />
+              </Button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <label className="block text-sm font-semibold text-gray-700">Nuevo estado</label>
+              <select
+                value={bulkStatus}
+                onChange={(e) => setBulkStatus(e.target.value as QualificationStatus)}
+                className="w-full px-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all bg-white"
+              >
+                <option value="not_qualified">No cualificado</option>
+                <option value="no_response">Sin respuesta</option>
+                <option value="qualified">Cualificado</option>
+                <option value="rejected">Rechazado</option>
+              </select>
+              <p className="text-[11px] text-gray-500">
+                Esto también sincroniza la conversación asociada (campo “qualified”) para mantener coherencia en la app.
+              </p>
+            </div>
+
+            <div className="p-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-2">
+              <Button
+                onClick={closeBulkModal}
+                variant="secondary"
+                className="flex-1"
+                disabled={bulkUpdatingStatus}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleBulkUpdateStatus}
+                loading={bulkUpdatingStatus}
+                className="flex-[2]"
+              >
+                <RefreshCw size={16} />
+                <span>Aplicar a {selectedLeadIds.size} leads</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Añadir tags */}
+      {activeBulkModal === "addTags" && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-primary-100 rounded-lg text-primary-700">
+                  <Tags size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900">Añadir tags</h3>
+                  <p className="text-xs text-gray-500 font-medium">Aplicar a {selectedLeadIds.size} leads</p>
+                </div>
+              </div>
+              <Button
+                onClick={closeBulkModal}
+                variant="ghost"
+                size="icon"
+                className="text-gray-400 hover:text-gray-600"
+                title="Cerrar"
+              >
+                <XCircle size={20} />
+              </Button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <label className="block text-sm font-semibold text-gray-700">Tags (separados por comas)</label>
+              <input
+                value={bulkTagsInput}
+                onChange={(e) => setBulkTagsInput(e.target.value)}
+                placeholder="ej: vip, urgente, piso-2h"
+                className="w-full px-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all"
+              />
+              <p className="text-[11px] text-gray-500">Los tags se combinan con los existentes (sin duplicados).</p>
+            </div>
+
+            <div className="p-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-2">
+              <Button
+                onClick={closeBulkModal}
+                variant="secondary"
+                className="flex-1"
+                disabled={bulkUpdatingTags}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleBulkAddTags}
+                loading={bulkUpdatingTags}
+                className="flex-[2]"
+              >
+                <Tags size={16} />
+                <span>Añadir a {selectedLeadIds.size} leads</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Quitar tag */}
+      {activeBulkModal === "removeTag" && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-primary-100 rounded-lg text-primary-700">
+                  <Tags size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900">Quitar tag</h3>
+                  <p className="text-xs text-gray-500 font-medium">Aplicar a {selectedLeadIds.size} leads</p>
+                </div>
+              </div>
+              <Button
+                onClick={closeBulkModal}
+                variant="ghost"
+                size="icon"
+                className="text-gray-400 hover:text-gray-600"
+                title="Cerrar"
+              >
+                <XCircle size={20} />
+              </Button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <label className="block text-sm font-semibold text-gray-700">Tag a quitar</label>
+              <input
+                value={bulkRemoveTagInput}
+                onChange={(e) => setBulkRemoveTagInput(e.target.value)}
+                placeholder="ej: vip"
+                className="w-full px-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all"
+              />
+              <p className="text-[11px] text-gray-500">Se eliminará exactamente el tag escrito (match exacto).</p>
+            </div>
+
+            <div className="p-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-2">
+              <Button
+                onClick={closeBulkModal}
+                variant="secondary"
+                className="flex-1"
+                disabled={bulkRemovingTag}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleBulkRemoveTag}
+                loading={bulkRemovingTag}
+                className="flex-[2]"
+              >
+                <Tags size={16} />
+                <span>Quitar en {selectedLeadIds.size} leads</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Cambiar anuncio */}
+      {activeBulkModal === "listing" && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-primary-100 rounded-lg text-primary-700">
+                  <Hash size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900">Cambiar anuncio</h3>
+                  <p className="text-xs text-gray-500 font-medium">Aplicar a {selectedLeadIds.size} leads</p>
+                </div>
+              </div>
+              <Button
+                onClick={closeBulkModal}
+                variant="ghost"
+                size="icon"
+                className="text-gray-400 hover:text-gray-600"
+                title="Cerrar"
+              >
+                <XCircle size={20} />
+              </Button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <label className="block text-sm font-semibold text-gray-700">Nuevo `listingCode`</label>
+              <input
+                value={bulkListingCode}
+                onChange={(e) => setBulkListingCode(e.target.value)}
+                placeholder="ej: 123456"
+                className="w-full px-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500 transition-all"
+              />
+              <p className="text-[11px] text-gray-500">Esto también se sincroniza en la conversación asociada.</p>
+            </div>
+
+            <div className="p-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-2">
+              <Button
+                onClick={closeBulkModal}
+                variant="secondary"
+                className="flex-1"
+                disabled={bulkUpdatingListing}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleBulkUpdateListingCode}
+                loading={bulkUpdatingListing}
+                className="flex-[2]"
+              >
+                <Hash size={16} />
+                <span>Aplicar a {selectedLeadIds.size} leads</span>
+              </Button>
             </div>
           </div>
         </div>

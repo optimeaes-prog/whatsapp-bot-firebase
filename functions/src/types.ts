@@ -25,8 +25,21 @@ export type ConversationState = {
   link?: string;
   address?: string;
   features?: string;
+  /** Full Idealista description text for this listing (if stored) */
+  idealistaDescription?: string;
   profitabilityReportAvailable?: boolean;
   profitabilityReport?: string;
+  /** Simple workflow step for deterministic parts (e.g., Idealista Si/No confirmation) */
+  flowStep?:
+    | "idealista_confirm"
+    | "call_listing_collect"
+    | "call_listing_pick"
+    | "call_listing_confirm"
+    | "qualification"
+    | "closed";
+  pendingListingCandidate?: { listingCode: string; link?: string; description?: string; address?: string; price?: number | string };
+  pendingListingCandidates?: Array<{ listingCode: string; link?: string; description?: string; address?: string; price?: number | string }>;
+  listingResolveAttempts?: number;
   history: HistoryItem[];
   pendingUserMessages: PendingItem[];
   isFinished: boolean;
@@ -40,7 +53,8 @@ export type ConversationState = {
   tags?: string[];
   language?: "es" | "en";
   recordings?: string[];
-  vapiCallId?: string;
+  /** Firestore server timestamp of last update (stored on conversation doc) */
+  lastMessage?: FirebaseFirestore.Timestamp;
 };
 
 export type LeadSummary = {
@@ -75,21 +89,6 @@ export type LeadRow = {
   lastAnalyzedAt?: FirebaseFirestore.Timestamp;
 };
 
-export type Call = {
-  id?: string;
-  phone: string;
-  chatId: string;
-  name?: string;
-  listingCode?: string;
-  transcript?: string;
-  summary?: string;
-  isQualified: boolean;
-  recordingUrl?: string;
-  timestamp: any; // admin.firestore.Timestamp
-  callId: string;
-  structuredData?: any;
-};
-
 export type ListingRow = {
   description: string;
   listingCode: string;
@@ -99,12 +98,40 @@ export type ListingRow = {
   profitabilityReportAvailable: boolean;
   profitabilityReport: string;
   idealistaDescription?: string;
+  quickQualificationEnabled?: boolean;
   price?: string;
   m2?: string;
   rooms?: string;
   address?: string;
+  street?: string;
+  city?: string;
+  province?: string;
+  postalCode?: string;
+  country?: string;
+  provinceNormalized?: string;
   agentName?: string;
+  // Qualification filters
+  minMonthlyIncome?: number;
+  maxPeople?: number;
+  requireMortgageApproved?: boolean;
 };
+
+export type ListingForResolution = {
+  listingCode: string;
+  operationType?: OperationType;
+  description?: string;
+  address?: string;
+  street?: string;
+  city?: string;
+  province?: string;
+  price?: string | number;
+  link?: string;
+};
+
+export type AgentListingResolutionDecision =
+  | { kind: "match"; listingCode: string; confidence: number; reason: string }
+  | { kind: "ambiguous"; listingCodes: string[]; confidence: number; reason: string }
+  | { kind: "none"; confidence: number; reason: string };
 
 export type BotStyle = {
   id: string;
@@ -179,6 +206,19 @@ export type SyncDiscrepancy = {
   details: string;
   whapiTimestamp?: number;
   firestoreTimestamp?: number;
+};
+
+// ==================== SUBSCRIPTION TYPES ====================
+
+export type SubscriptionPlanId = "free" | "plus" | "pro" | "pro_plus";
+
+export type OrgSubscription = {
+  planId: SubscriptionPlanId;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  status: "active" | "past_due" | "canceled" | "trialing";
+  currentPeriodEnd: FirebaseFirestore.Timestamp;
+  updatedAt: FirebaseFirestore.Timestamp;
 };
 
 // ==================== CREDIT SYSTEM TYPES ====================

@@ -33,6 +33,7 @@ firebase-debug*.log
 .env
 .env.local
 .env.*.local
+.env.vapi
 
 # Build files
 functions/lib/

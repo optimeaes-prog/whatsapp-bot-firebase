@@ -28,6 +28,12 @@ function getTaskName(chatId: string, timestamp?: number): string {
   return `${getQueuePath()}/tasks/buffer-${sanitizedChatId}${suffix}`;
 }
 
+function getGenericTaskName(prefix: string, id: string, timestamp?: number): string {
+  const sanitizedId = id.replace(/[^a-zA-Z0-9-_]/g, "-");
+  const suffix = timestamp ? `-${timestamp}` : "";
+  return `${getQueuePath()}/tasks/${prefix}-${sanitizedId}${suffix}`;
+}
+
 /**
  * Schedule a Cloud Task to process buffered messages after the delay
  * If a previousTaskName is provided, it will be deleted to avoid duplicate processing
@@ -87,6 +93,36 @@ export async function scheduleBufferTask(
     taskName: response.name || taskName,
     scheduledTime: scheduledTime * 1000,
   };
+}
+
+export async function scheduleImmediateHttpTask(params: {
+  url: string;
+  payload: Record<string, unknown>;
+  taskPrefix: string;
+  taskId: string;
+  delaySeconds?: number;
+}): Promise<{ taskName: string }> {
+  const now = Date.now();
+  const taskName = getGenericTaskName(params.taskPrefix, params.taskId, now);
+  const delaySeconds = Number.isFinite(params.delaySeconds) ? Math.max(0, Math.floor(params.delaySeconds || 0)) : 0;
+  const scheduledTime = Math.floor(now / 1000) + delaySeconds;
+
+  const task: google.cloud.tasks.v2.ITask = {
+    name: taskName,
+    httpRequest: {
+      httpMethod: "POST",
+      url: params.url,
+      headers: { "Content-Type": "application/json" },
+      body: Buffer.from(JSON.stringify(params.payload)).toString("base64"),
+      oidcToken: {
+        serviceAccountEmail: `${PROJECT_ID}@appspot.gserviceaccount.com`,
+      },
+    },
+    scheduleTime: { seconds: scheduledTime },
+  };
+
+  const [response] = await client.createTask({ parent: getQueuePath(), task });
+  return { taskName: response.name || taskName };
 }
 
 /**

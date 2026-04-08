@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { Button } from "../components/ui";
+import { Link } from "react-router-dom";
 
 export function Login() {
   const [email, setEmail] = useState("");
@@ -94,13 +96,9 @@ export function Login() {
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn-primary w-full disabled:opacity-50"
-            >
-              {loading ? "Cargando..." : isSignUp ? "Crear cuenta" : "Iniciar sesión"}
-            </button>
+            <Button type="submit" loading={loading} className="w-full">
+              {isSignUp ? "Crear cuenta" : "Iniciar sesión"}
+            </Button>
           </form>
 
           <div className="mt-4">
@@ -113,10 +111,11 @@ export function Login() {
               </div>
             </div>
 
-            <button
+            <Button
               onClick={handleGoogleSignIn}
-              disabled={loading}
-              className="mt-4 w-full flex items-center justify-center gap-3 px-4 py-2 border border-gray-300 rounded-btn hover:bg-gray-50 transition-colors disabled:opacity-50"
+              loading={loading}
+              variant="outline"
+              className="mt-4 w-full flex items-center justify-center gap-3"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
                 <path
@@ -137,19 +136,33 @@ export function Login() {
                 />
               </svg>
               <span className="text-gray-700 font-medium">Google</span>
-            </button>
+            </Button>
           </div>
 
           <p className="mt-4 text-center text-sm text-gray-600">
             {isSignUp ? "¿Ya tienes cuenta?" : "¿No tienes cuenta?"}{" "}
-            <button
+            <Button
               type="button"
               onClick={() => setIsSignUp(!isSignUp)}
-              className="text-primary-600 hover:text-primary-700 font-medium"
+              variant="ghost"
+              size="sm"
+              className="px-0 py-0 h-auto text-primary-600 hover:text-primary-700 hover:bg-transparent font-medium"
             >
               {isSignUp ? "Inicia sesión" : "Regístrate"}
-            </button>
+            </Button>
           </p>
+
+          <div className="mt-6 text-center text-xs text-gray-500 space-x-3">
+            <Link to="/terms" className="hover:text-gray-700 underline underline-offset-2">
+              Términos
+            </Link>
+            <Link to="/privacy" className="hover:text-gray-700 underline underline-offset-2">
+              Privacidad
+            </Link>
+            <Link to="/cookies" className="hover:text-gray-700 underline underline-offset-2">
+              Cookies
+            </Link>
+          </div>
         </div>
       </div>
     </div>
