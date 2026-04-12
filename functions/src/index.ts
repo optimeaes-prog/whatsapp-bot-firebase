@@ -2812,34 +2812,52 @@ type SubscriptionBillingInterval = "month" | "year";
 /**
  * Map planId to the Stripe Price ID stored in environment variables
  */
+// Nuevos Price IDs proporcionados
+const STRIPE_PRICES = {
+  month: {
+    plus: "price_1TLLeVCXIAxi00WslhmS8iBo",
+    pro: "price_1TLLfCCXIAxi00WsvsJgg2sB",
+    pro_plus: "price_1TLLgWCXIAxi00WsqK4dIosW",
+    extra: "price_1TLLo5CXIAxi00WsmOdzmaTC"
+  },
+  year: {
+    plus: "price_1TLLl3CXIAxi00WsvKDacgj5",
+    pro: "price_1TLLlWCXIAxi00WsiVzogPKo",
+    pro_plus: "price_1TLLmFCXIAxi00Ws5WJMKj4k",
+    extra: "price_1TLLvuCXIAxi00WsueKJHmrl"
+  }
+} as const;
+
 function getPriceIdForPlan(planId: string, billingInterval: SubscriptionBillingInterval = "month"): string {
   if (billingInterval === "year") {
-    const map: Record<string, string | undefined> = {
-      plus: process.env.STRIPE_PLUS_ANNUAL_PRICE_ID?.trim(),
-      pro: process.env.STRIPE_PRO_ANNUAL_PRICE_ID?.trim(),
-      pro_plus: process.env.STRIPE_PRO_PLUS_ANNUAL_PRICE_ID?.trim(),
-    };
-    const priceId = map[planId];
+    const priceId = process.env[
+      planId === "pro_plus" ? "STRIPE_PRO_PLUS_ANNUAL_PRICE_ID" :
+      planId === "pro" ? "STRIPE_PRO_ANNUAL_PRICE_ID" : 
+      "STRIPE_PLUS_ANNUAL_PRICE_ID"
+    ]?.trim() || STRIPE_PRICES.year[planId as keyof typeof STRIPE_PRICES.year];
+    
     if (!priceId || priceId.includes("REPLACE")) {
-      throw new Error(
-        "Contratación anual no disponible: faltan precios Stripe anuales (STRIPE_*_ANNUAL_PRICE_ID). Usa facturación mensual o contacta con soporte."
-      );
+      throw new Error("Contratación anual no disponible para el plan solicitado.");
     }
     return priceId;
   }
 
-  const map: Record<string, string | undefined> = {
-    plus: process.env.STRIPE_PLUS_PRICE_ID?.trim(),
-    pro: process.env.STRIPE_PRO_PRICE_ID?.trim(),
-    pro_plus: process.env.STRIPE_PRO_PLUS_PRICE_ID?.trim(),
-  };
-  const priceId = map[planId];
+  const priceId = process.env[
+    planId === "pro_plus" ? "STRIPE_PRO_PLUS_PRICE_ID" :
+    planId === "pro" ? "STRIPE_PRO_PRICE_ID" : 
+    "STRIPE_PLUS_PRICE_ID"
+  ]?.trim() || STRIPE_PRICES.month[planId as keyof typeof STRIPE_PRICES.month];
+  
   if (!priceId || priceId.includes("REPLACE")) {
-    throw new Error(
-      `No valid Stripe Price ID for plan "${planId}". Set Firebase secrets STRIPE_PLUS_PRICE_ID, STRIPE_PRO_PRICE_ID, STRIPE_PRO_PLUS_PRICE_ID to real price_… values (recurring monthly).`
-    );
+    throw new Error(`No valid Stripe Price ID for plan "${planId}".`);
   }
   return priceId;
+}
+
+function getExtraBlocksPriceId(billingInterval: SubscriptionBillingInterval = "month"): string {
+  return billingInterval === "year" 
+    ? process.env.STRIPE_EXTRA_ANNUAL_PRICE_ID?.trim() || STRIPE_PRICES.year.extra
+    : process.env.STRIPE_EXTRA_MONTHLY_PRICE_ID?.trim() || STRIPE_PRICES.month.extra;
 }
 
 /**
@@ -2875,11 +2893,12 @@ export const createSubscriptionCheckout = onRequest(
 
       await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
 
-      const { planId, successUrl, cancelUrl, billingInterval: rawBilling } = req.body as {
+      const { planId, successUrl, cancelUrl, billingInterval: rawBilling, extraBlocks = 0 } = req.body as {
         planId?: string;
         successUrl?: string;
         cancelUrl?: string;
         billingInterval?: string;
+        extraBlocks?: number;
       };
 
       if (!planId || !successUrl || !cancelUrl) {
@@ -2895,11 +2914,28 @@ export const createSubscriptionCheckout = onRequest(
       const billingInterval: SubscriptionBillingInterval =
         rawBilling === "year" ? "year" : "month";
 
-      const priceId = getPriceIdForPlan(planId, billingInterval);
+      const basePriceId = getPriceIdForPlan(planId, billingInterval);
+      const extraPriceId = getExtraBlocksPriceId(billingInterval);
+      
+      const lineItems: any[] = [
+        {
+          price: basePriceId,
+          quantity: 1
+        }
+      ];
+
+      if (extraBlocks > 0) {
+        lineItems.push({
+          price: extraPriceId,
+          quantity: extraBlocks
+        });
+      }
+
       const session = await createSubscriptionCheckoutSession(
         ORG_ID,
         planId,
-        priceId,
+        lineItems,
+        extraBlocks,
         successUrl,
         cancelUrl
       );
@@ -3189,13 +3225,14 @@ export const stripeWebhook = onRequest({
         const planId = ((subMeta.planId as string) || (line0Meta.planId as string) || "free") as SubscriptionPlanId;
 
         const orgId: string = (subMeta.orgId as string) || ORG_ID;
+        const extraBlocks = parseInt((subMeta.extraBlocks as string) || "0", 10);
 
         if (!SUBSCRIPTION_CREDITS[planId]) {
           console.warn(`invoice.paid: unknown planId "${planId}" on invoice ${invoiceId}`);
           break;
         }
 
-        await grantSubscriptionCredits(orgId, planId, invoiceId);
+        await grantSubscriptionCredits(orgId, planId, invoiceId, extraBlocks);
         break;
       }
 

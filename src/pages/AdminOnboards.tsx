@@ -58,7 +58,7 @@ export function AdminOnboards() {
           <div className="mx-auto w-16 h-16 bg-emerald-50 rounded-full flex items-center justify-center mb-4">
             <CheckCircle className="text-emerald-500 w-8 h-8" />
           </div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-2">Todo al día</h3>
+          <h3 className="text-xl font-bold text-gray-900 mb-2 font-heading">Todo al día</h3>
           <p className="text-gray-500 max-w-md mx-auto">
             No hay solicitudes de onboarding pendientes. Cuando un nuevo usuario complete sus primeros 3 pasos, aparecerá aquí.
           </p>
@@ -73,20 +73,20 @@ export function AdminOnboards() {
                 <div className="flex items-center gap-3 border-b border-primary-100 bg-primary-50 p-4">
                   <AlertCircle className="text-primary-600" size={24} />
                   <div>
-                    <h3 className="font-bold text-gray-900 leading-tight">Pendiente de Activación</h3>
-                    <p className="text-xs text-primary-800">Paso 5 / 6</p>
+                    <h3 className="font-bold text-gray-900 leading-tight font-heading">Pendiente de Activación</h3>
+                    <p className="text-xs text-primary-800 font-heading font-bold">Paso 5 / 6</p>
                   </div>
                 </div>
                 
                 <div className="p-5 flex-1 flex flex-col gap-4">
                   <div>
-                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Datos de la Inmobiliaria</p>
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 font-heading">Datos de la Inmobiliaria</p>
                     <div className="space-y-3">
                       <div className="flex items-start gap-3">
                         <Building2 size={16} className="text-gray-400 mt-0.5" />
                         <div>
-                          <p className="text-sm font-medium text-gray-900">{org.agencyName || "Nombre no especificado"}</p>
-                          <p className="text-xs text-gray-500 font-mono mt-0.5 overflow-hidden text-ellipsis w-[200px]">ID: {org.id}</p>
+                          <p className="text-sm font-bold text-gray-900 font-heading">{org.agencyName || "Nombre no especificado"}</p>
+                          <p className="text-xs text-gray-500 font-body mt-0.5 overflow-hidden text-ellipsis w-[200px]">ID: <span className="font-mono">{org.id}</span></p>
                         </div>
                       </div>
                       
@@ -102,7 +102,7 @@ export function AdminOnboards() {
                       
                       <div className="flex flex-col gap-1 pt-2 border-t border-gray-50 mt-2">
                         <div className="flex items-center gap-2 text-xs text-gray-500">
-                          <Mail size={14} /> Correo de reenvío (Idealista)
+                          <Mail size={14} /> <span className="font-heading font-bold uppercase tracking-wider text-[10px]">Correo de reenvío (Idealista)</span>
                         </div>
                         <p className="text-sm font-medium text-gray-800 break-all bg-gray-50 p-2 rounded">
                           {org.forwardingEmail || "No especificado"}

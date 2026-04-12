@@ -14,12 +14,12 @@ function getDb(): FirebaseFirestore.Firestore {
     return firestoreInstance;
 }
 
-/** Monthly credits granted (base + bonus) per subscription plan */
+/** Monthly credits granted per subscription plan */
 export const SUBSCRIPTION_CREDITS: Record<SubscriptionPlanId, number> = {
-    free: 90,
-    plus: 660,      // 600 + 60
-    pro: 1320,      // 1200 + 120
-    pro_plus: 2640, // 2400 + 240
+    free: 40,
+    plus: 80,
+    pro: 80,
+    pro_plus: 80,
 };
 
 /**
@@ -92,7 +92,8 @@ export async function markInvoiceProcessed(orgId: string, invoiceId: string): Pr
 export async function grantSubscriptionCredits(
     orgId: string,
     planId: SubscriptionPlanId,
-    invoiceId: string
+    invoiceId: string,
+    extraBlocks: number = 0
 ): Promise<void> {
     const isNew = await markInvoiceProcessed(orgId, invoiceId);
     if (!isNew) {
@@ -100,7 +101,12 @@ export async function grantSubscriptionCredits(
         return;
     }
 
-    const credits = SUBSCRIPTION_CREDITS[planId] ?? 0;
+    let credits = SUBSCRIPTION_CREDITS[planId] ?? 0;
+    
+    if (extraBlocks > 0) {
+        credits += extraBlocks * 40;
+    }
+
     if (credits === 0) {
         console.warn(`[subscriptionService] No credits configured for plan ${planId}`);
         return;
@@ -108,7 +114,7 @@ export async function grantSubscriptionCredits(
 
     await addOrgCredits(
         credits,
-        `Créditos mensuales plan ${planId} (invoice ${invoiceId})`,
+        `Suscripción: Plan ${planId.toUpperCase()} (Base + ${extraBlocks} packs extra)`,
         orgId
     );
 

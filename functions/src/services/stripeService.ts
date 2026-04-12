@@ -32,24 +32,10 @@ function getStripe(): Stripe {
 // Credit packages available for purchase
 export const CREDIT_PACKAGES: CreditPackage[] = [
     {
-        id: "credits_50",
-        name: "50 Créditos",
-        amount: 500,      // €5.00
-        credits: 50,
-        currency: "eur",
-    },
-    {
-        id: "credits_100",
-        name: "100 Créditos",
+        id: "extra_40",
+        name: "40 Conversaciones",
         amount: 1000,     // €10.00
-        credits: 100,
-        currency: "eur",
-    },
-    {
-        id: "credits_200",
-        name: "200 Créditos",
-        amount: 2000,     // €20.00
-        credits: 200,
+        credits: 40,
         currency: "eur",
     },
 ];
@@ -169,7 +155,8 @@ export function getCreditPackages(): CreditPackage[] {
 export async function createSubscriptionCheckoutSession(
     orgId: string,
     planId: string,
-    priceId: string,
+    lineItems: Stripe.Checkout.SessionCreateParams.LineItem[],
+    extraBlocks: number,
     successUrl: string,
     cancelUrl: string
 ): Promise<{ sessionId: string; url: string }> {
@@ -179,20 +166,17 @@ export async function createSubscriptionCheckoutSession(
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ["card"],
             mode: "subscription",
-            line_items: [
-                {
-                    price: priceId.trim(),
-                    quantity: 1,
-                },
-            ],
+            line_items: lineItems,
             metadata: {
                 orgId,
                 planId,
+                extraBlocks: String(extraBlocks),
             },
             subscription_data: {
                 metadata: {
                     orgId,
                     planId,
+                    extraBlocks: String(extraBlocks),
                 },
             },
             success_url: successUrl,
@@ -219,7 +203,7 @@ export async function createSubscriptionCheckoutSession(
 /** Credit package id for auto-recharge (must match a CREDIT_PACKAGES entry). */
 export function packageIdForCreditAmount(credits: number): string {
     const pkg = CREDIT_PACKAGES.find((p) => p.credits === credits);
-    return pkg?.id ?? "credits_100";
+    return pkg?.id ?? "extra_40";
 }
 
 /**

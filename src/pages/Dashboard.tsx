@@ -13,6 +13,11 @@ import { metricTheme } from "../lib/metricTheme";
 import type { Listing, Lead, Conversation } from "../types";
 import { PageHeader } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
+import { getCheckoutIntent, clearCheckoutIntent } from "../lib/checkoutStorage";
+import { createSubscriptionCheckout } from "../services/credits";
+import { toast } from "sonner";
+import { PageLoading } from "../components/ui/PageLoading";
+
 export function Dashboard() {
   const [dateFilter, setDateFilter] = useState("last_30");
   const [customStartDate, setCustomStartDate] = useState("");
@@ -24,6 +29,7 @@ export function Dashboard() {
     leads: Lead[];
     conversations: Conversation[];
   } | null>(null);
+  const [redirectingToCheckout, setRedirectingToCheckout] = useState(false);
 
   const [isDateDropdownOpen, setIsDateDropdownOpen] = useState(false);
   const [isListingDropdownOpen, setIsListingDropdownOpen] = useState(false);
@@ -115,6 +121,30 @@ export function Dashboard() {
     }
 
     loadStats();
+  }, []);
+
+  useEffect(() => {
+    const fn = async () => {
+      const intent = getCheckoutIntent();
+      if (intent) {
+        setRedirectingToCheckout(true);
+        clearCheckoutIntent();
+        try {
+          const checkoutUrl = await createSubscriptionCheckout(
+            intent.planId,
+            intent.billingInterval,
+            intent.extraBlocks,
+            "/onboarding"
+          );
+          window.location.href = checkoutUrl;
+        } catch (error) {
+          console.error("Error creating checkout from intent:", error);
+          toast.error("Ocurrió un error preparando tu pago. Por favor, intenta de nuevo desde la sección de configuración.");
+          setRedirectingToCheckout(false);
+        }
+      }
+    };
+    fn();
   }, []);
 
   const recentLeads = useMemo(() => {
@@ -241,10 +271,18 @@ export function Dashboard() {
     return `${formatShortDate(range.start)} - ${formatShortDate(range.end)}`;
   }, [dateFilter, customStartDate, customEndDate]);
 
-  if (loading) {
+  if (loading || redirectingToCheckout) {
+    if (redirectingToCheckout) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[60vh]">
+          <PageLoading />
+          <p className="mt-4 text-gray-500 font-medium">Preparando pago seguro...</p>
+        </div>
+      );
+    }
     return (
       <div>
-        <h1 className="mb-8 text-2xl font-bold text-gray-900 sm:text-3xl">Dashboard</h1>
+        <h1 className="mb-8 text-2xl font-bold text-gray-900 sm:text-3xl font-heading">Dashboard</h1>
         
         {/* Layout Skeleton */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
@@ -273,9 +311,9 @@ export function Dashboard() {
 
   /** Embudo sin Leads (el total de leads va en la tarjeta lateral) */
   const funnelData = [
-    { label: "Conversaciones", count: stats.conversaciones, color: metricTheme.conversations.funnelBg, textColor: metricTheme.conversations.funnelText },
-    { label: "Respondidas", count: stats.respondidos, color: metricTheme.responded.funnelBg, textColor: metricTheme.responded.funnelText },
-    { label: "Cualificados", count: stats.cualificados, color: metricTheme.qualified.funnelBg, textColor: metricTheme.qualified.funnelText },
+    { label: "Conversaciones", count: stats.conversaciones, color: metricTheme.conversations.funnelBg, textColor: metricTheme.conversations.funnelText, fontClass: "font-heading" },
+    { label: "Respondidas", count: stats.respondidos, color: metricTheme.responded.funnelBg, textColor: metricTheme.responded.funnelText, fontClass: "font-heading" },
+    { label: "Cualificados", count: stats.cualificados, color: metricTheme.qualified.funnelBg, textColor: metricTheme.qualified.funnelText, fontClass: "font-heading" },
   ];
 
 
@@ -294,7 +332,7 @@ export function Dashboard() {
             >
               <Calendar size={18} className="text-gray-500 flex-shrink-0" />
               <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                <span className="text-xs font-semibold text-gray-600">Fecha:</span>
+                <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Fecha:</span>
                 <div className="flex items-center gap-1">
                   {dateFilter === "today" ? "Hoy" : 
                    dateFilter === "yesterday" ? "Ayer" : 
@@ -363,7 +401,7 @@ export function Dashboard() {
             >
               <Filter size={18} className="text-gray-500 flex-shrink-0" />
               <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 truncate">
-                <span className="text-xs font-semibold text-gray-600">Anuncio:</span>
+                <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Anuncio:</span>
                 <div className="flex items-center gap-1 flex-1 overflow-hidden">
                   <span className="truncate">{listingFilter === "all" ? "Todos" : listingFilter}</span>
                   <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1 shrink-0", isListingDropdownOpen && "rotate-180")} />
@@ -419,7 +457,7 @@ export function Dashboard() {
           {/* Tasa de Cualificación */}
           <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Tasa de cualificación</p>
+              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Tasa de cualificación</p>
               <div className="relative inline-block">
                 <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.qualificationRate.value)}>{stats.tasaCualificacion}%</p>
               </div>
@@ -429,7 +467,7 @@ export function Dashboard() {
           {/* Tasa de Respuesta */}
           <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Tasa de respuesta</p>
+              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Tasa de respuesta</p>
               <div className="relative inline-block">
                 <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.responded.value)}>{stats.tasaRespuesta}%</p>
               </div>
@@ -439,7 +477,7 @@ export function Dashboard() {
           {/* Leads */}
           <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Leads</p>
+              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Leads</p>
               <div className="relative inline-block">
                 <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.messages.kpiLeads)}>{stats.leads}</p>
               </div>
@@ -449,7 +487,7 @@ export function Dashboard() {
           {/* Mensajes Totales */}
           <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2">Mensajes totales</p>
+              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Mensajes totales</p>
               <div className="relative inline-block">
                 <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.messages.kpiValue)}>{stats.totalMensajes}</p>
               </div>
@@ -459,7 +497,7 @@ export function Dashboard() {
 
         <div className="lg:col-span-2 card p-8 flex flex-col items-center border-t-4 border-primary-500 bg-gradient-to-b from-white to-slate-50/30">
           <div className="w-full">
-            <h2 className="text-2xl font-bold text-gray-900 mb-1.5 w-full text-center">Embudo de conversión</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-1.5 w-full text-center font-heading">Embudo de conversión</h2>
             <p className="text-xs text-gray-400 text-center mb-7 font-medium tracking-wider">Flujo de interacción total</p>
             
             <div className="flex flex-col gap-3 w-full max-w-[800px] mx-auto">
@@ -493,8 +531,8 @@ export function Dashboard() {
                       style={{ width: `${width}%` }}
                     >
                       <div className="flex flex-col items-center justify-center text-center px-4 z-10 w-full space-y-0">
-                        <span className="font-bold text-4xl leading-none">{step.count}</span>
-                        <span className="font-bold tracking-wide text-gray-500/80 text-[11px] leading-tight whitespace-nowrap">{step.label.charAt(0).toUpperCase() + step.label.slice(1).toLowerCase()}</span>
+                        <span className="font-bold text-3xl sm:text-4xl leading-none">{step.count}</span>
+                        <span className="font-bold tracking-widest text-gray-500/80 text-[10px] sm:text-[11px] leading-tight whitespace-nowrap font-heading uppercase">{step.label}</span>
                       </div>
                     </div>
                   </div>

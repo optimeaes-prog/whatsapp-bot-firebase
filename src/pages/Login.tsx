@@ -52,7 +52,7 @@ export function Login() {
       <div className="max-w-md w-full space-y-8">
         <div className="text-center">
           <img src="/logo.png" alt="Proplead" className="h-12 mx-auto my-8" />
-          <p className="mt-8 text-sm text-gray-600">
+          <p className="mt-8 text-sm text-gray-600 font-heading font-medium tracking-wide uppercase">
             {isSignUp ? "Crear una cuenta nueva" : "Inicia sesión en tu cuenta"}
           </p>
         </div>
@@ -107,7 +107,7 @@ export function Login() {
                 <div className="w-full border-t border-gray-300" />
               </div>
               <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-white text-gray-500">O continúa con</span>
+                <span className="px-2 bg-white text-gray-500 font-heading font-medium uppercase tracking-widest text-[10px]">O continúa con</span>
               </div>
             </div>
 
@@ -152,14 +152,14 @@ export function Login() {
             </Button>
           </p>
 
-          <div className="mt-6 text-center text-xs text-gray-500 space-x-3">
-            <Link to="/terms" className="hover:text-gray-700 underline underline-offset-2">
+          <div className="mt-6 text-center text-[10px] text-gray-400 space-x-3 font-heading font-bold uppercase tracking-widest">
+            <Link to="/terms" className="hover:text-gray-900 transition-colors">
               Términos
             </Link>
-            <Link to="/privacy" className="hover:text-gray-700 underline underline-offset-2">
+            <Link to="/privacy" className="hover:text-gray-900 transition-colors">
               Privacidad
             </Link>
-            <Link to="/cookies" className="hover:text-gray-700 underline underline-offset-2">
+            <Link to="/cookies" className="hover:text-gray-900 transition-colors">
               Cookies
             </Link>
           </div>

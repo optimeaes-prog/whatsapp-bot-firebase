@@ -91,9 +91,7 @@ export function Onboarding() {
       console.error("Error loading credits:", error);
       // Fallback display
       setPackages([
-        { id: "credits_50", name: "50 Créditos", amount: 500, credits: 50, currency: "eur" },
-        { id: "credits_100", name: "100 Créditos", amount: 1000, credits: 100, currency: "eur" },
-        { id: "credits_200", name: "200 Créditos", amount: 2000, credits: 200, currency: "eur" },
+        { id: "extra_40", name: "40 Conversaciones", amount: 1000, credits: 40, currency: "eur" },
       ]);
     } finally {
       setCreditsLoading(false);
@@ -196,8 +194,8 @@ export function Onboarding() {
   return (
     <div className="max-w-3xl mx-auto py-8 px-4 sm:px-6">
       <div className="mb-10 text-center sm:text-left">
-        <h1 className="mb-2 text-2xl font-bold text-gray-900 sm:text-3xl">Configuración del Asistente</h1>
-        <p className="text-gray-600">Completa estos pasos para empezar a utilizar tu agente de inteligencia artificial.</p>
+        <h1 className="mb-2 text-2xl font-bold text-gray-900 sm:text-3xl font-heading">Configuración del Asistente</h1>
+        <p className="text-gray-600 font-body">Completa estos pasos para empezar a utilizar tu agente de inteligencia artificial.</p>
       </div>
 
       <div className={cn(
@@ -244,7 +242,7 @@ export function Onboarding() {
                 )}>
                   {currentStep > 1 ? <CheckCircle size={18} className="text-emerald-600" /> : <span className="font-bold">1</span>}
                 </div>
-                <h2 className="text-lg sm:text-xl font-semibold">Datos de tu Inmobiliaria</h2>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Datos de tu Inmobiliaria</h2>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[1] ? "rotate-180" : "")} />
@@ -372,7 +370,7 @@ export function Onboarding() {
                 )}>
                   {currentStep > 2 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 2 ? <span className="font-bold">2</span> : <Lock size={14} />}
                 </div>
-                <h2 className="text-lg sm:text-xl font-semibold">Llamada de Onboarding</h2>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Llamada de Onboarding</h2>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[2] ? "rotate-180" : "")} />
@@ -444,7 +442,7 @@ export function Onboarding() {
                 )}>
                   {currentStep > 3 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 3 ? <span className="font-bold">3</span> : <Lock size={14} />}
                 </div>
-                <h2 className="text-lg sm:text-xl font-semibold">Conectar con Idealista</h2>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Conectar con Idealista</h2>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[3] ? "rotate-180" : "")} />
@@ -550,7 +548,7 @@ export function Onboarding() {
                 )}>
                   {currentStep > 4 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 4 ? <span className="font-bold">4</span> : <Lock size={14} />}
                 </div>
-                <h2 className="text-lg sm:text-xl font-semibold">Sistema de Créditos</h2>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Suscripción y Conversaciones</h2>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[4] ? "rotate-180" : "")} />
@@ -563,13 +561,13 @@ export function Onboarding() {
                 <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
                   <h3 className="mb-3 flex items-center gap-2 font-bold text-primary-900">
                     <Coins size={18} />
-                    Funciona con Créditos
+                    Volumen de conversaciones
                   </h3>
                   <p className="mb-3 text-sm text-primary-800">
-                    Cada conversación (hilo completo) generada con tus leads cuesta <strong>3 créditos</strong>.
+                    Tu plan incluye <strong>80 conversaciones base al mes</strong>. Si necesitas más, puedes configurar paquetes extras.
                   </p>
                   <p className="rounded-lg border border-primary-200 bg-white p-3 text-sm text-primary-800 shadow-sm">
-                    <strong>Ejemplo práctico:</strong> Si para un anuncio recibes 100 personas interesadas que te escriben, se gestionarán 100 conversaciones automáticamente, usando <strong>300 créditos</strong>.
+                    <strong>Ejemplo práctico:</strong> Si para tus anuncios recibes 120 personas interesadas al mes, las primeras 80 están cubiertas por tu plan base, y puedes añadir un bloque extra automático de 40 conversaciones por 10€.
                   </p>
                 </div>
 
@@ -578,7 +576,7 @@ export function Onboarding() {
                     <CheckCircle className="text-emerald-600" size={20} />
                     <div>
                       <p className="font-semibold text-emerald-800 text-sm">¡Pago completado!</p>
-                      <p className="text-sm text-emerald-700">Tus créditos han sido añadidos a tu cuenta.</p>
+                      <p className="text-sm text-emerald-700">Tus conversaciones y configuración se han guardado con éxito.</p>
                     </div>
                   </div>
                 )}
@@ -593,18 +591,18 @@ export function Onboarding() {
                 )}
 
                 <div className="mb-6">
-                  <h4 className="text-md font-bold text-gray-800 mb-3">Adquiere un paquete inicial para activar tu asistente</h4>
+                  <h4 className="text-md font-bold text-gray-800 mb-3">Si aún no tienes un plan activo, puedes añadir un bloque extra base</h4>
                   <div className="grid sm:grid-cols-3 gap-3">
                     {packages.map((pkg) => (
                       <div
                         key={pkg.id}
                         className={cn(
                           "relative bg-white border-2 p-4 rounded-btn text-center transition-all cursor-pointer shadow-sm hover:shadow-md",
-                          pkg.id === "credits_100" ? "border-primary-400" : "border-gray-100 hover:border-primary-300"
+                          pkg.id === "extra_40" ? "border-primary-400" : "border-gray-100 hover:border-primary-300"
                         )}
                         onClick={() => { if(currentStep === 4) handlePurchase(pkg.id) }}
                       >
-                        {pkg.id === "credits_100" && (
+                        {pkg.id === "extra_40" && (
                           <div className="absolute -top-3 left-1/2 -translate-x-1/2">
                             <span className="px-2 py-0.5 bg-primary-600 text-white text-[10px] font-bold rounded-full shadow-sm uppercase tracking-wide">
                               Recomendado
@@ -615,28 +613,28 @@ export function Onboarding() {
                           <Coins className="text-amber-500" size={18} />
                           <span className="text-xl font-bold text-gray-900">{pkg.credits}</span>
                         </div>
-                        <p className="text-xs text-gray-500 mb-3 font-medium">créditos</p>
+                        <p className="text-xs text-gray-500 mb-3 font-bold font-heading uppercase tracking-widest">conversaciones</p>
                         <p className="text-lg font-bold text-primary-600 mb-3">{formatPrice(pkg.amount, pkg.currency)}</p>
                         <Button
                           disabled={purchaseLoading !== null || currentStep > 4}
                           loading={purchaseLoading === pkg.id}
-                          variant={pkg.id === "credits_100" ? "primary" : "outline"}
+                          variant={pkg.id === "extra_40" ? "primary" : "outline"}
                           size="sm"
                           className="w-full text-xs font-semibold"
                         >
                           <CreditCard size={12} />
-                          Comprar
+                          Añadir bloque
                         </Button>
                       </div>
                     ))}
                   </div>
-                  <p className="text-[10px] text-gray-400 mt-2 text-center">1€ = 10 créditos • Pago 100% seguro con Stripe</p>
+                  <p className="text-[10px] text-gray-400 mt-2 text-center">Un bloque de 40 extra te asegura no pausar la IA • Pago seguro con Stripe</p>
                 </div>
 
                 {currentStep === 4 && (
                   <div className="flex flex-col sm:flex-row items-center justify-between border-t border-gray-100 mt-6 pt-5 gap-4">
                     <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-1.5 rounded-md border border-gray-200">
-                      Saldo actual: <strong className="text-amber-600">{creditsLoading ? "..." : credits} créditos</strong>
+                      Saldo actual: <strong className="text-amber-600">{creditsLoading ? "..." : credits} conversaciones</strong>
                     </div>
                     <div className="flex flex-col items-end">
                       <Button
@@ -666,7 +664,7 @@ export function Onboarding() {
             {currentStep > 4 && (
                <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
                 <CheckCircle size={20} className="text-emerald-600" />
-                <span className="font-medium">Has aceptado el funcionamiento de créditos.</span>
+                <span className="font-medium">Has activado tu plan base de conversaciones.</span>
               </div>
             )}
             </div>
@@ -710,7 +708,7 @@ export function Onboarding() {
                 )}>
                   {currentStep > 5 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 5 ? <span className="font-bold">5</span> : <Lock size={14} />}
                 </div>
-                <h2 className="text-lg sm:text-xl font-semibold">Activación del Asistente</h2>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Activación del Asistente</h2>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[5] ? "rotate-180" : "")} />

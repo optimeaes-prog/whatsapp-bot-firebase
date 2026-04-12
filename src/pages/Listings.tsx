@@ -26,40 +26,69 @@ type AddressSuggestionOption = {
   countryCode: string;
 };
 
-function parsePhotonFeature(f: { properties?: Record<string, string | undefined> }): AddressSuggestionOption | null {
-  const p = f.properties || {};
-  const name = typeof p.name === "string" ? p.name : "";
-  const street = typeof p.street === "string" ? p.street : "";
-  const housenumber = typeof p.housenumber === "string" ? p.housenumber : "";
-  const city = typeof p.city === "string" ? p.city : "";
-  const postcode = typeof p.postcode === "string" ? p.postcode : "";
-  const state = typeof p.state === "string" ? p.state : "";
-  const rawCountryCode = typeof p.countrycode === "string" ? p.countrycode.toUpperCase() : "";
+type NominatimResult = {
+  display_name?: string;
+  address?: {
+    road?: string;
+    pedestrian?: string;
+    house_number?: string;
+    city?: string;
+    town?: string;
+    village?: string;
+    municipality?: string;
+    state?: string;
+    county?: string;
+    postcode?: string;
+    country?: string;
+    country_code?: string;
+  };
+};
+
+function parseNominatimResult(entry: NominatimResult): AddressSuggestionOption | null {
+  const a = entry.address || {};
+  const streetBase =
+    (typeof a.road === "string" && a.road) ||
+    (typeof a.pedestrian === "string" && a.pedestrian) ||
+    "";
+  const houseNumber = typeof a.house_number === "string" ? a.house_number : "";
+  const street = [streetBase, houseNumber].filter(Boolean).join(" ").trim();
+  const city =
+    (typeof a.city === "string" && a.city) ||
+    (typeof a.town === "string" && a.town) ||
+    (typeof a.village === "string" && a.village) ||
+    (typeof a.municipality === "string" && a.municipality) ||
+    "";
+  const province =
+    (typeof a.state === "string" && a.state) ||
+    (typeof a.county === "string" && a.county) ||
+    "";
+  const postalCode = typeof a.postcode === "string" ? a.postcode : "";
   const country =
-    (typeof p.country === "string" && p.country) ||
-    (rawCountryCode === "ES" ? "España" : rawCountryCode) ||
+    (typeof a.country === "string" && a.country) ||
     "España";
-  if (!city && !state) return null;
-  const streetLine = [street, housenumber].filter(Boolean).join(" ").trim() || (name && !street ? name : street) || "";
-  const label = [streetLine || name, city, postcode, state].filter(Boolean).join(", ");
+  const countryCode = typeof a.country_code === "string" ? a.country_code.toUpperCase() : "";
+  const label = (entry.display_name || [street, city, postalCode, province].filter(Boolean).join(", ")).trim();
+  if (!label) return null;
   return {
     label,
-    street: streetLine,
+    street,
     city,
-    province: state,
-    postalCode: postcode,
+    province,
+    postalCode,
     country,
-    countryCode: rawCountryCode,
+    countryCode,
   };
 }
 
-const emptyFormData: ListingFormData = {
+type ListingFormState = Omit<ListingFormData, "operationType"> & { operationType: OperationType | "" };
+
+const emptyFormData: ListingFormState = {
   description: "",
   listingCode: "",
   listingCodeFotocasa: "",
   referencia: "",
   link: "", // Se generará automáticamente al guardar
-  operationType: "Venta",
+  operationType: "",
   features: "",
   idealistaDescription: "",
   quickQualificationEnabled: false,
@@ -99,9 +128,10 @@ export function Listings() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [formData, setFormData] = useState<ListingFormData>(emptyFormData);
+  const [formData, setFormData] = useState<ListingFormState>(emptyFormData);
   const [saving, setSaving] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [priceNeedsOperationType, setPriceNeedsOperationType] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   // Estados para autocompletado de dirección
@@ -148,6 +178,14 @@ export function Listings() {
     return raw.replace(/[^\d.,]/g, "").replace(",", ".").trim();
   };
 
+  const formatPriceForOperation = (price: string | undefined, operationType: OperationType | ""): string => {
+    const clean = normalizeNumericString(price);
+    if (!clean) return "";
+    if (operationType === "Alquiler") return `${clean} €/mes`;
+    if (operationType === "Venta") return `${clean} €`;
+    return clean;
+  };
+
   const isDigitsOnly = (value: string) => /^\d+$/.test(value);
 
   const formErrors = useMemo(() => {
@@ -174,7 +212,8 @@ export function Listings() {
     else if (!isDigitsOnly(listingCodeFotocasa)) errors.listingCodeFotocasa = "Debe contener solo dígitos.";
     else if (listingCodeFotocasa.length > 9) errors.listingCodeFotocasa = "Máximo 9 dígitos.";
 
-    if (!formData.referencia?.trim()) errors.referencia = "La referencia es obligatoria.";
+    if (!formData.operationType) errors.operationType = "Selecciona el tipo de operación.";
+
     if (!formData.agentName?.trim()) errors.agentName = "El nombre del agente es obligatorio.";
     if (!address) errors.address = "La dirección exacta es obligatoria.";
 
@@ -373,6 +412,7 @@ export function Listings() {
   function openCreateModal() {
     setFormData(emptyFormData);
     setSubmitAttempted(false);
+    setPriceNeedsOperationType(false);
     setEditingId(null);
     setModalOpen(true);
     setAddressSuggestionOptions([]);
@@ -411,6 +451,7 @@ export function Listings() {
     });
     setEditingId(listing.id);
     setSubmitAttempted(false);
+    setPriceNeedsOperationType(false);
     setModalOpen(true);
     setAddressSuggestionOptions([]);
     setShowSuggestions(false);
@@ -447,6 +488,7 @@ export function Listings() {
 
       const dataToSave = {
         ...formData,
+        operationType: formData.operationType as OperationType,
         description: formData.description.trim(),
         listingCode: formData.listingCode.trim(),
         listingCodeFotocasa: (formData.listingCodeFotocasa || "").trim(),
@@ -455,7 +497,7 @@ export function Listings() {
         features: (formData.features || "").trim(),
         address: addressLine,
         provinceNormalized: provinceNorm,
-        price: normalizeNumericString(formData.price),
+        price: formatPriceForOperation(formData.price, formData.operationType),
         link: `https://www.idealista.com/inmueble/${formData.listingCode}`,
       };
 
@@ -552,31 +594,38 @@ export function Listings() {
     setLoadingSuggestions(true);
     try {
       console.log("Searching address for:", query);
-      // Forzar idioma español y pedir más candidatos para filtrar mejor España.
-      const response = await fetch(
-        `https://photon.komoot.io/api?q=${encodeURIComponent(query)}&lang=es&limit=25`
-      );
-      if (!response.ok) {
-        console.error("Photon API error status:", response.status);
-        throw new Error("Network response was not ok");
+      const seen = new Set<string>();
+      let options: AddressSuggestionOption[] = [];
+
+      // Primary provider (stable): Nominatim restricted to Spain
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=12&accept-language=es&countrycodes=es&q=${encodeURIComponent(query)}`
+        );
+        if (!response.ok) {
+          throw new Error(`Nominatim status ${response.status}`);
+        }
+        const data = await response.json() as NominatimResult[];
+        for (const entry of data) {
+          const parsed = parseNominatimResult(entry);
+          if (!parsed || seen.has(parsed.label)) continue;
+          seen.add(parsed.label);
+          options.push(parsed);
+        }
+      } catch (nominatimError) {
+        console.error("Nominatim autocomplete failed:", nominatimError);
       }
 
-      const data = await response.json();
-      const options: AddressSuggestionOption[] = [];
-      const seen = new Set<string>();
-      for (const f of data.features as { properties?: Record<string, string | undefined> }[]) {
-        const parsed = parsePhotonFeature(f);
-        if (!parsed || seen.has(parsed.label)) continue;
-        seen.add(parsed.label);
-        options.push(parsed);
-      }
       const optionsFromSpain = options.filter((opt) => opt.countryCode === "ES");
-      const prioritizedOptions = (optionsFromSpain.length > 0 ? optionsFromSpain : options).slice(0, 10);
-      console.log("Found suggestions:", options.length);
-      setAddressSuggestionOptions(prioritizedOptions);
-      setShowSuggestions(prioritizedOptions.length > 0);
+      // En UI solo mostramos resultados de España (estricto)
+      const strictSpainOptions = optionsFromSpain.slice(0, 10);
+      console.log("Found Spain suggestions:", strictSpainOptions.length);
+      setAddressSuggestionOptions(strictSpainOptions);
+      setShowSuggestions(strictSpainOptions.length > 0);
     } catch (error) {
       console.error("Error fetching address suggestions:", error);
+      setAddressSuggestionOptions([]);
+      setShowSuggestions(false);
     } finally {
       setLoadingSuggestions(false);
     }
@@ -767,7 +816,7 @@ export function Listings() {
                 onClick={() => setIsStatusFilterOpen(!isStatusFilterOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                  <span className="text-xs font-semibold text-gray-600 shrink-0">Estado:</span>
+                  <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">Estado:</span>
                   <div className="flex items-center gap-1 justify-end flex-1 min-w-0">
                     <span className="truncate">{statusFilterLabel}</span>
                     <ChevronDown
@@ -817,7 +866,7 @@ export function Listings() {
                 onClick={() => setIsListingTipoFilterOpen(!isListingTipoFilterOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                  <span className="text-xs font-semibold text-gray-600 shrink-0">Tipo:</span>
+                  <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Tipo:</span>
                   <div className="flex items-center gap-1 justify-end flex-1">
                     {filterOperationType === "all" ? "Todos" : filterOperationType}
                     <ChevronDown
@@ -867,7 +916,7 @@ export function Listings() {
                 onClick={() => setIsSortFilterOpen(!isSortFilterOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
-                  <span className="text-xs font-semibold text-gray-600 shrink-0">Orden:</span>
+                  <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Orden:</span>
                   <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
                     <span className="truncate text-right">{sortOptionLabel[sortBy]}</span>
                     <ChevronDown
@@ -1168,7 +1217,7 @@ export function Listings() {
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600">Información del inmueble</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Identificador Anuncio <span className="text-red-500">*</span></label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Identificador <span className="text-red-500">*</span></label>
                   <input
                     name="description"
                     type="text"
@@ -1195,7 +1244,7 @@ export function Listings() {
                         isOperationTypeDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400"
                       )}
                     >
-                      <span>{formData.operationType}</span>
+                      <span>{formData.operationType || "Selecciona..."}</span>
                       <ChevronDown size={16} className={cn("text-gray-400 transition-transform", isOperationTypeDropdownOpen && "rotate-180")} />
                     </button>
                     {isOperationTypeDropdownOpen && (
@@ -1211,8 +1260,9 @@ export function Listings() {
                                 setFormData({
                                   ...formData,
                                   operationType: newType,
-                                  price: normalizeNumericString(formData.price)
+                                  price: formatPriceForOperation(formData.price, newType)
                                 });
+                                setPriceNeedsOperationType(false);
                                 setIsOperationTypeDropdownOpen(false);
                               }}
                               className="flex items-center gap-2 w-full px-3 py-2 hover:bg-gray-50 rounded-btn transition-colors text-left"
@@ -1225,6 +1275,7 @@ export function Listings() {
                       </>
                     )}
                   </div>
+                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.operationType || "") : ""}</p>
                 </div>
               </div>
 
@@ -1259,11 +1310,10 @@ export function Listings() {
                   <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.listingCodeFotocasa || "") : ""}</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Referencia <span className="text-red-500">*</span></label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">ID Interno (CRM)</label>
                   <input
                     name="referencia"
                     type="text"
-                    required
                     value={formData.referencia}
                     onChange={(e) => setFormData({ ...formData, referencia: e.target.value })}
                     className={cn("input", submitAttempted && formErrors.referencia && "border-red-400 focus:ring-red-400")}
@@ -1293,14 +1343,35 @@ export function Listings() {
                     type="text"
                     inputMode="decimal"
                     value={formData.price}
-                    onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                    onFocus={() => {
+                      if (!formData.operationType) setPriceNeedsOperationType(true);
+                    }}
+                    onChange={(e) => {
+                      if (!formData.operationType) {
+                        setPriceNeedsOperationType(true);
+                        return;
+                      }
+                      const sanitized = e.target.value.replace(/[^\d.,]/g, "");
+                      setPriceNeedsOperationType(false);
+                      setFormData({ ...formData, price: sanitized });
+                    }}
+                    onBlur={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        price: formatPriceForOperation(prev.price, prev.operationType),
+                      }))
+                    }
                     className={cn("input", submitAttempted && formErrors.price && "border-red-400 focus:ring-red-400")}
                     placeholder="Ej: 250000"
                   />
-                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.price || "") : ""}</p>
+                  <p className="mt-1 text-xs text-red-600">
+                    {priceNeedsOperationType
+                      ? "Selecciona el tipo de operación antes de introducir el precio."
+                      : (submitAttempted ? (formErrors.price || "") : "")}
+                  </p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Metros cuadrados (m²) <span className="text-red-500">*</span></label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Metros (m²) <span className="text-red-500">*</span></label>
                   <input
                     name="m2"
                     type="text"
@@ -1546,9 +1617,9 @@ export function Listings() {
                 <div className={cn("space-y-3", formData.quickQualificationEnabled === true && "opacity-50")}>
                   <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">Filtros de cualificación (opcionales)</p>
                   <p className="text-xs text-gray-500">Si se rellenan, el asistente decidirá automáticamente si el lead cumple los criterios antes de notificarte.</p>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-4 items-end">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Ingresos netos mensuales mínimos (€)</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1 min-h-[2.5rem]">Ingresos netos mensuales mínimos (€)</label>
                       <input
                         type="number"
                         min={0}
@@ -1560,7 +1631,7 @@ export function Listings() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Máximo número de personas</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1 min-h-[2.5rem]">Máximo de personas en la vivienda</label>
                       <input
                         type="number"
                         min={1}

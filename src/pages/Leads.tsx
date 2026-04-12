@@ -5,7 +5,7 @@ import { Users, Phone, Search, User, ArrowUpDown, ArrowUp, ArrowDown, MessageSqu
 import type { Lead, Conversation, QualificationStatus } from "../types";
 import { getLeads, deleteLead, deleteLeads, bulkUpdateLeadsQualificationStatus, bulkAddLeadTags, bulkRemoveLeadTag, bulkUpdateLeadsListingCode } from "../services/leads";
 import { getListings } from "../services/listings";
-import { getConversationByChatId, sendMassMessageToWhatsApp } from "../services/conversations";
+import { getConversationByChatId, getConversations, sendMassMessageToWhatsApp } from "../services/conversations";
 
 import { formatDate, formatPhone, cn, formatMessageTime } from "../lib/utils";
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
@@ -196,39 +196,32 @@ export function Leads() {
 
   async function loadLeads() {
     try {
-      const [data, listingsData] = await Promise.all([
+      const [data, listingsData, conversationsData] = await Promise.all([
         getLeads(),
-        getListings()
+        getListings(),
+        getConversations(),
       ]);
 
       // Create a map of listing info
       const listingsMap = new Map(
         listingsData.map(l => [l.listingCode, { description: l.description, operationType: l.operationType }])
       );
-
-      // Load message count and listing description for each lead
-      const leadsWithMessages = await Promise.all(
-        data.map(async (lead) => {
-          const listingInfo = listingsMap.get(lead.listingCode);
-          try {
-            const conversation = await getConversationByChatId(lead.chatId);
-            return {
-              ...lead,
-              messageCount: conversation?.messageCount || 0,
-              listingDescription: listingInfo?.description,
-              operationType: listingInfo?.operationType || lead.operationType,
-              notes: conversation?.notes || lead.notes
-            };
-          } catch {
-            return {
-              ...lead,
-              messageCount: 0,
-              listingDescription: listingInfo?.description,
-              operationType: listingInfo?.operationType || lead.operationType,
-            };
-          }
-        })
+      const conversationsMap = new Map(
+        conversationsData.map((conversation) => [conversation.chatId || conversation.id, conversation])
       );
+
+      // Avoid N+1 Firestore queries (one per lead): enrich from conversations already loaded in batch.
+      const leadsWithMessages = data.map((lead) => {
+        const listingInfo = listingsMap.get(lead.listingCode);
+        const conversation = conversationsMap.get(lead.chatId);
+        return {
+          ...lead,
+          messageCount: conversation?.messageCount || 0,
+          listingDescription: listingInfo?.description,
+          operationType: listingInfo?.operationType || lead.operationType,
+          notes: conversation?.notes || lead.notes,
+        };
+      });
       setLeads(leadsWithMessages);
     } catch (error) {
       console.error("Error loading leads:", error);
@@ -923,7 +916,7 @@ export function Leads() {
                 onClick={() => setIsAnuncioDropdownOpen(!isAnuncioDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
-                  <span className="text-xs font-semibold text-gray-600 shrink-0">Anuncio:</span>
+                  <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">Anuncio:</span>
                   <div className="flex items-center gap-1 flex-1 overflow-hidden justify-end">
                     <span className="truncate">
                       {filterAnuncio.length === 0 ? "Todos" : `${filterAnuncio.length} seleccionados`}
@@ -983,7 +976,7 @@ export function Leads() {
                  onClick={() => setIsTipoDropdownOpen(!isTipoDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                  <span className="text-xs font-semibold text-gray-600">Tipo:</span>
+                  <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Tipo:</span>
                   <div className="flex items-center gap-1 justify-end flex-1">
                     {filterTipo === "all" ? "Todos" : filterTipo}
                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isTipoDropdownOpen && "rotate-180")} />
@@ -1106,7 +1099,7 @@ export function Leads() {
                 onClick={() => setIsIncomeDropdownOpen(!isIncomeDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
-                  <span className="text-xs font-semibold text-gray-600 shrink-0">Ingresos:</span>
+                  <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">Ingresos:</span>
                   <div className="flex items-center gap-1 flex-1 overflow-hidden">
                     <span className="truncate">
                       {!filterMinIncome && (!filterMaxIncome || filterMaxIncome === "10000") ? "Todos" : `${filterMinIncome || 0}€ - ${filterMaxIncome || 10000}€`}
@@ -1184,7 +1177,7 @@ export function Leads() {
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
                   <div className="flex items-center gap-1.5 overflow-hidden">
                     <Settings size={14} className="text-slate-400 shrink-0" />
-                    <span className="text-xs font-semibold text-gray-600 shrink-0">Columnas:</span>
+                    <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">Columnas:</span>
                   </div>
                   <div className="flex items-center gap-1 justify-end flex-1">
                     <span className="bg-primary-100 text-primary-700 text-xs font-bold px-2 py-1 rounded-full shrink-0">
@@ -1198,16 +1191,16 @@ export function Leads() {
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setIsColumnDropdownOpen(false)} />
                   <div className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-200 z-50 p-2 max-h-[80vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                    <div className="flex items-center justify-between mb-2 px-2 pb-2 border-b border-slate-100">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Mostrar/Ocultar</span>
+                    <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-100">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest font-heading">Mostrar/Ocultar Columnas</span>
                       <button 
                         onClick={() => {
-                          const allVisible = Object.keys(visibleColumns).reduce((acc, key) => ({ ...acc, [key]: key === "actions" ? false : true }), {});
+                          const allVisible = Object.keys(visibleColumns).reduce((acc, key) => ({ ...acc, [key]: true }), {});
                           setVisibleColumns(allVisible);
                         }}
-                        className="text-[10px] text-primary-600 font-bold hover:underline"
+                        className="text-[10px] font-bold text-primary-600 hover:text-primary-700 font-heading uppercase tracking-wide"
                       >
-                        Mostrar todo
+                        Mostrar todas
                       </button>
                     </div>
                     <div className="space-y-0.5">
@@ -1271,7 +1264,7 @@ export function Leads() {
           <div className="md:hidden flex justify-start mb-3">
             <button
               onClick={toggleAllSelection}
-              className="text-sm font-medium text-primary-600 hover:text-primary-700 flex items-center gap-2 bg-primary-50 px-3 py-1.5 rounded-btn border border-primary-100"
+              className="text-sm font-bold text-primary-600 hover:text-primary-700 flex items-center gap-2 bg-primary-50 px-3 py-1.5 rounded-btn border border-primary-100 font-heading uppercase tracking-wider"
             >
               {selectedLeadIds.size === filteredAndSortedLeads.length && filteredAndSortedLeads.length > 0 ? (
                 <>
@@ -1394,7 +1387,7 @@ export function Leads() {
                       </th>
                       {visibleColumns.name && (
                         <th
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("name")}
                         >
                           <div className="flex items-center gap-1">
@@ -1405,7 +1398,7 @@ export function Leads() {
                       )}
                       {visibleColumns.phone && (
                         <th
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("phone")}
                         >
                           <div className="flex items-center gap-1">
@@ -1416,7 +1409,7 @@ export function Leads() {
                       )}
                       {visibleColumns.listingCode && (
                         <th
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("listingCode")}
                         >
                           <div className="flex items-center gap-1">
@@ -1426,13 +1419,13 @@ export function Leads() {
                         </th>
                       )}
                       {visibleColumns.listingDescription && (
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
+                        <th className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
                           Identificador Anuncio
                         </th>
                       )}
                       {visibleColumns.operationType && (
                         <th
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("operationType")}
                         >
                           <div className="flex items-center gap-1">
@@ -1443,7 +1436,7 @@ export function Leads() {
                       )}
                       {visibleColumns.qualificationStatus && (
                         <th
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("qualificationStatus")}
                         >
                           <div className="flex items-center gap-1">
@@ -1454,7 +1447,7 @@ export function Leads() {
                       )}
                       {visibleColumns.qualifiedAt && (
                         <th
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("lastMessageDate")}
                         >
                           <div className="flex items-center gap-1">
@@ -1466,7 +1459,7 @@ export function Leads() {
                       )}
                       {visibleColumns.lastMessageDate && (
                         <th
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("lastMessageDate")}
                         >
                           <div className="flex items-center gap-1">
@@ -1478,7 +1471,7 @@ export function Leads() {
                       )}
                       {visibleColumns.messageCount && (
                         <th
-                          className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-center text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("messageCount")}
                         >
                           <div className="flex items-center justify-center gap-1">
@@ -1488,18 +1481,18 @@ export function Leads() {
                         </th>
                       )}
                       {visibleColumns.conversationSummary && (
-                        <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
+                        <th className="px-3 py-2 text-center text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
                           Resumen
                         </th>
                       )}
                       {visibleColumns.pets && (
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
+                        <th className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
                           Mascotas
                         </th>
                       )}
                       {visibleColumns.income && (
                         <th 
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 whitespace-nowrap"
+                          className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
                           onClick={() => handleSort("income")}
                         >
                           <div className="flex items-center gap-1">
@@ -1879,7 +1872,7 @@ export function Leads() {
 
       {/* Modal de Mensaje Masivo */}
       {isMassMessageModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-primary-50/50">
               <div className="flex items-center gap-2">
@@ -1953,7 +1946,7 @@ export function Leads() {
 
       {/* Modal: Borrado masivo */}
       {activeBulkModal === "delete" && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-rose-50/60">
               <div className="flex items-center gap-2">
@@ -2032,7 +2025,7 @@ export function Leads() {
 
       {/* Modal: Cambiar estado */}
       {activeBulkModal === "status" && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
               <div className="flex items-center gap-2">
@@ -2096,7 +2089,7 @@ export function Leads() {
 
       {/* Modal: Añadir tags */}
       {activeBulkModal === "addTags" && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
               <div className="flex items-center gap-2">
@@ -2154,7 +2147,7 @@ export function Leads() {
 
       {/* Modal: Quitar tag */}
       {activeBulkModal === "removeTag" && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
               <div className="flex items-center gap-2">
@@ -2212,7 +2205,7 @@ export function Leads() {
 
       {/* Modal: Cambiar anuncio */}
       {activeBulkModal === "listing" && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
               <div className="flex items-center gap-2">

@@ -105,9 +105,10 @@ export async function createCheckoutSession(
  * Create a Stripe Checkout session for a subscription plan upgrade
  */
 export async function createSubscriptionCheckout(
-    planId: string,
-    returnPath: string = "/creditos",
-    billingInterval: "month" | "year" = "month"
+    planId: SubscriptionPlanId,
+    billingInterval: "month" | "year",
+    extraBlocks: number = 0,
+    returnPath: string = "/onboarding"
 ): Promise<string> {
     const user = auth.currentUser;
     if (!user) {
@@ -124,7 +125,7 @@ export async function createSubscriptionCheckout(
             "Authorization": `Bearer ${token}`,
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({ planId, successUrl, cancelUrl, billingInterval }),
+        body: JSON.stringify({ planId, successUrl, cancelUrl, billingInterval, extraBlocks }),
     });
 
     if (!response.ok) {

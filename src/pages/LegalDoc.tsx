@@ -81,8 +81,8 @@ export function LegalDoc({ title, path }: Props) {
   return (
     <div className="min-h-[60vh] max-w-3xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
-        <p className="text-sm text-gray-500 mt-1">Documento legal</p>
+        <h1 className="text-2xl font-bold text-gray-900 font-heading">{title}</h1>
+        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-1 font-heading">Documento legal</p>
       </div>
 
       {loading && <div className="text-gray-600">Cargando…</div>}

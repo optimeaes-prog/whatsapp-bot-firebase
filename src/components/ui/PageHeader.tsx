@@ -14,8 +14,8 @@ type Props = {
 export function PageHeader({ title, subtitle, icon, actions, variant = "page", className }: Props) {
   const titleClass =
     variant === "page"
-      ? "text-2xl sm:text-3xl font-bold text-gray-900"
-      : "text-lg sm:text-xl font-bold text-gray-900";
+      ? "text-2xl sm:text-3xl font-bold text-gray-900 font-heading"
+      : "text-lg sm:text-xl font-bold text-gray-900 font-heading";
 
   return (
     <div className={cn("flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between", className)}>

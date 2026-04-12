@@ -94,7 +94,7 @@ export function Configuracion() {
       <div className="card mb-8">
         <div className="flex items-center gap-2 mb-4">
           <Home className="text-primary-500" size={24} />
-          <h2 className="text-lg font-semibold text-gray-900">Datos de la Inmobiliaria</h2>
+          <h2 className="text-lg font-bold text-gray-900 font-heading">Datos de la Inmobiliaria</h2>
         </div>
 
         <div className="flex gap-4">
@@ -126,7 +126,7 @@ export function Configuracion() {
       <div className="border-t pt-8 mb-8">
         <div className="flex items-center gap-2 mb-4">
           <Phone className="text-emerald-600" size={24} />
-          <h2 className="text-lg font-semibold text-gray-900">Proveedor de Mensajería</h2>
+          <h2 className="text-lg font-bold text-gray-900 font-heading">Proveedor de Mensajería</h2>
         </div>
 
         <p className="text-gray-600 mb-4">
@@ -148,9 +148,9 @@ export function Configuracion() {
             <div className="flex items-start justify-between">
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-semibold text-gray-900">Whapi</h3>
+                  <h3 className="font-bold text-gray-900 font-heading">Whapi</h3>
                   {(config?.messagingProvider === "whapi" || !config?.messagingProvider) && (
-                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs font-medium rounded-full">
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full font-heading uppercase tracking-wider">
                       Activo
                     </span>
                   )}
@@ -177,9 +177,9 @@ export function Configuracion() {
             <div className="flex items-start justify-between">
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-semibold text-gray-900">Twilio</h3>
+                  <h3 className="font-bold text-gray-900 font-heading">Twilio</h3>
                   {config?.messagingProvider === "twilio" && (
-                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs font-medium rounded-full">
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full font-heading uppercase tracking-wider">
                       Activo
                     </span>
                   )}
@@ -205,7 +205,7 @@ export function Configuracion() {
       <div className="border-t pt-8">
         <div className="flex items-center gap-2 mb-4">
           <MessageSquare className="text-primary-500" size={24} />
-          <h2 className="text-lg font-semibold text-gray-900">Estilo del Asistente</h2>
+          <h2 className="text-lg font-bold text-gray-900 font-heading">Estilo del Asistente</h2>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-6">
@@ -233,9 +233,9 @@ export function Configuracion() {
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <h3 className="font-semibold text-gray-900">{style.name}</h3>
+                        <h3 className="font-bold text-gray-900 font-heading">{style.name}</h3>
                         {config?.activeStyleId === style.id && (
-                          <span className="px-2 py-0.5 bg-primary-100 text-primary-700 text-xs font-medium rounded-full">
+                          <span className="px-2 py-0.5 bg-primary-100 text-primary-700 text-[10px] font-bold rounded-full font-heading uppercase tracking-wider">
                             Activo
                           </span>
                         )}
@@ -257,13 +257,13 @@ export function Configuracion() {
             <div className="card bg-gray-50">
               <div className="flex items-center gap-2 mb-4">
                 <MessageSquare className="text-primary-600" size={20} />
-                <span className="font-medium text-gray-900">
+                <span className="font-bold text-gray-900 font-heading">
                   {previewStyle?.name || styles.find((s) => s.id === config?.activeStyleId)?.name}
                 </span>
               </div>
 
               <div className="bg-white rounded-lg p-4 border border-gray-200">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 font-heading">
                   Modificador del Prompt:
                 </h4>
                 <pre className="text-xs text-gray-600 whitespace-pre-wrap font-mono bg-gray-50 p-3 rounded-lg overflow-x-auto">
@@ -273,7 +273,7 @@ export function Configuracion() {
               </div>
 
               <div className="mt-4">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">Ejemplo de respuesta:</h4>
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 font-heading">Ejemplo de respuesta:</h4>
                 <div className="space-y-3">
                   {getExampleMessages(
                     previewStyle?.id || config?.activeStyleId || "directo"
@@ -287,7 +287,7 @@ export function Configuracion() {
                           : "bg-primary-100 text-primary-800 ml-8"
                       )}
                     >
-                      <span className="text-xs font-medium text-gray-400 mb-1 block">
+                      <span className="text-[10px] font-bold text-gray-400 mb-1 block font-heading uppercase tracking-wider">
                         {msg.role === "bot" ? "Asistente" : "Cliente"}
                       </span>
                       {msg.text}

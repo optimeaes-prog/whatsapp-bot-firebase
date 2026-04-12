@@ -16,7 +16,6 @@ import {
   UserCog,
   Shield,
   ChevronDown,
-  ChevronRight,
   Coins,
   Rocket,
   FileBox,
@@ -36,7 +35,7 @@ const mainNavItems: NavItem[] = [
   { href: "/leads", label: "Leads", icon: <Users size={20} /> },
   { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
 
-  { href: "/creditos", label: "Créditos", icon: <Coins size={20} /> },
+  { href: "/suscripcion", label: "Suscripción", icon: <Coins size={20} /> },
 ];
 
 const adminNavItems: NavItem[] = [
@@ -123,7 +122,7 @@ export function Layout({ children }: { children: ReactNode }) {
             if (isOnboardingItem && !onboardingCompleted) {
               return (
                 <div key={item.href} className="mb-4">
-                  <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 ml-1">
+                  <div className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2 ml-1 font-heading">
                     Acción requerida
                   </div>
                   <Link
@@ -141,7 +140,7 @@ export function Layout({ children }: { children: ReactNode }) {
                     )}
                     <div className="flex items-center gap-3">
                       <div className={isTarget ? "text-white" : "text-primary-600"}>{item.icon}</div>
-                      <span className="font-bold">{item.label}</span>
+                      <span className="font-bold font-heading">{item.label}</span>
                     </div>
                     {!isTarget && (
                        <span className="flex h-3 w-3 relative right-2">
@@ -167,7 +166,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 )}
               >
                 {item.icon}
-                <span className="font-medium">{item.label}</span>
+                <span className="font-medium font-heading">{item.label}</span>
               </Link>
             );
           })}
@@ -178,11 +177,13 @@ export function Layout({ children }: { children: ReactNode }) {
                 onClick={() => setAdminExpanded(!adminExpanded)}
                 className="flex items-center justify-between w-full px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-btn transition-colors"
               >
-                <div className="flex items-center gap-3">
-                  <Shield size={20} />
-                  <span className="font-medium">Admin</span>
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-2">
+                    <Shield size={16} className="text-primary-600" />
+                    <span className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em] font-heading">Panel de Control</span>
+                  </div>
+                  <ChevronDown size={14} className={cn("text-gray-400 transition-transform", adminExpanded && "rotate-180")} />
                 </div>
-                {adminExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
               </button>
               
               {adminExpanded && (

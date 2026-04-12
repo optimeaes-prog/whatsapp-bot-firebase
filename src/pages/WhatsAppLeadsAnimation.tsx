@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import marcosAvatar from "../../Marcos.png";
 import waDarkPattern from "../../68747470733a2f2f7765622e77686174736170702e636f6d2f696d672f62672d636861742d74696c652d6461726b5f61346265353132653731393562366237333364393131306234303866303735642e706e67.png";
 
@@ -6,37 +6,23 @@ const AYER_MESSAGES = [
   {
     id: "s1",
     at: "09:14",
-    text: `LEAD CUALIFICADO ✅
-Teléfono: 34670402082
-Nombre: Sabina
-Propiedad: Pizarra vivienda
+    text: `Lead cualificado ✅
+
+Teléfono: 645******
+Nombre: Lucía
+Propiedad: Calle Pizarra (Cuarto piso)
 Operación: Venta
 Forma de pago: Con hipoteca (aún no solicitada)
-Ingresos: Sin datos
 Disponibilidad visita: Por las mañanas
 Notas: Le preocupa que al ser finca rústica no sea hipotecable al 100%. Quiere que le expliquen más y solicita llamada. Tiene otra vivienda que quiere ver.`,
   },
   {
-    id: "s2",
-    at: "11:47",
-    text: `LEAD CUALIFICADO ✅
-Teléfono: 34664362655
-Nombre: Sin datos
-Propiedad: COPO
-Operación: Alquiler
-Personas: 3 personas normalmente; 4 puntualmente en verano (puede venir un hijo mayor y la mujer a veces sale del país en verano)
-Ingresos: 1450-1700 €/mes (según mes) + ingresos de vivienda propia y negocio
-Mascotas: Sin mascotas
-Fechas: Entrada 1 de julio; salida 1 de septiembre (solo julio y agosto cada año)
-Disponibilidad visita: Tardes, desde las 16:00
-Notas: Viven en Torre del Mar; trabaja en seguridad en Torrox Costa (Iberostar, hasta las 7:00). Busca alquiler solo dos meses en verano; indica que le conviene.`,
-  },
-  {
     id: "s3",
     at: "16:03",
-    text: `LEAD CUALIFICADO ✅
-Teléfono: 34614393379
-Nombre: Patrycja
+    text: `Lead cualificado ✅
+
+Teléfono: 633******
+Nombre: Patricia
 Propiedad: Benajarafe
 Operación: Alquiler
 Personas: 1 persona
@@ -51,12 +37,13 @@ Notas: Busca alquiler de larga duración (no temporada). Presupuesto hasta 750 �
 const INCOMING_MESSAGE = {
   id: "new1",
   at: "15:32",
-  text: `LEAD CUALIFICADO ✅
-Teléfono: 34664362655
+  text: `Lead cualificado ✅
+
+Teléfono: 633******
 Nombre: Carlos
 Propiedad: Torremolinos
 Operación: Alquiler
-Personas: Seríamos 3 personas (2 adultos y un niño)
+Personas: Son 3 personas (2 adultos y un niño)
 Ingresos: 3.500 €
 Mascotas: Sin mascotas
 Fechas: Les gustaría entrar en 2 semanas
@@ -80,7 +67,7 @@ function renderLeadText(text: string) {
       const parts = str.split(phoneRegex);
       return parts.map((part, pi) =>
         phoneRegex.test(part) ? (
-          <span key={`ph-${li}-${pi}`} className="blur-[4px] select-none">{part}</span>
+          <span key={`ph-${li}-${pi}`}>{part}</span>
         ) : (
           <span key={`tx-${li}-${pi}`}>{part}</span>
         )
@@ -112,9 +99,14 @@ function renderLeadText(text: string) {
 }
 
 /* Date separator pill — same style as WhatsApp */
-function DateSep({ label }: { label: string }) {
+function DateSep({ label, animateIn = false }: { label: string; animateIn?: boolean }) {
   return (
-    <div className="mx-auto my-3 w-fit rounded-md bg-[#1f2c33] px-3 py-1 text-[10px] text-[#d9fdd3]">
+    <div
+      className={[
+        "mx-auto my-3 w-fit rounded-md bg-[#1f2c33] px-3 py-1 text-[10px] text-[#d9fdd3]",
+        animateIn ? "wa-msg-enter" : "",
+      ].join(" ")}
+    >
       {label}
     </div>
   );
@@ -138,6 +130,7 @@ function LeadBubble({
         "mr-auto w-fit max-w-[88%] rounded-[8px] rounded-tl-[2px] bg-white px-[9px] pt-[6px] pb-[4px] text-[12.5px] leading-[1.35] text-[#111b21] shadow-sm",
         animateIn ? "wa-msg-enter" : "",
       ].join(" ")}
+      style={animateIn ? { animationDelay: `${phase * 420}ms`, animationFillMode: "both" } : undefined}
     >
       <div className="relative">
         <p className="whitespace-pre-line [word-break:break-word]">
@@ -153,34 +146,66 @@ function LeadBubble({
   );
 }
 
-/* ─── Main component ───────────────────────────────────── */
-export function WhatsAppLeadsAnimation() {
-  const [phase, setPhase]           = useState(0);
-  const [showHoy, setShowHoy]       = useState(false);
-  const [showIncoming, setShowIncoming] = useState(false);
+export function WhatsAppLeadsAnimationPhone() {
   const chatScrollRef = useRef<HTMLDivElement>(null);
-
-  const HOY_SEP_AT  = 700;    // "Hoy" separator appears
-  const MSG_AT      = 1200;   // new message slides in
-  const PAUSE_AT    = 9500;   // restart cycle
-
-  useEffect(() => {
-    setShowHoy(false);
-    setShowIncoming(false);
-
-    const t1 = window.setTimeout(() => setShowHoy(true),      HOY_SEP_AT);
-    const t2 = window.setTimeout(() => setShowIncoming(true), MSG_AT);
-    const t3 = window.setTimeout(() => setPhase((p) => p + 1), PAUSE_AT);
-
-    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-  }, [phase]);
 
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [showIncoming, showHoy, phase]);
+    el.scrollTo({ top: el.scrollHeight });
+  }, []);
 
+  return (
+      <div className="mx-auto w-full aspect-[9/16] overflow-hidden rounded-2xl border border-[#1f2c33] shadow-[0_12px_24px_rgba(2,6,23,0.18)]">
+        <div className="relative z-10 flex h-full flex-col">
+          {/* Header */}
+          <div className="flex h-[52px] shrink-0 items-center gap-3 bg-[#202c33] px-3 text-white">
+            <img src={marcosAvatar} alt="Marcos" className="h-9 w-9 rounded-full object-cover" />
+            <div className="min-w-0">
+              <p className="truncate text-[13px] font-semibold">Marcos - Asistente virtual inmobiliario</p>
+              <p className="text-[11px] text-[#9eb3bd]">en linea</p>
+            </div>
+          </div>
+
+          {/* Chat area */}
+          <div
+            ref={chatScrollRef}
+            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#0b141a] p-3 scroll-smooth"
+            style={{
+              backgroundImage: `linear-gradient(rgba(11,20,26,0.75), rgba(11,20,26,0.75)), url(${waDarkPattern})`,
+              backgroundRepeat: "repeat",
+              backgroundSize: "280px auto",
+              backgroundPosition: "center",
+            }}
+          >
+            {/* Ayer section */}
+            <DateSep label="Ayer" />
+            <div className="space-y-3">
+              {AYER_MESSAGES.map((m) => (
+                <LeadBubble key={m.id} text={m.text} at={m.at} />
+              ))}
+            </div>
+
+            {/* Hoy section — animates in staggered */}
+            <div style={{ animation: "waMsgEnter 360ms cubic-bezier(0.22, 1, 0.36, 1) 200ms both" }}>
+              <DateSep label="Hoy" />
+            </div>
+            <div className="pb-5">
+              <LeadBubble
+                text={INCOMING_MESSAGE.text}
+                at={INCOMING_MESSAGE.at}
+                animateIn
+                phase={1}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+  );
+}
+
+/* ─── Main component ───────────────────────────────────── */
+export function WhatsAppLeadsAnimation() {
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-8 md:px-8">
       <div className="mx-auto max-w-[500px]">
@@ -191,68 +216,8 @@ export function WhatsAppLeadsAnimation() {
             Notificaciones de leads cualificados. Teléfonos ocultos.
           </p>
         </header>
-
-        <div className="mx-auto w-full max-w-[390px] aspect-[9/16] overflow-hidden rounded-2xl border border-[#1f2c33] shadow-[0_20px_36px_rgba(2,6,23,0.3)]">
-          <div className="relative z-10 flex h-full flex-col">
-            {/* Header */}
-            <div className="flex h-[52px] shrink-0 items-center gap-3 bg-[#202c33] px-3 text-white">
-              <img src={marcosAvatar} alt="Marcos" className="h-9 w-9 rounded-full object-cover" />
-              <div className="min-w-0">
-                <p className="truncate text-[13px] font-semibold">Marcos - Asistente virtual inmobiliario</p>
-                <p className="text-[11px] text-[#9eb3bd]">en linea</p>
-              </div>
-            </div>
-
-            {/* Chat area */}
-            <div
-              ref={chatScrollRef}
-              className="wa-hide-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#0b141a] p-3 [scrollbar-width:none] [-ms-overflow-style:none]"
-              style={{
-                backgroundImage: `linear-gradient(rgba(11,20,26,0.75), rgba(11,20,26,0.75)), url(${waDarkPattern})`,
-                backgroundRepeat: "repeat",
-                backgroundSize: "280px auto",
-                backgroundPosition: "center",
-              }}
-            >
-              {/* Ayer section */}
-              <DateSep label="Ayer" />
-              <div className="space-y-3">
-                {AYER_MESSAGES.map((m) => (
-                  <LeadBubble key={m.id} text={m.text} at={m.at} />
-                ))}
-              </div>
-
-              {/* Hoy section — animates in */}
-              {showHoy && (
-                <div className="wa-msg-enter">
-                  <DateSep label="Hoy" />
-                </div>
-              )}
-              {showIncoming && (
-                <div className="pb-5">
-                  <LeadBubble
-                    text={INCOMING_MESSAGE.text}
-                    at={INCOMING_MESSAGE.at}
-                    animateIn
-                    phase={phase}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <WhatsAppLeadsAnimationPhone />
       </div>
-
-      <style>{`
-        @keyframes waMsgEnter {
-          from { opacity: 0; transform: translateY(8px) scale(0.98); }
-          to   { opacity: 1; transform: translateY(0)    scale(1);    }
-        }
-        .wa-msg-enter {
-          animation: waMsgEnter 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
-        }
-        .wa-hide-scrollbar::-webkit-scrollbar { display: none; }
-      `}</style>
     </main>
   );
 }

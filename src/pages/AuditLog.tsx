@@ -113,7 +113,7 @@ export function AuditLog() {
             <FilterCard className="mb-6">
                 <div className="flex items-center gap-2 mb-4">
                     <Filter size={18} className="text-gray-600" />
-                    <h2 className="font-semibold text-gray-900">Filtros</h2>
+                    <h2 className="font-bold text-gray-900 font-heading">Filtros</h2>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -136,7 +136,7 @@ export function AuditLog() {
                             onClick={() => setIsEntityTypeDropdownOpen(!isEntityTypeDropdownOpen)}
                         >
                             <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                                <span className="text-xs font-semibold text-gray-600">Tipo:</span>
+                                <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest font-heading">Origen:</span>
                                 <div className="flex items-center gap-1">
                                     {filterEntityType === "all" ? "Todos" : getEntityTypeLabel(filterEntityType)}
                                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isEntityTypeDropdownOpen && "rotate-180")} />
@@ -179,7 +179,7 @@ export function AuditLog() {
                             onClick={() => setIsActionDropdownOpen(!isActionDropdownOpen)}
                         >
                             <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                                <span className="text-xs font-semibold text-gray-600">Acción:</span>
+                                <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest font-heading">Acción:</span>
                                 <div className="flex items-center gap-1">
                                     {filterAction === "all" ? "Todas" : getActionLabel(filterAction)}
                                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isActionDropdownOpen && "rotate-180")} />
@@ -224,7 +224,7 @@ export function AuditLog() {
                             onClick={() => setIsSourceDropdownOpen(!isSourceDropdownOpen)}
                         >
                             <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                                <span className="text-xs font-semibold text-gray-600">Origen:</span>
+                                <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest font-heading">Origen:</span>
                                 <div className="flex items-center gap-1">
                                     {filterSource === "all" ? "Todos" : filterSource === "user" ? "Usuario" : "Sistema"}
                                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isSourceDropdownOpen && "rotate-180")} />
@@ -264,7 +264,7 @@ export function AuditLog() {
                 {filteredLogs.length === 0 ? (
                     <div className="flex flex-col items-center justify-center p-12 text-center">
                         <History className="text-gray-300 mb-3" size={48} />
-                        <h3 className="text-sm font-medium text-gray-900 mb-1">No hay registros</h3>
+                        <h3 className="text-sm font-bold text-gray-900 mb-1 font-heading">No hay registros</h3>
                         <p className="text-xs text-gray-500">
                             No se encontraron cambios con los filtros seleccionados
                         </p>
@@ -274,22 +274,22 @@ export function AuditLog() {
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-widest font-heading">
                                         Fecha/Hora
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-widest font-heading">
                                         Usuario
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-widest font-heading">
                                         Tipo
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-widest font-heading">
                                         Acción
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-widest font-heading">
                                         ID Entidad
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-widest font-heading">
                                         Detalles
                                     </th>
                                 </tr>
@@ -334,7 +334,7 @@ export function AuditLog() {
                                                 <td className="px-4 py-3 text-sm">
                                                     <span
                                                         className={cn(
-                                                            "px-2 py-1 text-xs font-medium rounded-full",
+                                                            "px-2 py-1 text-[10px] font-bold rounded-full uppercase tracking-widest font-heading border",
                                                             getActionColor(log.action)
                                                         )}
                                                     >

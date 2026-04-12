@@ -16,14 +16,12 @@ import { resolveConversationQualification } from "../lib/conversationQualificati
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
 import { getListings } from "../services/listings";
-import { getLeads, filterQualifiedLeads } from "../services/leads";
 import type { Listing } from "../types";
 import { Button, InboxShell, PageLoading } from "../components/ui";
 
 export function Conversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
-  const [leadTagsByChatId, setLeadTagsByChatId] = useState<Map<string, string[]>>(new Map());
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "finished">("all");
@@ -34,7 +32,6 @@ export function Conversations() {
   const [filterDate, setFilterDate] = useState("all");
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [newMessage, setNewMessage] = useState("");
-  const [qualifiedChatIds, setQualifiedChatIds] = useState<Set<string>>(new Set());
   const [sending, setSending] = useState(false);
   const [showDetailsMobile, setShowDetailsMobile] = useState(false);
 
@@ -52,23 +49,12 @@ export function Conversations() {
 
   async function loadConversations() {
     try {
-      const [data, listingsData, leadsData] = await Promise.all([
+      const [data, listingsData] = await Promise.all([
         getConversations(),
         getListings(),
-        getLeads(),
       ]);
       setConversations(data);
       setListings(listingsData);
-      setLeadTagsByChatId(
-        new Map(
-          leadsData
-            .filter((l) => l.chatId)
-            .map((l) => [l.chatId, (l.tags || []).filter((t) => t.toLowerCase() !== "lead")])
-        )
-      );
-      setQualifiedChatIds(
-        new Set(filterQualifiedLeads(leadsData).map((l) => l.chatId))
-      );
       
       setSelectedConversation(prev => {
         if (prev) {
@@ -197,61 +183,97 @@ export function Conversations() {
     return listing?.description || conv.listingCode || "—";
   };
 
-  const filteredConversations = conversations.filter((conv) => {
-    const matchesSearch =
-      (conv.phone || "").includes(search) ||
-      (conv.name || "").toLowerCase().includes(search.toLowerCase()) ||
-      (conv.listingCode || "").toLowerCase().includes(search.toLowerCase());
-    
-    const matchesStatus =
-      filterStatus === "all" ||
-      (filterStatus === "active" && !conv.isFinished) ||
-      (filterStatus === "finished" && conv.isFinished);
-
-    const matchesListing = 
-      filterListing === "all" || 
-      conv.listingCode === filterListing;
-
-    const q = resolveConversationQualification(conv, { qualifiedChatIds });
-
-    const matchesQualified =
-      filterQualified === "all" ||
-      (filterQualified === "qualified" && q === "qualified") ||
-      (filterQualified === "not_qualified" && q !== "qualified");
-
-    const listing = conv.listingCode ? listingMap.get(conv.listingCode) : null;
-    const matchesListingStatus = 
-      filterListingStatus === "all" ||
-      (filterListingStatus === "active" && listing?.isActive !== false) ||
-      (filterListingStatus === "inactive" && listing?.isActive === false);
-
-    const matchesAssistantStatus = 
-      filterAssistantStatus === "all" ||
-      (filterAssistantStatus === "active" && !conv.botDisabled) ||
-      (filterAssistantStatus === "disabled" && conv.botDisabled);
-
-    const getStartOfDay = (date: Date) => { const d = new Date(date); d.setHours(0, 0, 0, 0); return d; };
-    const getEndOfDay = (date: Date) => { const d = new Date(date); d.setHours(23, 59, 59, 999); return d; };
-    
-    let range: {start: Date, end: Date} | null = null;
+  const filteredConversations = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+    const startOfDay = (date: Date) => {
+      const d = new Date(date);
+      d.setHours(0, 0, 0, 0);
+      return d;
+    };
+    const endOfDay = (date: Date) => {
+      const d = new Date(date);
+      d.setHours(23, 59, 59, 999);
+      return d;
+    };
     const now = new Date();
-    
-    if (filterDate === "today") range = { start: getStartOfDay(now), end: getEndOfDay(now) };
-    else if (filterDate === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); range = { start: getStartOfDay(y), end: getEndOfDay(y) }; }
-    else if (filterDate === "last_7") { const p = new Date(now); p.setDate(p.getDate() - 7); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
-    else if (filterDate === "last_30") { const p = new Date(now); p.setDate(p.getDate() - 30); range = { start: getStartOfDay(p), end: getEndOfDay(now) }; }
+    let range: { start: Date; end: Date } | null = null;
 
-    const isWithinRange = (ts: any, r: {start: Date, end: Date} | null) => {
-      if (!r) return true;
+    if (filterDate === "today") range = { start: startOfDay(now), end: endOfDay(now) };
+    else if (filterDate === "yesterday") {
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      range = { start: startOfDay(yesterday), end: endOfDay(yesterday) };
+    } else if (filterDate === "last_7") {
+      const past = new Date(now);
+      past.setDate(past.getDate() - 7);
+      range = { start: startOfDay(past), end: endOfDay(now) };
+    } else if (filterDate === "last_30") {
+      const past = new Date(now);
+      past.setDate(past.getDate() - 30);
+      range = { start: startOfDay(past), end: endOfDay(now) };
+    }
+
+    const isWithinRange = (ts: unknown) => {
+      if (!range) return true;
       if (!ts) return false;
-      const date = ts?.toDate ? ts.toDate() : new Date(ts);
-      return date >= r.start && date <= r.end;
+      const maybeTs = ts as { toDate?: () => Date };
+      const date = maybeTs?.toDate ? maybeTs.toDate() : new Date(ts as string | number | Date);
+      return date >= range.start && date <= range.end;
     };
 
-    const matchesDate = isWithinRange(conv.lastMessage, range);
+    return conversations.filter((conv) => {
+      const matchesSearch =
+        !normalizedSearch ||
+        (conv.phone || "").includes(normalizedSearch) ||
+        (conv.name || "").toLowerCase().includes(normalizedSearch) ||
+        (conv.listingCode || "").toLowerCase().includes(normalizedSearch);
 
-    return matchesSearch && matchesStatus && matchesListing && matchesQualified && matchesListingStatus && matchesAssistantStatus && matchesDate;
-  });
+      const matchesStatus =
+        filterStatus === "all" ||
+        (filterStatus === "active" && !conv.isFinished) ||
+        (filterStatus === "finished" && conv.isFinished);
+
+      const matchesListing = filterListing === "all" || conv.listingCode === filterListing;
+
+      const q = resolveConversationQualification(conv);
+      const matchesQualified =
+        filterQualified === "all" ||
+        (filterQualified === "qualified" && q === "qualified") ||
+        (filterQualified === "not_qualified" && q !== "qualified");
+
+      const listing = conv.listingCode ? listingMap.get(conv.listingCode) : null;
+      const matchesListingStatus =
+        filterListingStatus === "all" ||
+        (filterListingStatus === "active" && listing?.isActive !== false) ||
+        (filterListingStatus === "inactive" && listing?.isActive === false);
+
+      const matchesAssistantStatus =
+        filterAssistantStatus === "all" ||
+        (filterAssistantStatus === "active" && !conv.botDisabled) ||
+        (filterAssistantStatus === "disabled" && conv.botDisabled);
+
+      const matchesDate = isWithinRange(conv.lastMessage);
+      return (
+        matchesSearch &&
+        matchesStatus &&
+        matchesListing &&
+        matchesQualified &&
+        matchesListingStatus &&
+        matchesAssistantStatus &&
+        matchesDate
+      );
+    });
+  }, [
+    conversations,
+    search,
+    filterStatus,
+    filterListing,
+    filterQualified,
+    filterListingStatus,
+    filterAssistantStatus,
+    filterDate,
+    listingMap,
+  ]);
 
   if (loading) {
     return <PageLoading className="h-64" />;
@@ -267,8 +289,8 @@ export function Conversations() {
         {/* Header */}
         <div className="p-3 sm:p-4 border-b border-gray-200 bg-white space-y-3">
           <div className="flex items-center justify-between">
-            <h1 className="text-lg sm:text-xl font-bold text-gray-900">Conversaciones</h1>
-            <span className="bg-primary-100 text-primary-700 text-xs font-bold px-2 py-1 rounded-full">
+            <h1 className="text-lg sm:text-xl font-bold text-gray-900 font-heading">Conversaciones</h1>
+            <span className="bg-primary-100 text-primary-700 text-xs font-bold px-2 py-1 rounded-full font-heading">
               {filteredConversations.length}
             </span>
           </div>
@@ -294,11 +316,14 @@ export function Conversations() {
               >
                 <Calendar size={14} className="text-gray-400 shrink-0" />
                 <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
-                  <span className="truncate">
-                    Fecha: {filterDate === "today" ? "Hoy" : 
-                           filterDate === "yesterday" ? "Ayer" : 
-                           filterDate === "last_7" ? "7 días" : 
-                           filterDate === "last_30" ? "30 días" : "Todos"}
+                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">
+                    Fecha:
+                  </span>
+                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
+                    {filterDate === "today" ? "Hoy" : 
+                     filterDate === "yesterday" ? "Ayer" : 
+                     filterDate === "last_7" ? "7 días" : 
+                     filterDate === "last_30" ? "30 días" : "Todos"}
                   </span>
                   <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isDateDropdownOpen && "rotate-180")} />
                 </div>
@@ -338,7 +363,8 @@ export function Conversations() {
               >
                 <Megaphone size={14} className="text-gray-400 shrink-0" />
                 <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
-                  <span className="truncate">Anuncio: {filterListing === "all" ? "Todos" : filterListing}</span>
+                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Anuncio:</span>
+                  <span className="truncate font-heading font-bold text-gray-700 ml-1">{filterListing === "all" ? "Todos" : filterListing}</span>
                   <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isListingDropdownOpen && "rotate-180")} />
                 </div>
               </div>
@@ -382,9 +408,10 @@ export function Conversations() {
               >
                 <CheckCircle size={14} className="text-gray-400 shrink-0" />
                 <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
-                  <span className="truncate">
-                    Cualificación: {filterQualified === "all" ? "Todos" : 
-                                   filterQualified === "qualified" ? "Cualificados" : "No cualificados"}
+                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Cualif:</span>
+                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
+                    {filterQualified === "all" ? "Todos" : 
+                     filterQualified === "qualified" ? "Sí" : "No"}
                   </span>
                   <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isQualifiedDropdownOpen && "rotate-180")} />
                 </div>
@@ -422,9 +449,10 @@ export function Conversations() {
               >
                 <Activity size={14} className="text-gray-400 shrink-0" />
                 <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
-                  <span className="truncate">
-                    Anuncio: {filterListingStatus === "all" ? "Todos" : 
-                             filterListingStatus === "active" ? "Activo" : "Inactivo"}
+                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Anuncio:</span>
+                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
+                    {filterListingStatus === "all" ? "Todos" : 
+                     filterListingStatus === "active" ? "Activo" : "Inactivo"}
                   </span>
                   <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isListingStatusDropdownOpen && "rotate-180")} />
                 </div>
@@ -462,9 +490,10 @@ export function Conversations() {
               >
                 <Bot size={14} className="text-gray-400 shrink-0" />
                 <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
-                  <span className="truncate">
-                    Asistente: {filterAssistantStatus === "all" ? "Todos" : 
-                               filterAssistantStatus === "active" ? "Activo" : "Off"}
+                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Bot:</span>
+                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
+                    {filterAssistantStatus === "all" ? "Todos" : 
+                     filterAssistantStatus === "active" ? "Activo" : "Off"}
                   </span>
                   <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isAssistantStatusDropdownOpen && "rotate-180")} />
                 </div>
@@ -502,9 +531,10 @@ export function Conversations() {
               >
                 <MessageSquare size={14} className="text-gray-400 shrink-0" />
                 <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
-                  <span className="truncate">
-                    Conversación: {filterStatus === "all" ? "Todos" : 
-                                   filterStatus === "active" ? "Activas" : "Finalizadas"}
+                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Estado:</span>
+                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
+                    {filterStatus === "all" ? "Todos" : 
+                     filterStatus === "active" ? "Activas" : "Fin"}
                   </span>
                   <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isStatusDropdownOpen && "rotate-180")} />
                 </div>
@@ -567,11 +597,11 @@ export function Conversations() {
                   >
                     <div className="flex items-center justify-between gap-2 mb-0.5">
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <h3 className="font-semibold text-gray-900 text-sm truncate">
+                        <h3 className="font-bold text-gray-900 text-sm truncate font-heading">
                           {conv.name || (conv.phone ? formatPhoneWhatsApp(conv.phone) : conv.id)}
                         </h3>
                         {(() => {
-                          const q = resolveConversationQualification(conv, { qualifiedChatIds });
+                          const q = resolveConversationQualification(conv);
                           if (q === "pending") return null;
                           return (
                             <span
@@ -621,22 +651,29 @@ export function Conversations() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1 mt-1 overflow-hidden" onClick={() => setSelectedConversation(conv)}>
-                  {(leadTagsByChatId.get(conv.chatId) || (conv.tags || []).filter((t) => t.toLowerCase() !== "lead")).slice(0, 3).map(tag => (
-                    <span
-                      key={tag}
-                      className={cn(
-                        tag === 'non-lead' ? "px-1.5 py-0.5 text-[10px] font-medium rounded border bg-slate-50 text-slate-600 border-slate-100" :
-                            customLeadTagSm
-                      )}
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                  {(leadTagsByChatId.get(conv.chatId) || (conv.tags || []).filter((t) => t.toLowerCase() !== "lead")).length > 3 && (
-                    <span className="px-1.5 py-0.5 text-[10px] font-medium rounded border bg-gray-50 text-gray-600 border-gray-200">
-                      +{(leadTagsByChatId.get(conv.chatId) || (conv.tags || []).filter((t) => t.toLowerCase() !== "lead")).length - 3}
-                    </span>
-                  )}
+                  {(() => {
+                    const tags = (conv.tags || []).filter((t) => t.toLowerCase() !== "lead");
+                    return (
+                      <>
+                        {tags.slice(0, 3).map(tag => (
+                          <span
+                            key={tag}
+                            className={cn(
+                              tag === "non-lead" ? "px-1.5 py-0.5 text-[10px] font-medium rounded border bg-slate-50 text-slate-600 border-slate-100" :
+                                customLeadTagSm
+                            )}
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        {tags.length > 3 && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded border bg-gray-50 text-gray-600 border-gray-200">
+                            +{tags.length - 3}
+                          </span>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
                 {conv.botDisabled && (
                   <div
@@ -724,7 +761,7 @@ export function Conversations() {
                 </span>
               )}
               {(() => {
-                const q = resolveConversationQualification(selectedConversation, { qualifiedChatIds });
+                const q = resolveConversationQualification(selectedConversation);
                 if (q === "pending") return null;
                 return (
                   <span

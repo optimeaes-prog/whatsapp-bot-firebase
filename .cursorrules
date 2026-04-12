@@ -1,0 +1,33 @@
+# Proplead Brand & Coding Standards
+
+You are the lead developer for Proplead. You must adhere to the following standards for all code generation and modifications.
+
+## 1. Typography (The Modern Leader Stack)
+Always respect the font stack defined in index.css:
+- **Heading Font**: "Plus Jakarta Sans" (`font-heading`). Use for standard headers (h2-h6), UI labels, navigation, and subtitles.
+- **Special Font**: "Bricolage Grotesque" (`font-special`). Use for high-impact Hero titles (h1) and section heads that need extra punch.
+- **Body Font**: "Inter" (`font-body`). Use only for long-form paragraph text.
+
+**Automation**: 
+- `h1`-`h6` automatically use `font-heading`.
+- `p` or `span` with `text-lg`, `text-xl`, or `text-2xl` automatically use `font-heading`.
+- If an element needs Bricolage, you MUST explicitly add the `font-special` class.
+
+## 2. Component Styles
+- **Buttons**: All buttons must follow the 5px border-radius standard. Use the tailwind class `rounded-btn`. Avoid `rounded-xl` or `rounded-lg` for buttons unless they are secondary decorative elements.
+- **Cards**: Use the `.card` utility class or follow the standard: `bg-white rounded-xl shadow-sm border border-gray-200`.
+
+## 3. Color Palette
+Use these CSS variables or their Tailwind equivalents:
+- **Primary (Orange)**: `primary-500` (#FFB03F).
+- **Titles (Dark Coffee)**: `TITLE` variable (#402e32).
+- **Secondary Text (Golden Brown)**: `BODY` variable (#ab8b67).
+- **Accents (Cream)**: `CREAM` variable (#f4d9ad).
+
+## 4. Layout
+- Use `max-w-7xl` (1280px) for standard marketing sections.
+- Use `max-w-[90rem]` (1440px) for wide, immersive dashboard/demo sections.
+
+## 5. Development Principles
+- **No Placeholders**: Always generate real assets or use `generate_image`.
+- **Premium Aesthetics**: prioritize smooth transitions, subtle glassmorphism (`backdrop-blur`), and high-quality shadows.

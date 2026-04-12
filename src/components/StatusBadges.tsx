@@ -12,27 +12,27 @@ export function QualificationBadge({
 }) {
   if (!status || status === "not_qualified") {
     return (
-      <span className={cn(qualificationStatusClasses.notQualified, className)}>
+      <span className={cn(qualificationStatusClasses.notQualified, "font-heading font-semibold", className)}>
         No cualificado
       </span>
     );
   }
   if (status === "no_response") {
     return (
-      <span className={cn(qualificationStatusClasses.noResponse, className)}>
+      <span className={cn(qualificationStatusClasses.noResponse, "font-heading font-semibold", className)}>
         Sin respuesta
       </span>
     );
   }
   if (status === "qualified") {
     return (
-      <span className={cn(qualificationStatusClasses.qualified, className)}>
+      <span className={cn(qualificationStatusClasses.qualified, "font-heading font-semibold", className)}>
         Cualificado
       </span>
     );
   }
   return (
-    <span className={cn(qualificationStatusClasses.rejected, className)}>
+    <span className={cn(qualificationStatusClasses.rejected, "font-heading font-semibold", className)}>
       Rechazado
     </span>
   );
@@ -54,7 +54,7 @@ export function OperationTypeBadge({
         className
       )}
     >
-      {type || "—"}
+      <span className="font-heading font-bold uppercase tracking-widest">{type || "—"}</span>
     </span>
   );
 }

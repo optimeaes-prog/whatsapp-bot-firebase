@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=Plus+Jakarta+Sans:wght@600;700&family=Inter:wght@400;500;600;700&display=swap');
 
 @theme {
   /* Botones: casi rectangulares, un pelín menos redondeo que rounded-lg (8px) */
@@ -18,7 +19,11 @@
 }
 
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  --font-special: "Bricolage Grotesque", sans-serif;
+  --font-heading: "Plus Jakarta Sans", sans-serif;
+  --font-body: "Inter", sans-serif;
+
+  font-family: var(--font-body);
   line-height: 1.5;
   font-weight: 400;
   color: #213547;
@@ -26,9 +31,48 @@
 }
 
 body {
+  font-family: var(--font-body);
+  @apply text-slate-900;
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+}
+
+/* Structural Elements Default to Heading Font */
+h1, h2, h3, h4, h5, h6,
+button,
+label,
+input,
+select,
+textarea,
+th,
+dt,
+summary,
+.font-heading {
+  font-family: var(--font-heading) !important;
+}
+
+/* Impact elements / Hero titles */
+.font-special, .font-bricolage {
+  font-family: var(--font-special) !important;
+}
+
+/* Subtitles and large text automatically adopt the heading font */
+p.text-lg, p.text-xl, p.text-2xl,
+span.text-lg, span.text-xl, span.text-2xl {
+  font-family: var(--font-heading);
+}
+
+/* Standard text retains body font */
+p, span, li, td, dd, .font-body {
+  font-family: var(--font-body);
+}
+
+/* Ensure nested elements in structural UI components inherit the heading font */
+button *,
+h1 *, h2 *, h3 *, h4 *, h5 *, h6 *,
+.font-heading * {
+  font-family: inherit;
 }
 
 .card {
@@ -75,6 +119,26 @@ body {
 .land-float-bob-delayed {
   animation: landFloatBob 4s ease-in-out infinite 1.5s;
 }
+
+/* =====================================================
+   WhatsApp phone animation — shared across components
+   ===================================================== */
+
+@keyframes waMsgEnter {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
+@keyframes msgAppear {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.wa-msg-enter {
+  animation: waMsgEnter 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.wa-hide-scrollbar::-webkit-scrollbar { display: none; }
 
 /* Dual Range Slider Styles */
 .range-slider-container {

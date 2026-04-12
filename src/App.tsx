@@ -15,6 +15,7 @@ import { Configuracion } from "./pages/Configuracion";
 import { AuditLog } from "./pages/AuditLog";
 import { Landing } from "./pages/Landing";
 import { MarketingLanding } from "./pages/MarketingLanding";
+import { MarketingLandingV2 } from "./pages/MarketingLandingV2";
 import { Users } from "./pages/Users";
 import { Credits } from "./pages/Credits";
 import { Onboarding } from "./pages/Onboarding";
@@ -22,6 +23,9 @@ import { AdminOnboards } from "./pages/AdminOnboards";
 import { LegalDoc } from "./pages/LegalDoc";
 import { WhatsAppAnimationLab } from "./pages/WhatsAppAnimationLab";
 import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
+import FontGallery from "./pages/FontGallery";
+
+import { useEffect } from "react";
 
 const queryClient = new QueryClient();
 
@@ -35,15 +39,52 @@ function CualificadosRedirect() {
   return <Navigate to={`/leads?${qs.toString()}`} replace />;
 }
 
+const FONT_STACKS_URLS: Record<string, string> = {
+  "modern-leader": "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700;800&family=Plus+Jakarta+Sans:wght@600;700&family=Inter:wght@400;500&display=swap",
+  "sharp-geometric": "https://fonts.googleapis.com/css2?family=Outfit:wght@700;800;900&family=Sora:wght@600;700&family=Public+Sans:wght@400;500&display=swap",
+  "friendly-saas": "https://fonts.googleapis.com/css2?family=Lexend:wght@700;800&family=Manrope:wght@600;700&family=Figtree:wght@400;500&display=swap",
+  "sophisticated-tech": "https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,700;1,9..144,700&family=IBM+Plex+Sans:wght@600;700&family=Urbanist:wght@400;500&display=swap",
+  "bold-contemporary": "https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Space+Grotesk:wght@600;700&family=Work+Sans:wght@400;500&display=swap",
+  "classic-professional": "https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Ubuntu:wght@500;700&family=Roboto:wght@400;500&display=swap"
+};
+
 function App() {
+  useEffect(() => {
+    // Restore fonts from localStorage
+    const special = localStorage.getItem("font_special");
+    const heading = localStorage.getItem("font_heading");
+    const body = localStorage.getItem("font_body");
+    const activeStackId = localStorage.getItem("active_font_stack");
+
+    if (special && heading && body && activeStackId) {
+      const root = document.documentElement;
+      root.style.setProperty("--font-special", `'${special}', sans-serif`);
+      root.style.setProperty("--font-heading", `'${heading}', sans-serif`);
+      root.style.setProperty("--font-body", `'${body}', sans-serif`);
+      document.body.style.fontFamily = `'${body}', sans-serif`;
+
+      // Load fonts if they are from our predefined stacks
+      const stack = FONT_STACKS_URLS[activeStackId];
+      if (stack && !document.getElementById(`font-link-${activeStackId}`)) {
+        const link = document.createElement("link");
+        link.id = `font-link-${activeStackId}`;
+        link.rel = "stylesheet";
+        link.href = stack;
+        document.head.appendChild(link);
+      }
+    }
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/fonts" element={<FontGallery />} />
             <Route path="/" element={<Landing />} />
-            <Route path="/marketing" element={<MarketingLanding />} />
+            <Route path="/landingv2" element={<MarketingLanding />} />
+            <Route path="/landingv3" element={<MarketingLandingV2 />} />
             <Route path="/terms" element={<LegalDoc title="Términos y Condiciones" path="/legal/terms.es.md" />} />
             <Route path="/privacy" element={<LegalDoc title="Política de Privacidad" path="/legal/privacy.es.md" />} />
             <Route path="/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
@@ -145,7 +186,7 @@ function App() {
               }
             />
             <Route
-              path="/creditos"
+              path="/suscripcion"
               element={
                 <ProtectedRoute>
                   <Layout>

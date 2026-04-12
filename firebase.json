@@ -29,6 +29,10 @@
     ],
     "rewrites": [
       {
+        "source": "/landingv2/**",
+        "destination": "/index.html"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

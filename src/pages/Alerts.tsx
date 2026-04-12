@@ -338,8 +338,8 @@ export function Alerts() {
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                     <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
                         <div>
-                            <h3 className="text-sm font-bold text-gray-900">Estado de alertas configuradas</h3>
-                            <p className="text-xs text-gray-500">Última ocurrencia por tipo (y conteo en 24h)</p>
+                            <h3 className="text-sm font-bold text-gray-900 font-heading">Estado de alertas configuradas</h3>
+                            <p className="text-xs text-gray-500 font-body">Última ocurrencia por tipo (y conteo en 24h)</p>
                         </div>
                         <div className="text-xs text-gray-400">
                             {catalogLoading ? "Cargando…" : `${catalogRows.length} tipos`}
@@ -376,16 +376,16 @@ export function Alerts() {
                                             <>
                                                 <tr key={row.key} className="hover:bg-gray-50/60">
                                                     <td className="px-5 py-3">
-                                                        <div className="font-semibold text-gray-900">{row.subject}</div>
+                                                        <div className="font-bold text-gray-900 font-heading">{row.subject}</div>
                                                         {row.lastMessage ? (
-                                                            <div className="text-xs text-gray-500 truncate max-w-[520px]">
+                                                            <div className="text-xs text-gray-500 truncate max-w-[520px] font-body">
                                                                 {row.lastMessage}
                                                             </div>
                                                         ) : null}
                                                     </td>
                                                     <td className="px-5 py-3">
                                                     <span className={cn(
-                                                        "inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border",
+                                                        "inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border font-heading",
                                                         hasEver ? getSeverityStyles(sev) : "border-gray-200 bg-gray-50 text-gray-600"
                                                     )}>
                                                         {hasEver ? getSeverityIcon(sev) : <Info className="text-gray-400" size={20} />}
@@ -409,7 +409,7 @@ export function Alerts() {
                                                                     row.enabled ? "translate-x-5" : "translate-x-0"
                                                                 )} />
                                                             </span>
-                                                            <span className="text-xs font-semibold text-gray-600">
+                                                            <span className="text-xs font-bold text-gray-600 font-heading tracking-wide">
                                                                 {row.enabled ? "ON" : "OFF"}
                                                             </span>
                                                         </label>
@@ -466,7 +466,7 @@ export function Alerts() {
                                                         {lastDate ? formatDate(lastDate) : "—"}
                                                     </td>
                                                     <td className="px-5 py-3">
-                                                        <span className="inline-flex items-center px-2 py-1 rounded-full bg-gray-100 text-gray-700 text-xs font-semibold">
+                                                        <span className="inline-flex items-center px-2 py-1 rounded-full bg-gray-100 text-gray-700 text-xs font-bold font-heading">
                                                             {row.countLast24h}
                                                         </span>
                                                     </td>
@@ -519,8 +519,8 @@ export function Alerts() {
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
                     <div>
-                        <h3 className="text-sm font-bold text-gray-900">Log de alertas</h3>
-                        <p className="text-xs text-gray-500">Eventos recientes (últimos 7 días). Despliega una fila para ver detalles técnicos.</p>
+                        <h3 className="text-sm font-bold text-gray-900 font-heading">Log de alertas</h3>
+                        <p className="text-xs text-gray-500 font-body">Eventos recientes (últimos 7 días). Despliega una fila para ver detalles técnicos.</p>
                     </div>
                     <div className="text-xs text-gray-400">{alerts.length}</div>
                 </div>
@@ -560,7 +560,7 @@ export function Alerts() {
                                                 <td className="px-5 py-3 text-xs text-gray-600 whitespace-nowrap">{when}</td>
                                                 <td className="px-5 py-3">
                                                     <span className={cn(
-                                                        "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border",
+                                                        "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border font-heading",
                                                         getSeverityStyles(alert.severity)
                                                     )}>
                                                         {getSeverityIcon(alert.severity)}
@@ -568,8 +568,8 @@ export function Alerts() {
                                                     </span>
                                                 </td>
                                                 <td className="px-5 py-3">
-                                                    <div className="font-semibold text-gray-900">{alert.subject}</div>
-                                                    <div className="text-xs text-gray-500">ID: <span className="font-mono">{alert.id}</span></div>
+                                                    <div className="font-bold text-gray-900 font-heading">{alert.subject}</div>
+                                                    <div className="text-xs text-gray-500 font-body">ID: <span className="font-mono">{alert.id}</span></div>
                                                 </td>
                                                 <td className="px-5 py-3 text-right">
                                                     <button
@@ -587,7 +587,7 @@ export function Alerts() {
                                                     <td colSpan={4} className="px-5 py-4">
                                                         <div className="space-y-4">
                                                             <div>
-                                                                <div className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">
+                                                                <div className="text-[11px] font-black text-gray-400 uppercase tracking-widest mb-2 font-heading">
                                                                     Detalles técnicos
                                                                 </div>
                                                                 <div className="bg-gray-50 rounded-lg p-4 font-mono text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap border border-gray-100">
@@ -599,7 +599,7 @@ export function Alerts() {
 
                                                             {chatIds.length > 0 ? (
                                                                 <div className="border-t pt-4">
-                                                                    <div className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">
+                                                                    <div className="text-[11px] font-black text-gray-400 uppercase tracking-widest mb-2 font-heading">
                                                                         Acciones por chatId
                                                                     </div>
                                                                     <div className="grid gap-2">
