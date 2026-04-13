@@ -220,6 +220,8 @@ export type OrgSubscription = {
   status: "active" | "past_due" | "canceled" | "trialing";
   currentPeriodEnd: FirebaseFirestore.Timestamp;
   updatedAt: FirebaseFirestore.Timestamp;
+  /** Extra 40-conversation blocks purchased on top of the base plan */
+  extraBlocks?: number;
 };
 
 // ==================== CREDIT SYSTEM TYPES ====================

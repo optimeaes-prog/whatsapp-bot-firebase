@@ -71,6 +71,7 @@ import {
   extractBillingFromCheckoutSession,
   getCreditPackages,
   constructWebhookEvent,
+  createBillingPortalSession as createBillingPortalSessionService,
 } from "./services/stripeService";
 import {
   getOrgSubscription,
@@ -2971,20 +2972,60 @@ export const getSubscription = onRequest({ cors: true, region: REGION }, async (
     const sub = await getOrgSubscription(ORG_ID);
 
     if (!sub) {
-      res.status(200).json({ planId: "free", status: "active", currentPeriodEnd: null });
+      res.status(200).json({ planId: "free", status: "active", currentPeriodEnd: null, contractedConversations: SUBSCRIPTION_CREDITS["free"] });
       return;
     }
+
+    const baseCredits = SUBSCRIPTION_CREDITS[sub.planId] ?? 0;
+    const contractedConversations = baseCredits + (sub.extraBlocks ?? 0) * 40;
 
     res.status(200).json({
       planId: sub.planId,
       status: sub.status,
       currentPeriodEnd: sub.currentPeriodEnd,
+      contractedConversations,
     });
   } catch (error) {
     console.error("Error getting subscription:", error);
     res.status(500).json({ error: "Failed to get subscription" });
   }
 });
+
+/**
+ * Create a Stripe Billing Portal session for managing subscriptions
+ */
+export const createBillingPortalSession = onRequest(
+  { cors: true, region: REGION, secrets: ["STRIPE_API_KEY"] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+      const { returnUrl } = req.body as { returnUrl?: string };
+      if (!returnUrl) {
+        res.status(400).json({ error: "returnUrl is required" });
+        return;
+      }
+      const customerId = await getOrgStripeCustomerId(ORG_ID);
+      if (!customerId) {
+        res.status(400).json({ error: "No Stripe customer found for this organization" });
+        return;
+      }
+      const session = await createBillingPortalSessionService(ORG_ID, customerId, returnUrl);
+      res.status(200).json({ url: session.url });
+    } catch (error) {
+      console.error("Error creating billing portal session:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create billing portal session" });
+    }
+  }
+);
 
 /**
  * Create a Stripe Checkout session for purchasing credits

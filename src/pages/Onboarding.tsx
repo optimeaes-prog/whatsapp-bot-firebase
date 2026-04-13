@@ -6,6 +6,7 @@ import type { OrganizationSettings } from "../services/organization";
 import { PopupModal, useCalendlyEventListener } from "react-calendly";
 import { Link, useSearchParams } from "react-router-dom";
 import { getUserCredits, getCreditPackages, createCheckoutSession, formatPrice } from "../services/credits";
+import { analytics } from "../lib/analytics";
 import type { CreditPackage } from "../types";
 import { CreditCard, AlertCircle } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -44,6 +45,7 @@ export function Onboarding() {
 
   useCalendlyEventListener({
     onEventScheduled: async () => {
+      analytics.trackCalendlyScheduled();
       setShowCalendlyModal(false);
       // Update step to 3 if we were on step 2
       if (currentStep === 2) {
@@ -104,11 +106,13 @@ export function Onboarding() {
 
     const payment = searchParams.get("payment");
     if (payment === "success") {
+      analytics.trackPaymentSuccess("onboarding");
       updateOrganizationSettings({ onboardingStep: 5 }).then(() => {
         loadSettings();
         setTimeout(() => setSearchParams({}), 3000);
       });
     } else if (payment === "cancelled") {
+      analytics.trackPaymentCancelled("onboarding");
       setTimeout(() => setSearchParams({}), 3000);
     }
   }, []);
@@ -143,6 +147,7 @@ export function Onboarding() {
       whatsappSummariesPhone: whatsappPhone,
       onboardingStep: 2
     });
+    analytics.trackOnboardingStepComplete(1, "agency_info");
     await loadSettings();
     setSaving(false);
   };
@@ -152,8 +157,9 @@ export function Onboarding() {
     setSaving(true);
     await updateOrganizationSettings({
       forwardingEmail,
-      onboardingStep: 4 // 4 means step 4: credits explanation
+      onboardingStep: 4
     });
+    analytics.trackOnboardingStepComplete(3, "email_config");
     await loadSettings();
     setSaving(false);
   };
@@ -162,14 +168,16 @@ export function Onboarding() {
     if (e) e.preventDefault();
     setSaving(true);
     await updateOrganizationSettings({
-      onboardingStep: 5 // 5 means step 5: waiting for assistant activation
+      onboardingStep: 5
     });
+    analytics.trackOnboardingStepComplete(4, "credits_acknowledged");
     await loadSettings();
     setSaving(false);
   };
 
   async function handlePurchase(packageId: string) {
     setPurchaseLoading(packageId);
+    analytics.trackOnboardingPurchaseInitiated(packageId);
     try {
       const checkoutUrl = await createCheckoutSession(packageId, "/onboarding");
       window.location.href = checkoutUrl;

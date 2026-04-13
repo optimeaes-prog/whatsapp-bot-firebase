@@ -26,8 +26,14 @@ import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 import FontGallery from "./pages/FontGallery";
 
 import { useEffect } from "react";
+import { usePageTracking } from "./hooks/usePageTracking";
 
 const queryClient = new QueryClient();
+
+function PageTracker() {
+  usePageTracking();
+  return null;
+}
 
 /** Legacy /cualificados links: forward to Leads with filters, preserving ?ad= */
 function CualificadosRedirect() {
@@ -79,6 +85,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <BrowserRouter>
+          <PageTracker />
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/fonts" element={<FontGallery />} />

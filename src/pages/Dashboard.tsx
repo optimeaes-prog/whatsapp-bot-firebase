@@ -15,6 +15,7 @@ import { PageHeader } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
 import { getCheckoutIntent, clearCheckoutIntent } from "../lib/checkoutStorage";
 import { createSubscriptionCheckout } from "../services/credits";
+import { analytics } from "../lib/analytics";
 import { toast } from "sonner";
 import { PageLoading } from "../components/ui/PageLoading";
 
@@ -127,6 +128,7 @@ export function Dashboard() {
     const fn = async () => {
       const intent = getCheckoutIntent();
       if (intent) {
+        analytics.trackCheckoutIntentResumed(intent.planId);
         setRedirectingToCheckout(true);
         clearCheckoutIntent();
         try {
@@ -359,6 +361,7 @@ export function Dashboard() {
                       key={option.value}
                       onClick={() => {
                         setDateFilter(option.value);
+                        analytics.trackDateFilterChanged(option.value);
                         setIsDateDropdownOpen(false);
                       }}
                       className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
@@ -415,6 +418,7 @@ export function Dashboard() {
                   <button
                     onClick={() => {
                       setListingFilter("all");
+                      analytics.trackListingFilterChanged("all");
                       setIsListingDropdownOpen(false);
                     }}
                     className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left mb-1"
@@ -428,6 +432,7 @@ export function Dashboard() {
                       key={code}
                       onClick={() => {
                         setListingFilter(code);
+                        analytics.trackListingFilterChanged(code);
                         setIsListingDropdownOpen(false);
                       }}
                       className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"

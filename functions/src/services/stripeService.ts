@@ -287,3 +287,27 @@ export async function createConfirmedOffSessionTopUp(
         { idempotencyKey }
     );
 }
+
+export async function createBillingPortalSession(
+    orgId: string,
+    customerId: string,
+    returnUrl: string
+): Promise<{ url: string }> {
+    const stripe = getStripe();
+    try {
+        const session = await stripe.billingPortal.sessions.create({
+            customer: customerId,
+            return_url: returnUrl,
+        });
+        console.log(`[stripeService] Billing portal session created for org ${orgId}`);
+        return { url: session.url };
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[stripeService] createBillingPortalSession failed:", message);
+        throw new Error(
+            err instanceof Stripe.errors.StripeError
+                ? `${err.message}${err.code ? ` (${err.code})` : ""}`
+                : message
+        );
+    }
+}

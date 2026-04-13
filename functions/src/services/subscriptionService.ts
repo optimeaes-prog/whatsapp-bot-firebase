@@ -118,5 +118,11 @@ export async function grantSubscriptionCredits(
         orgId
     );
 
+    // Persist extraBlocks on the subscription doc so getSubscription can expose contractedConversations
+    await getDb()
+        .collection("organizations")
+        .doc(orgId)
+        .set({ subscription: { extraBlocks } }, { merge: true });
+
     console.log(`[subscriptionService] Granted ${credits} credits to org ${orgId} for plan ${planId}, invoice ${invoiceId}`);
 }

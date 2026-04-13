@@ -9,6 +9,7 @@ import {
   createUserWithEmailAndPassword,
 } from "firebase/auth";
 import { auth } from "../lib/firebase";
+import { analytics } from "../lib/analytics";
 
 type AuthContextType = {
   user: User | null;
@@ -37,18 +38,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     await signInWithEmailAndPassword(auth, email, password);
+    analytics.trackLogin("email");
   };
 
   const signInWithGoogle = async () => {
     await signInWithPopup(auth, googleProvider);
+    analytics.trackLogin("google");
   };
 
   const signUp = async (email: string, password: string) => {
     await createUserWithEmailAndPassword(auth, email, password);
+    analytics.trackSignUp("email");
   };
 
   const signOut = async () => {
     await firebaseSignOut(auth);
+    analytics.trackLogout();
   };
 
   return (

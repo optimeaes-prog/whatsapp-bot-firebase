@@ -5,6 +5,9 @@ export type OrgSubscriptionInfo = {
   planId: SubscriptionPlanId;
   status: "active" | "past_due" | "canceled" | "trialing";
   currentPeriodEnd: string | null;
+  billingInterval?: "month" | "year";
+  /** Total conversations contracted this period (plan base + extra paid blocks) */
+  contractedConversations?: number;
 };
 
 export type AutoRechargeInfo = {
@@ -227,6 +230,27 @@ export async function getSubscription(): Promise<OrgSubscriptionInfo> {
     }
 
     return response.json();
+}
+
+/**
+ * Create a Stripe Billing Portal session for managing an existing subscription
+ */
+export async function createBillingPortalSession(returnPath: string = "/suscripcion"): Promise<string> {
+    const user = auth.currentUser;
+    if (!user) throw new Error("User not authenticated");
+    const token = await user.getIdToken();
+    const returnUrl = `${window.location.origin}${returnPath}`;
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/createBillingPortalSession`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ returnUrl }),
+    });
+    if (!response.ok) throw new Error(`Failed to create billing portal session: ${response.status}`);
+    const { url } = await response.json();
+    return url;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
 import { WhatsAppLeadsAnimationPhone } from "./WhatsAppLeadsAnimation";
 import { SegmentedControl } from "../components/ui";
 import { cn } from "../lib/utils";
+import { analytics } from "../lib/analytics";
 import whiteLogo from "../../proplead-high-resolution-logo-white.png";
 import { BreakdownModal, type CheckoutBreakdownData } from "../components/BreakdownModal";
 
@@ -237,7 +238,13 @@ function PricingSection() {
           </div>
         </div>
 
-
+        {/* Extra conversations info banner */}
+        <div className="max-w-xl mx-auto mb-4 mt-1 px-4">
+          <div className="flex items-center justify-center gap-1.5 py-2 px-4 bg-[#6b5240] border border-[#7a6050] rounded-xl text-xs text-primary-400">
+            <Info size={12} className="text-primary-400 shrink-0" />
+            <span>Se añaden <strong className="text-primary-400">10€</strong> por cada 40 conversaciones extra</span>
+          </div>
+        </div>
 
         {/* Pricing Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2 pt-8 max-w-[1500px] mx-auto">
@@ -292,15 +299,6 @@ function PricingSection() {
                             <span className="text-2xl font-bold text-gray-900">{formatEuroAmount(currentPriceMonthly)}€</span>
                             <span className="text-xs text-gray-500">/mes</span>
                           </div>
-                          {extraPrice > 0 ? (
-                            <p className="text-[10px] text-gray-500 mt-1 font-medium font-heading whitespace-nowrap">
-                              (+10€ por cada 40 conversaciones extra)
-                            </p>
-                          ) : (
-                            <p className="text-[10px] text-transparent mt-1 font-medium font-heading whitespace-nowrap select-none" aria-hidden="true">
-                              &nbsp;
-                            </p>
-                          )}
                         </div>
                       ) : (
                         <div className="mb-4">
@@ -309,15 +307,6 @@ function PricingSection() {
                             <span className="text-xs text-gray-500">/mes</span>
                             <span className="text-[10px] font-bold text-gray-900 px-1.5 py-0.5 rounded bg-primary-200 font-heading">−15%</span>
                           </div>
-                          {extraPrice > 0 ? (
-                            <p className="text-[10px] text-gray-500 mt-1 font-medium font-heading whitespace-nowrap">
-                              (+10€ por cada 40 conversaciones extra)
-                            </p>
-                          ) : (
-                            <p className="text-[10px] text-transparent mt-1 font-medium font-heading whitespace-nowrap select-none" aria-hidden="true">
-                              &nbsp;
-                            </p>
-                          )}
                         </div>
                       )
                     ) : null}
@@ -328,9 +317,18 @@ function PricingSection() {
                           <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-heading">Consumo mensual</label>
                           <div className="flex items-start gap-1.5 pt-1">
                             <MessageSquare size={13} className="text-primary-500 shrink-0 mt-0.5" />
-                            <span className="text-xs text-primary-600 font-bold leading-tight font-heading">
-                              {(isFree ? 40 : Math.max(80, conversations)).toLocaleString()} conversaciones
-                            </span>
+                            <div className="flex flex-col">
+                              <span className="text-xs text-primary-600 font-bold leading-tight font-heading">
+                                {(isFree ? 40 : Math.max(80, conversations)).toLocaleString()} conversaciones
+                              </span>
+                              {!isFree && (
+                                <span className="text-[10px] text-gray-400 leading-tight mt-0.5">
+                                  {extraConversations > 0
+                                    ? `80 incluidas + ${extraConversations} extra`
+                                    : "80 incluidas en el plan"}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <div className="flex items-center gap-1.5 mt-0.5 group relative">
                             <Clock size={13} className="text-emerald-500 shrink-0" />
@@ -356,14 +354,25 @@ function PricingSection() {
                       ))}
                     </ul>
 
-                    <button 
+                    <button
                       onClick={() => {
                         if (plan.priceMonthly === 0 || plan.id === "enterprise") {
+                          analytics.trackCtaClick({
+                            location: "pricing",
+                            label: plan.id === "enterprise" ? "enterprise_contact" : "start_free",
+                            source_page: "landingv3",
+                          });
                           window.location.href = plan.id === "enterprise" ? "mailto:hola@proplead.com" : "/login";
                         } else {
+                          analytics.trackPricingPlanClick({
+                            plan_id: plan.id,
+                            plan_name: plan.name,
+                            billing_interval: planBilling,
+                            source_page: "landingv3",
+                          });
                           const basePrice = planBilling === "annual" ? annualTotalFromMonthly(plan.priceMonthly) : plan.priceMonthly;
                           const extraPriceTotal = planBilling === "annual" ? extraPrice * 12 * 0.85 : extraPrice;
-                          
+
                           setCheckoutData({
                             planId: plan.id,
                             planName: plan.name,
@@ -436,7 +445,7 @@ function FAQSectionContent() {
         <div className="space-y-4">
           {faqs.map((faq, i) => (
             <div key={i} className={cn("border border-slate-200 rounded-2xl overflow-hidden transition-all duration-300 bg-white", openIndex === i ? "ring-1 ring-primary-200 border-primary-200 shadow-md" : "hover:border-slate-300")}>
-              <button className="w-full px-6 py-5 text-left flex justify-between items-center gap-4 focus:outline-none" onClick={() => setOpenIndex(openIndex === i ? null : i)}>
+              <button className="w-full px-6 py-5 text-left flex justify-between items-center gap-4 focus:outline-none" onClick={() => { const next = openIndex !== i; setOpenIndex(next ? i : null); analytics.trackFaqToggle(i, next); }}>
                 <span className="font-bold text-lg leading-tight" style={{ color: TITLE }}>{faq.q}</span>
                 <ChevronDown className={cn("w-5 h-5 shrink-0 transition-transform duration-500", openIndex === i && "rotate-180")} style={{ color: BODY }} />
               </button>
