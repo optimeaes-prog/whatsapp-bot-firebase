@@ -10,14 +10,23 @@ import {
 } from "lucide-react";
 import { PageHeader, SegmentedControl } from "../components/ui";
 import { cn } from "../lib/utils";
-import { getSubscription, getUserCredits, createSubscriptionCheckout, createBillingPortalSession } from "../services/credits";
-import type { OrgSubscriptionInfo } from "../services/credits";
+import { getSubscription, getUserCredits, createSubscriptionCheckout, previewSubscriptionChange } from "../services/credits";
+import type { OrgSubscriptionInfo, SubscriptionChangePreview } from "../services/credits";
+import { BreakdownModal, type SubscriptionChangeData } from "../components/BreakdownModal";
 import { getActiveListings } from "../services/listings";
 import { getLeads } from "../services/leads";
 import { useSearchParams } from "react-router-dom";
 import { analytics } from "../lib/analytics";
 
 const TITLE = "#402e32";
+
+const PLAN_NAMES: Record<string, string> = {
+  free: "Free",
+  plus: "Plus",
+  pro: "Pro",
+  pro_plus: "Pro+",
+  enterprise: "Enterprise",
+};
 
 const SUBSCRIPTION_PLANS = [
   {
@@ -35,7 +44,7 @@ const SUBSCRIPTION_PLANS = [
   {
     id: "plus" as const,
     name: "Plus",
-    priceMonthly: 19,
+    priceMonthly: 39,
     assistancesMonthly: 80,
     listingsIdeal: "2-4 anuncios activos/mes",
     benefits: [
@@ -48,7 +57,7 @@ const SUBSCRIPTION_PLANS = [
   {
     id: "pro" as const,
     name: "Pro",
-    priceMonthly: 69,
+    priceMonthly: 89,
     assistancesMonthly: 80,
     listingsIdeal: "3–6 anuncios activos/mes",
     benefits: [
@@ -62,7 +71,7 @@ const SUBSCRIPTION_PLANS = [
   {
     id: "pro_plus" as const,
     name: "Pro+",
-    priceMonthly: 99,
+    priceMonthly: 119,
     assistancesMonthly: 80,
     listingsIdeal: "6–12 anuncios activos/mes",
     benefits: [
@@ -89,24 +98,36 @@ const SUBSCRIPTION_PLANS = [
   },
 ] as const;
 
+/** Round up to the next multiple of N */
+function ceilToMultiple(value: number, multiple: number): number {
+  return Math.ceil(value / multiple) * multiple;
+}
+
 export function Credits() {
   const [numListings, setNumListings] = useState(3);
-  const [numLeads, setNumLeads] = useState(60);
+  const [numLeadsPerAd, setNumLeadsPerAd] = useState(20);
   const [planBilling, setPlanBilling] = useState<"monthly" | "annual">("monthly");
   const [actualListings, setActualListings] = useState<number | null>(null);
-  const [actualLeads, setActualLeads] = useState<number | null>(null);
+  const [actualLeadsPerAd, setActualLeadsPerAd] = useState<number | null>(null);
+  const [hasUserInteracted, setHasUserInteracted] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [credits, setCredits] = useState<number>(0);
   const [subscription, setSubscription] = useState<OrgSubscriptionInfo | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const simulatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const baseListings = actualListings ?? numListings;
-  const rawConversations = (numLeads / Math.max(baseListings, 1)) * numListings;
-  const conversations = Math.ceil(rawConversations / 40) * 40;
-  const hoursSaved = Math.round((conversations * 7) / 60);
+  // Modal state
+  const [subscriptionChangeData, setSubscriptionChangeData] = useState<SubscriptionChangeData | null>(null);
+
+  // Conversations calculation: anuncios × leads/anuncio, rounded up to next multiple of 40
+  const rawConversations = numListings * numLeadsPerAd;
+  const conversations = ceilToMultiple(rawConversations, 40);
+
+  // Contracted conversations from subscription
+  const contractedConversations = subscription?.contractedConversations ?? (subscription?.planId === "free" ? 40 : 80);
 
   const annualTotalFromMonthly = (monthly: number | null) => {
     if (monthly === null) return 0;
@@ -130,24 +151,27 @@ export function Credits() {
           setPlanBilling(sub.billingInterval === "year" ? "annual" : "monthly");
         }
 
-        const activeCount = listings.length;
+        const activeCount = Math.max(listings.length, 1);
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         thirtyDaysAgo.setHours(0, 0, 0, 0);
         const recentLeads = leads.filter(l => {
           const raw = l.createdAt ?? l.firstMessageDate ?? l.lastMessageDate;
           if (!raw) return false;
-          const date = raw?.toDate ? raw.toDate() : new Date(raw);
+          const date = (raw as any)?.toDate ? (raw as any).toDate() : new Date(raw as any);
           return date >= thirtyDaysAgo;
         });
 
-        const safeListings = Math.max(activeCount, 1);
-        const safeLeads = recentLeads.length;
+        const totalLeads = recentLeads.length;
 
-        setActualListings(safeListings);
-        setActualLeads(safeLeads);
-        setNumListings(safeListings);
-        setNumLeads(safeLeads);
+        // Leads per ad: total leads / active listings, rounded to next multiple of 10
+        const rawLeadsPerAd = totalLeads / activeCount;
+        const leadsPerAd = Math.max(10, ceilToMultiple(rawLeadsPerAd, 10));
+
+        setActualListings(activeCount);
+        setActualLeadsPerAd(leadsPerAd);
+        setNumListings(activeCount);
+        setNumLeadsPerAd(leadsPerAd);
       } finally {
         setLoading(false);
       }
@@ -175,12 +199,17 @@ export function Credits() {
         numListings <= 2 ? "plus" :
         numListings <= 7 ? "pro" :
         numListings <= 25 ? "pro_plus" : "enterprise";
-      analytics.trackSimulatorAdjusted({ listings: numListings, leads: numLeads, recommended_plan: recommendedPlan });
+      analytics.trackSimulatorAdjusted({ listings: numListings, leads: numLeadsPerAd, recommended_plan: recommendedPlan });
     }, 800);
     return () => {
       if (simulatorTimerRef.current) clearTimeout(simulatorTimerRef.current);
     };
-  }, [numListings, numLeads]);
+  }, [numListings, numLeadsPerAd]);
+
+  const handleSliderChange = (setter: (v: number) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!hasUserInteracted) setHasUserInteracted(true);
+    setter(parseInt(e.target.value));
+  };
 
   const handleSubscribe = async (planId: string, billing: "monthly" | "annual", extraBlocks: number) => {
     setPurchaseLoading(planId);
@@ -199,17 +228,42 @@ export function Credits() {
     }
   };
 
-  const handleManageSubscription = async (planId: string) => {
-    setPurchaseLoading(planId);
-    analytics.trackBillingPortalOpened(planId);
+  const handleChangePlan = async (planId: string, planName: string, extraBlocks: number) => {
+    setPreviewLoading(planId);
     try {
-      const url = await createBillingPortalSession("/suscripcion");
-      window.location.href = url;
+      const billingInterval = planBilling === "annual" ? "year" as const : "month" as const;
+      const preview: SubscriptionChangePreview = await previewSubscriptionChange(
+        planId as any,
+        extraBlocks,
+        billingInterval,
+      );
+
+      setSubscriptionChangeData({
+        preview,
+        newPlanName: planName,
+        currentPlanName: PLAN_NAMES[subscription?.planId ?? "free"] ?? "Free",
+        billingInterval,
+        newExtraBlocks: extraBlocks,
+      });
     } catch (error) {
       console.error(error);
-      toast.error("Error abriendo el portal de facturación");
-      setPurchaseLoading(null);
+      toast.error(error instanceof Error ? error.message : "Error al previsualizar el cambio");
+    } finally {
+      setPreviewLoading(null);
     }
+  };
+
+  const handleSubscriptionUpdated = () => {
+    // Reload the page data after a successful subscription change
+    setLoading(true);
+    setHasUserInteracted(false);
+    Promise.all([
+      getSubscription().catch(() => null),
+      getUserCredits().catch(() => 0),
+    ]).then(([sub, creds]) => {
+      setSubscription(sub);
+      setCredits(creds);
+    }).finally(() => setLoading(false));
   };
 
   const currentPlanId = subscription?.planId ?? "free";
@@ -224,6 +278,11 @@ export function Credits() {
     );
   }
 
+  // Display value for conversations in right panel
+  const displayConversations = hasUserInteracted ? conversations : contractedConversations;
+  const displayConversationsLabel = hasUserInteracted ? "Conversaciones a contratar" : "Conversaciones contratadas";
+  const displayHoursSaved = Math.round((displayConversations * 7) / 60);
+
   return (
     <div className="pb-24 max-w-7xl mx-auto">
       <PageHeader
@@ -236,7 +295,7 @@ export function Credits() {
         <div className="lg:col-span-2 card p-6 bg-gradient-to-br from-white to-primary-50/30 border border-primary-100 flex flex-col justify-center">
             <h3 className="text-sm font-bold text-gray-500 uppercase tracking-widest font-heading mb-4">Balance de Conversaciones</h3>
             {(() => {
-              const contracted = subscription?.contractedConversations ?? (subscription?.planId === "free" ? 40 : 80);
+              const contracted = contractedConversations;
               const consumed = Math.max(0, contracted - credits);
               const availablePct = contracted > 0 ? Math.min(100, (credits / contracted) * 100) : 0;
               const consumedPct = contracted > 0 ? Math.min(100, (consumed / contracted) * 100) : 0;
@@ -279,7 +338,12 @@ export function Credits() {
                       </div>
                     </div>
                     <p className="text-xs text-gray-400 mt-2 font-medium">
-                      Renovación: {subscription?.currentPeriodEnd ? new Date(subscription.currentPeriodEnd).toLocaleDateString("es-ES") : "Ilimitado"}
+                      Renovación: {(() => {
+                        const raw = subscription?.currentPeriodEnd;
+                        if (!raw) return "Ilimitado";
+                        const date = (raw as any)?.toDate ? (raw as any).toDate() : new Date(raw as any);
+                        return isNaN(date.getTime()) ? "---" : date.toLocaleDateString("es-ES");
+                      })()}
                     </p>
                   </div>
                 </div>
@@ -290,7 +354,7 @@ export function Credits() {
         <div className="card p-6 bg-white flex flex-col items-center justify-center border-2 border-primary-100">
            <p className="text-xs font-bold text-gray-500 uppercase tracking-widest font-heading mb-2">Tu Plan Actual</p>
            <h2 className="text-3xl font-extrabold text-primary-600 font-heading uppercase mb-1">
-             {currentPlanId === "plus" ? "Plus" : currentPlanId === "pro" ? "Pro" : currentPlanId === "pro_plus" ? "Pro+" : "Free"}
+             {PLAN_NAMES[currentPlanId] ?? "Free"}
            </h2>
            <p className="text-xs text-gray-400 font-medium">
              {subscription?.status === "active" ? "Suscripción activa" : "Plan gratuito"}
@@ -321,24 +385,20 @@ export function Credits() {
                 {/* Listings Slider */}
                 <div>
                   <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">Anuncios activos/mes</span>
+                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuántos anuncios tendrás activos por mes?</span>
                     <div className="flex items-end gap-2">
                       {actualListings !== null && numListings !== actualListings && (
-                        <button
-                          onClick={() => setNumListings(actualListings)}
-                          className="flex flex-col items-center group"
-                          title="Volver al valor actual"
-                        >
-                          <span className="text-[9px] text-[#6b5040] uppercase font-bold font-heading tracking-wide group-hover:text-[#ab8b67] transition-colors">actual</span>
-                          <span className="text-sm font-black text-[#6b5040] font-heading group-hover:text-[#ab8b67] transition-colors line-through decoration-[#6b5040]">
+                        <div className="flex flex-col items-center">
+                          <span className="text-[9px] text-[#6b5040] uppercase font-bold font-heading tracking-wide">actual</span>
+                          <span className="text-sm font-black text-[#6b5040] font-heading line-through decoration-[#6b5040]">
                             {actualListings}
                           </span>
-                        </button>
+                        </div>
                       )}
                       <div className="flex flex-col items-center">
-                        {numListings !== actualListings && actualListings !== null && (
-                          <span className="text-[9px] text-primary-400 uppercase font-bold font-heading tracking-wide">nuevo</span>
-                        )}
+                        <span className="text-[9px] uppercase font-bold font-heading tracking-wide" style={{ color: numListings !== actualListings && actualListings !== null ? "#fbbf24" : "#6b5040" }}>
+                          {numListings !== actualListings && actualListings !== null ? "nuevo" : "actual"}
+                        </span>
                         <span className="text-primary-400 text-lg font-black font-heading tracking-tight leading-none">
                           {numListings > 25 ? "25+" : numListings}
                         </span>
@@ -351,7 +411,7 @@ export function Credits() {
                     max="26"
                     step="1"
                     value={numListings}
-                    onChange={(e) => setNumListings(parseInt(e.target.value))}
+                    onChange={handleSliderChange(setNumListings)}
                     className="w-full h-1.5 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-primary-400 hover:accent-primary-300 transition-all"
                   />
                   <div className="flex justify-between text-[10px] text-[#8b6b47] mt-2 font-bold font-heading">
@@ -361,46 +421,42 @@ export function Credits() {
                   </div>
                 </div>
 
-                {/* Leads Slider */}
+                {/* Leads Per Ad Slider */}
                 <div>
                   <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">Leads / mes</span>
+                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuántos leads recibes de media por anuncio?</span>
                     <div className="flex items-end gap-2">
-                      {actualLeads !== null && numLeads !== actualLeads && (
-                        <button
-                          onClick={() => setNumLeads(actualLeads)}
-                          className="flex flex-col items-center group"
-                          title="Volver al valor actual"
-                        >
-                          <span className="text-[9px] text-[#6b5040] uppercase font-bold font-heading tracking-wide group-hover:text-[#ab8b67] transition-colors">actual</span>
-                          <span className="text-sm font-black text-[#6b5040] font-heading group-hover:text-[#ab8b67] transition-colors line-through decoration-[#6b5040]">
-                            {actualLeads}
+                      {actualLeadsPerAd !== null && numLeadsPerAd !== actualLeadsPerAd && (
+                        <div className="flex flex-col items-center">
+                          <span className="text-[9px] text-[#6b5040] uppercase font-bold font-heading tracking-wide">actual</span>
+                          <span className="text-sm font-black text-[#6b5040] font-heading line-through decoration-[#6b5040]">
+                            {actualLeadsPerAd}
                           </span>
-                        </button>
+                        </div>
                       )}
                       <div className="flex flex-col items-center">
-                        {numLeads !== actualLeads && actualLeads !== null && (
-                          <span className="text-[9px] text-emerald-400 uppercase font-bold font-heading tracking-wide">nuevo</span>
-                        )}
+                        <span className="text-[9px] uppercase font-bold font-heading tracking-wide" style={{ color: numLeadsPerAd !== actualLeadsPerAd && actualLeadsPerAd !== null ? "#34d399" : "#6b5040" }}>
+                          {numLeadsPerAd !== actualLeadsPerAd && actualLeadsPerAd !== null ? "nuevo" : "actual"}
+                        </span>
                         <span className="text-emerald-400 text-lg font-black font-heading tracking-tight leading-none">
-                          {numLeads}
+                          {numLeadsPerAd}
                         </span>
                       </div>
                     </div>
                   </div>
                   <input
                     type="range"
-                    min="0"
-                    max="500"
-                    step="5"
-                    value={numLeads}
-                    onChange={(e) => setNumLeads(parseInt(e.target.value))}
+                    min="10"
+                    max="400"
+                    step="10"
+                    value={numLeadsPerAd}
+                    onChange={handleSliderChange(setNumLeadsPerAd)}
                     className="w-full h-1.5 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-emerald-500 hover:accent-emerald-400 transition-all"
                   />
                   <div className="flex justify-between text-[10px] text-[#8b6b47] mt-2 font-bold font-heading">
-                    <span>0</span>
-                    <span>250</span>
-                    <span>500+</span>
+                    <span>10</span>
+                    <span>200</span>
+                    <span>400</span>
                   </div>
                 </div>
 
@@ -410,10 +466,18 @@ export function Credits() {
               <div className="w-full lg:w-2/5 flex flex-col items-center gap-6 border-t lg:border-t-0 lg:border-l border-[#3d2b1d] pt-8 lg:pt-0 lg:pl-10">
                 <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-4">
                   <div className="text-center text-white">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 opacity-70 font-heading">Conversaciones a contratar / mes</p>
-                    <p className="text-lg font-black font-heading leading-none tabular-nums text-primary-400">
-                      {conversations.toLocaleString()}
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 opacity-70 font-heading">
+                      {displayConversationsLabel}
                     </p>
+                    <p className="text-lg font-black font-heading leading-none tabular-nums text-primary-400">
+                      {displayConversations.toLocaleString()}
+                    </p>
+                    {/* Show contracted reference when user has interacted */}
+                    {hasUserInteracted && conversations !== contractedConversations && (
+                      <p className="text-[9px] text-[#6b5040] font-bold font-heading mt-1.5">
+                        Contratadas: {contractedConversations}
+                      </p>
+                    )}
                   </div>
                   <div className="text-center group relative">
                     <div className="flex items-center gap-1 mb-1 justify-center">
@@ -423,7 +487,7 @@ export function Credits() {
                         Calculado en base a un tiempo estimado de 7 minutos ahorrados por cada conversación.
                       </div>
                     </div>
-                    <p className="text-lg font-black text-emerald-400 font-heading leading-none tabular-nums">{hoursSaved}h/mes</p>
+                    <p className="text-lg font-black text-emerald-400 font-heading leading-none tabular-nums">{displayHoursSaved}h/mes</p>
                   </div>
                 </div>
 
@@ -431,7 +495,7 @@ export function Credits() {
                   ariaLabel="Facturación"
                   colorScheme="amber"
                   value={planBilling}
-                  onChange={(v) => { setPlanBilling(v); analytics.trackBillingToggle(v); }}
+                  onChange={(v) => { setPlanBilling(v); analytics.trackBillingToggle(v); if (!hasUserInteracted) setHasUserInteracted(true); }}
                   options={[
                     { value: "monthly", label: "Mensual" },
                     { value: "annual", label: "Anual", badge: "−15%" },
@@ -550,7 +614,7 @@ export function Credits() {
                     </ul>
 
                     <button
-                      disabled={isCurrentPlan || purchaseLoading === plan.id}
+                      disabled={isCurrentPlan || purchaseLoading === plan.id || previewLoading === plan.id}
                       onClick={() => {
                         if (plan.id === "enterprise") {
                           analytics.trackCtaClick({ location: "pricing", label: "enterprise_contact" });
@@ -558,7 +622,8 @@ export function Credits() {
                         } else if (plan.priceMonthly === 0 || isCurrentPlan) {
                           // free or already on this plan — no action
                         } else if (hasActivePaidSub) {
-                          handleManageSubscription(plan.id);
+                          // Existing subscriber: show breakdown modal with proration preview
+                          handleChangePlan(plan.id, plan.name, extraBlocks);
                         } else {
                           const value = planBilling === "annual"
                             ? annualTotalFromMonthly(currentPriceMonthly)
@@ -579,7 +644,7 @@ export function Credits() {
                           : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50"
                       )}
                     >
-                      {purchaseLoading === plan.id ? (
+                      {(purchaseLoading === plan.id || previewLoading === plan.id) ? (
                         <><Loader2 className="animate-spin" size={14} /> Procesando...</>
                       ) : isCurrentPlan
                         ? "Plan activo"
@@ -597,6 +662,14 @@ export function Credits() {
             );
           })}
         </div>
+
+        {/* Breakdown Modal for subscription changes */}
+        <BreakdownModal
+          data={null}
+          subscriptionData={subscriptionChangeData}
+          onClose={() => setSubscriptionChangeData(null)}
+          onSubscriptionUpdated={handleSubscriptionUpdated}
+        />
     </div>
   );
 }

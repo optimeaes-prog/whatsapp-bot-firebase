@@ -222,6 +222,8 @@ export type OrgSubscription = {
   updatedAt: FirebaseFirestore.Timestamp;
   /** Extra 40-conversation blocks purchased on top of the base plan */
   extraBlocks?: number;
+  /** Billing cadence: monthly or yearly */
+  billingInterval?: "month" | "year";
 };
 
 // ==================== CREDIT SYSTEM TYPES ====================

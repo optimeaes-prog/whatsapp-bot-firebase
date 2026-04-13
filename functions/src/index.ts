@@ -72,12 +72,15 @@ import {
   getCreditPackages,
   constructWebhookEvent,
   createBillingPortalSession as createBillingPortalSessionService,
+  previewSubscriptionProration,
+  updateExistingSubscription,
 } from "./services/stripeService";
 import {
   getOrgSubscription,
   setOrgSubscription,
   grantSubscriptionCredits,
   SUBSCRIPTION_CREDITS,
+  calculateProratedConversations,
 } from "./services/subscriptionService";
 import type { SubscriptionPlanId } from "./types";
 import {
@@ -2984,6 +2987,9 @@ export const getSubscription = onRequest({ cors: true, region: REGION }, async (
       status: sub.status,
       currentPeriodEnd: sub.currentPeriodEnd,
       contractedConversations,
+      billingInterval: sub.billingInterval || "month",
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+      extraBlocks: sub.extraBlocks || 0,
     });
   } catch (error) {
     console.error("Error getting subscription:", error);
@@ -3152,6 +3158,179 @@ export const getAutoRecharge = onRequest({ cors: true, region: REGION }, async (
 });
 
 /**
+ * Preview a subscription change (proration)
+ */
+export const previewSubscriptionChange = onRequest(
+  { cors: true, region: REGION, secrets: ["STRIPE_API_KEY", "STRIPE_PLUS_PRICE_ID", "STRIPE_PRO_PRICE_ID", "STRIPE_PRO_PLUS_PRICE_ID"] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+      const { newPlanId, newExtraBlocks } = req.body as {
+        newPlanId: SubscriptionPlanId;
+        newExtraBlocks: number;
+        billingInterval: "month" | "year";
+      };
+
+      const sub = await getOrgSubscription(ORG_ID);
+      const subId = sub?.stripeSubscriptionId;
+
+      const priceId = process.env[`STRIPE_${newPlanId.toUpperCase()}_PRICE_ID`];
+      if (!priceId) {
+        res.status(400).json({ error: `Price ID for plan ${newPlanId} not found` });
+        return;
+      }
+
+      const oldContracted = (SUBSCRIPTION_CREDITS[sub?.planId || "free"] ?? 0) + (sub?.extraBlocks ?? 0) * 40;
+      const newContracted = (SUBSCRIPTION_CREDITS[newPlanId] ?? 0) + newExtraBlocks * 40;
+
+      let proration;
+      if (!subId || subId.startsWith("manual_")) {
+        // Fallback for manual subscriptions or missing ones: treat as new subscription (no proration)
+        proration = {
+          amountDue: 0, // Mock for now, or calculate full price
+          currency: "eur",
+          periodEnd: Math.floor(Date.now() / 1000) + 30 * 24 * 3600
+        };
+      } else {
+        try {
+          proration = await previewSubscriptionProration(subId, [
+            { price: priceId, quantity: 1 }
+          ]);
+        } catch (err: any) {
+          console.warn(`Stripe preview failed for sub ${subId}, falling back:`, err.message);
+          proration = {
+            amountDue: 0,
+            currency: "eur",
+            periodEnd: Math.floor(Date.now() / 1000) + 30 * 24 * 3600
+          };
+        }
+      }
+
+      const proratedConversations = calculateProratedConversations(
+        oldContracted,
+        newContracted,
+        proration.periodEnd * 1000
+      );
+
+      res.status(200).json({
+        proratedAmountCents: proration.amountDue,
+        currency: proration.currency,
+        renewalDate: proration.periodEnd * 1000,
+        currentConversations: oldContracted,
+        newConversations: newContracted,
+        proratedConversations,
+        isUpgrade: newContracted > oldContracted,
+        newMonthlyPrice: 0, // Simplified for now
+      });
+    } catch (error) {
+      console.error("Error previewing subscription change:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to preview change" });
+    }
+  }
+);
+
+/**
+ * Update an existing subscription (upgrade/downgrade)
+ */
+export const updateSubscriptionPlan = onRequest(
+  { cors: true, region: REGION, secrets: ["STRIPE_API_KEY", "STRIPE_PLUS_PRICE_ID", "STRIPE_PRO_PRICE_ID", "STRIPE_PRO_PLUS_PRICE_ID"] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+      const { newPlanId, newExtraBlocks, billingInterval } = req.body as {
+        newPlanId: SubscriptionPlanId;
+        newExtraBlocks: number;
+        billingInterval: "month" | "year";
+      };
+
+      const sub = await getOrgSubscription(ORG_ID);
+      const subId = sub?.stripeSubscriptionId;
+      if (!subId || subId.startsWith("manual_")) {
+        res.status(400).json({ 
+          error: "Your current subscription is manual and cannot be updated directly through Stripe. Please contact support or start a new plan.",
+          code: "MANUAL_SUBSCRIPTION"
+        });
+        return;
+      }
+
+      const priceKey = `STRIPE_${newPlanId.toUpperCase()}_PRICE_ID`;
+      const priceId = process.env[priceKey];
+      if (!priceId) {
+        res.status(400).json({ error: `Price mapping not found for ${newPlanId}` });
+        return;
+      }
+
+      const oldContracted = (SUBSCRIPTION_CREDITS[sub.planId] ?? 0) + (sub.extraBlocks ?? 0) * 40;
+      const newContracted = (SUBSCRIPTION_CREDITS[newPlanId] ?? 0) + newExtraBlocks * 40;
+      const isUpgrade = newContracted > oldContracted;
+
+      const newItems = [{ price: priceId, quantity: 1 }];
+      const updatedSub = await updateExistingSubscription(
+        sub.stripeSubscriptionId,
+        newItems,
+        isUpgrade
+      );
+
+      // Update Firestore subscription record
+      const updatedPeriodEnd = (updatedSub as any).items?.data?.[0]?.current_period_end ?? 0;
+      await setOrgSubscription(ORG_ID, {
+        planId: newPlanId as SubscriptionPlanId,
+        stripeSubscriptionId: updatedSub.id,
+        stripeCustomerId: typeof updatedSub.customer === "string" ? updatedSub.customer : updatedSub.customer?.id ?? sub.stripeCustomerId,
+        status: "active",
+        currentPeriodEnd: admin.firestore.Timestamp.fromMillis(updatedPeriodEnd * 1000),
+        extraBlocks: newExtraBlocks,
+        billingInterval,
+      } as any);
+
+      // For upgrades: grant prorated conversations immediately
+      if (isUpgrade && newContracted > oldContracted) {
+        const proratedConvs = calculateProratedConversations(
+          oldContracted,
+          newContracted,
+          updatedPeriodEnd * 1000
+        );
+        if (proratedConvs > 0) {
+          await addOrgCredits(
+            proratedConvs,
+            `Actualización de plan: +${proratedConvs} conversaciones prorrateadas (${sub.planId} → ${newPlanId})`,
+            ORG_ID
+          );
+        }
+      }
+
+      res.status(200).json({
+        success: true,
+        message: isUpgrade ? "Plan actualizado correctamente" : "Cambio de plan programado para la próxima renovación",
+      });
+    } catch (error) {
+      console.error("Error updating subscription plan:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to update plan" });
+    }
+  }
+);
+
+/**
  * Stripe webhook handler for payment events
  * Called by Stripe when payment succeeds, fails, etc.
  */
@@ -3245,6 +3424,32 @@ export const stripeWebhook = onRequest({
         break;
       }
 
+      // ── Subscription upgrade/downgrade handling ─────────────────────
+      case "customer.subscription.updated": {
+        const sub = event.data.object;
+        const subMeta = asRecord((sub as any).metadata);
+        const orgId: string = (subMeta.orgId as string) || ORG_ID;
+        const planId = ((subMeta.planId as string) || "free") as SubscriptionPlanId;
+        const statusRaw = typeof (sub as any).status === "string" ? (sub as any).status : "active";
+        const status =
+          statusRaw === "active" || statusRaw === "past_due" || statusRaw === "canceled" || statusRaw === "trialing"
+            ? statusRaw
+            : "active";
+        const currentPeriodEnd = (sub as any).current_period_end ?? (sub as any).items?.data?.[0]?.current_period_end;
+
+        await setOrgSubscription(orgId, {
+          planId,
+          stripeSubscriptionId: typeof (sub as any).id === "string" ? (sub as any).id : "",
+          stripeCustomerId: extractStripeId((sub as any).customer),
+          status,
+          currentPeriodEnd: currentPeriodEnd
+            ? admin.firestore.Timestamp.fromMillis(currentPeriodEnd * 1000)
+            : undefined,
+        } as any);
+        console.log(`Subscription updated for org ${orgId}: plan=${planId}, status=${status}`);
+        break;
+      }
+
       // ── Monthly credit grant (first payment + all renewals) ────────
       case "invoice.paid": {
         const invoice = asRecord(event.data.object);
@@ -3277,31 +3482,7 @@ export const stripeWebhook = onRequest({
         break;
       }
 
-      // ── Plan changes (upgrade / downgrade) ────────────────────────
-      case "customer.subscription.updated": {
-        const sub = asRecord(event.data.object);
-        const subMeta = asRecord(sub.metadata);
-        const orgId: string = (subMeta.orgId as string) || ORG_ID;
-        const planId = ((subMeta.planId as string) || "free") as SubscriptionPlanId;
-        const statusRaw = typeof sub.status === "string" ? sub.status : "active";
-        const status =
-          statusRaw === "active" || statusRaw === "past_due" || statusRaw === "canceled" || statusRaw === "trialing"
-            ? statusRaw
-            : "active";
-        const currentPeriodEnd = sub.current_period_end as number | undefined;
 
-        await setOrgSubscription(orgId, {
-          planId,
-          stripeSubscriptionId: typeof sub.id === "string" ? sub.id : "",
-          stripeCustomerId: extractStripeId(sub.customer),
-          status,
-          currentPeriodEnd: currentPeriodEnd
-            ? admin.firestore.Timestamp.fromMillis(currentPeriodEnd * 1000)
-            : undefined,
-        });
-        console.log(`Subscription updated for org ${orgId}: plan=${planId}, status=${status}`);
-        break;
-      }
 
       // ── Cancellation / expiry ──────────────────────────────────────
       case "customer.subscription.deleted": {

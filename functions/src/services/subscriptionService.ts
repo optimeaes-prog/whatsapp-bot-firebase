@@ -126,3 +126,36 @@ export async function grantSubscriptionCredits(
 
     console.log(`[subscriptionService] Granted ${credits} credits to org ${orgId} for plan ${planId}, invoice ${invoiceId}`);
 }
+
+/**
+ * Calculate the number of prorated conversations to grant immediately when upgrading mid-cycle.
+ * Example: upgrading from 200 to 280 conversations with 15 days left out of 30 total
+ *          → (280 - 200) * (15/30) = 40 prorated conversations
+ */
+export function calculateProratedConversations(
+    oldContracted: number,
+    newContracted: number,
+    currentPeriodEndMs: number
+): number {
+    if (newContracted <= oldContracted) return 0;
+
+    const now = Date.now();
+    const periodEnd = currentPeriodEndMs;
+    
+    // Estimate period start: Stripe periods are typically 1 month or 1 year
+    // We need the fraction of the period remaining
+    // Use 30 days as approximation for monthly, detect yearly from the period length
+    const msRemaining = Math.max(0, periodEnd - now);
+    const daysRemaining = msRemaining / (1000 * 60 * 60 * 24);
+    
+    // Estimate total period length: if remaining > 45 days, assume yearly; otherwise monthly
+    const totalDays = daysRemaining > 45 ? 365 : 30;
+    const fractionRemaining = Math.min(1, daysRemaining / totalDays);
+    
+    const extraConversations = newContracted - oldContracted;
+    const prorated = Math.round(extraConversations * fractionRemaining);
+    
+    console.log(`[subscriptionService] Prorated conversations: old=${oldContracted}, new=${newContracted}, daysRemaining=${daysRemaining.toFixed(1)}, fraction=${fractionRemaining.toFixed(3)}, prorated=${prorated}`);
+    
+    return prorated;
+}

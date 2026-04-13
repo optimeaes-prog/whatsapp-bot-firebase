@@ -311,3 +311,89 @@ export async function createBillingPortalSession(
         );
     }
 }
+
+/**
+ * Preview the prorated amount for a subscription change using Stripe's invoice preview API.
+ * Uses `invoices.createPreview` (Stripe v20+) with subscription_details.
+ * Returns the amount_due in cents, the period end, and currency.
+ */
+export async function previewSubscriptionProration(
+    subscriptionId: string,
+    newItems: { price: string; quantity: number }[]
+): Promise<{ amountDue: number; periodEnd: number; currency: string }> {
+    const stripe = getStripe();
+
+    // Retrieve current subscription to get existing items and period info
+    const currentSub = await stripe.subscriptions.retrieve(subscriptionId);
+
+    // Get current_period_end from the first subscription item
+    const periodEnd = currentSub.items.data[0]?.current_period_end ?? 0;
+
+    // Build subscription_details.items: delete existing, add new
+    const detailItems: Stripe.InvoiceCreatePreviewParams.SubscriptionDetails.Item[] = [];
+
+    for (const existingItem of currentSub.items.data) {
+        detailItems.push({ id: existingItem.id, deleted: true });
+    }
+    for (const ni of newItems) {
+        detailItems.push({ price: ni.price, quantity: ni.quantity });
+    }
+
+    const previewInvoice = await stripe.invoices.createPreview({
+        subscription: subscriptionId,
+        subscription_details: {
+            items: detailItems,
+            proration_behavior: "create_prorations",
+        },
+    });
+
+    return {
+        amountDue: previewInvoice.amount_due,
+        periodEnd,
+        currency: previewInvoice.currency,
+    };
+}
+
+/**
+ * Update an existing Stripe subscription (upgrade or downgrade).
+ * For upgrades: prorate immediately and charge the difference.
+ * For downgrades: schedule change for end of current period (no refund).
+ * Returns the updated subscription including items with current_period_end.
+ */
+export async function updateExistingSubscription(
+    subscriptionId: string,
+    newItems: { price: string; quantity: number }[],
+    isUpgrade: boolean
+): Promise<Stripe.Subscription> {
+    const stripe = getStripe();
+
+    // Retrieve current subscription to get existing items
+    const currentSub = await stripe.subscriptions.retrieve(subscriptionId);
+
+    // Build item updates: replace all existing items with new ones
+    const items: Stripe.SubscriptionUpdateParams.Item[] = [];
+
+    for (const existingItem of currentSub.items.data) {
+        items.push({ id: existingItem.id, deleted: true });
+    }
+    for (const ni of newItems) {
+        items.push({ price: ni.price, quantity: ni.quantity });
+    }
+
+    if (isUpgrade) {
+        // Upgrade: prorate immediately, Stripe charges saved card
+        return stripe.subscriptions.update(subscriptionId, {
+            items,
+            proration_behavior: "create_prorations",
+            payment_behavior: "pending_if_incomplete",
+        });
+    } else {
+        // Downgrade: apply at end of period, no proration/refund
+        return stripe.subscriptions.update(subscriptionId, {
+            items,
+            proration_behavior: "none",
+            billing_cycle_anchor: "unchanged",
+        });
+    }
+}
+

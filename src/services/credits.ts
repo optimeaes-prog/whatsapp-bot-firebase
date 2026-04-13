@@ -8,6 +8,8 @@ export type OrgSubscriptionInfo = {
   billingInterval?: "month" | "year";
   /** Total conversations contracted this period (plan base + extra paid blocks) */
   contractedConversations?: number;
+  stripeSubscriptionId?: string;
+  extraBlocks?: number;
 };
 
 export type AutoRechargeInfo = {
@@ -15,6 +17,27 @@ export type AutoRechargeInfo = {
   thresholdCredits: number;
   rechargeCredits: number;
   hasSavedCard: boolean;
+};
+
+export type SubscriptionChangePreview = {
+  isUpgrade: boolean;
+  currentPlanId: string;
+  newPlanId: string;
+  currentConversations: number;
+  newConversations: number;
+  proratedAmountCents: number;
+  proratedConversations: number;
+  renewalDate: string | null;
+  billingInterval: "month" | "year";
+  newMonthlyPrice: number;
+};
+
+export type SubscriptionChangeResult = {
+  success: boolean;
+  isUpgrade: boolean;
+  message: string;
+  newPlanId: string;
+  newContracted: number;
 };
 
 const FUNCTIONS_BASE_URL = "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
@@ -146,6 +169,75 @@ export async function createSubscriptionCheckout(
 
     const data = await response.json();
     return data.url;
+}
+
+/**
+ * Preview a subscription change (upgrade or downgrade).
+ * Returns proration details from Stripe.
+ */
+export async function previewSubscriptionChange(
+    newPlanId: SubscriptionPlanId,
+    newExtraBlocks: number,
+    billingInterval: "month" | "year"
+): Promise<SubscriptionChangePreview> {
+    const user = auth.currentUser;
+    if (!user) throw new Error("User not authenticated");
+
+    const token = await user.getIdToken();
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/previewSubscriptionChange`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ newPlanId, newExtraBlocks, billingInterval }),
+    });
+
+    if (!response.ok) {
+        let message = `Error ${response.status}`;
+        try {
+            const err = await response.json() as { error?: string };
+            if (typeof err.error === "string" && err.error.length > 0) message = err.error;
+        } catch { /* ignore */ }
+        throw new Error(message);
+    }
+
+    return response.json();
+}
+
+/**
+ * Execute a subscription change (upgrade or downgrade).
+ * For upgrades, Stripe charges the saved card with the prorated difference.
+ * For downgrades, the change is scheduled for end of current period.
+ */
+export async function updateSubscriptionPlan(
+    newPlanId: SubscriptionPlanId,
+    newExtraBlocks: number,
+    billingInterval: "month" | "year"
+): Promise<SubscriptionChangeResult> {
+    const user = auth.currentUser;
+    if (!user) throw new Error("User not authenticated");
+
+    const token = await user.getIdToken();
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/updateSubscriptionPlan`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ newPlanId, newExtraBlocks, billingInterval }),
+    });
+
+    if (!response.ok) {
+        let message = `Error ${response.status}`;
+        try {
+            const err = await response.json() as { error?: string };
+            if (typeof err.error === "string" && err.error.length > 0) message = err.error;
+        } catch { /* ignore */ }
+        throw new Error(message);
+    }
+
+    return response.json();
 }
 
 /**
