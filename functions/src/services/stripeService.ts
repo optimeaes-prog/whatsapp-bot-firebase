@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { CreditPackage } from "../types";
+import { ConversationPackage } from "../types";
 
 // Initialize Stripe with the API key from environment
 let stripeInstance: Stripe | null = null;
@@ -29,13 +29,13 @@ function getStripe(): Stripe {
     return stripeInstance;
 }
 
-// Credit packages available for purchase
-export const CREDIT_PACKAGES: CreditPackage[] = [
+// Conversation packages available for purchase
+export const CONVERSATION_PACKAGES: ConversationPackage[] = [
     {
         id: "extra_40",
         name: "40 Conversaciones",
         amount: 1000,     // €10.00
-        credits: 40,
+        conversations: 40,
         currency: "eur",
     },
 ];
@@ -52,13 +52,14 @@ export async function createCheckoutSession(
     successUrl: string,
     cancelUrl: string,
     existingStripeCustomerId?: string | null,
-    quantity: number = 1
+    quantity: number = 1,
+    priceId?: string
 ): Promise<{ sessionId: string; url: string }> {
     const stripe = getStripe();
 
     // Find the package
-    const creditPackage = CREDIT_PACKAGES.find((p) => p.id === packageId);
-    if (!creditPackage) {
+    const pkg = CONVERSATION_PACKAGES.find((p) => p.id === packageId);
+    if (!pkg) {
         throw new Error(`Invalid package ID: ${packageId}`);
     }
 
@@ -67,13 +68,13 @@ export async function createCheckoutSession(
         throw new Error(`Invalid quantity: must be between 1 and ${MAX_CHECKOUT_PACKAGE_QUANTITY}`);
     }
 
-    const totalCredits = creditPackage.credits * qty;
-    const creditsMeta = String(totalCredits);
-    const productName = qty === 1 ? creditPackage.name : `${creditPackage.name} × ${qty}`;
+    const totalConversations = pkg.conversations * qty;
+    const conversationsMeta = String(totalConversations);
+    const productName = qty === 1 ? pkg.name : `${pkg.name} × ${qty}`;
     const productDescription =
         qty === 1
-            ? `${creditPackage.credits} créditos para tu cuenta`
-            : `${totalCredits} créditos (${qty} × ${creditPackage.credits}) para tu cuenta`;
+            ? `${pkg.conversations} conversaciones para tu cuenta`
+            : `${totalConversations} conversaciones (${qty} × ${pkg.conversations}) para tu cuenta`;
 
     const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -87,19 +88,23 @@ export async function createCheckoutSession(
                 userId,
                 orgId,
                 packageId,
-                credits: creditsMeta,
+                conversations: conversationsMeta,
             },
         },
         line_items: [
             {
-                price_data: {
-                    currency: creditPackage.currency,
-                    product_data: {
-                        name: productName,
-                        description: productDescription,
-                    },
-                    unit_amount: creditPackage.amount,
-                },
+                ...(priceId
+                    ? { price: priceId.trim() }
+                    : {
+                        price_data: {
+                            currency: pkg.currency,
+                            product_data: {
+                                name: productName,
+                                description: productDescription,
+                            },
+                            unit_amount: pkg.amount,
+                        },
+                    }),
                 quantity: qty,
             },
         ],
@@ -107,10 +112,11 @@ export async function createCheckoutSession(
             userId,
             orgId,
             packageId,
-            credits: creditsMeta,
+            conversations: conversationsMeta,
         },
         success_url: successUrl,
         cancel_url: cancelUrl,
+        allow_promotion_codes: true,
     });
 
     console.log(`Created checkout session ${session.id} for user ${userId}, package ${packageId} qty ${qty}`);
@@ -142,10 +148,10 @@ export function constructWebhookEvent(
 }
 
 /**
- * Get available credit packages
+ * Get available conversation packages
  */
-export function getCreditPackages(): CreditPackage[] {
-    return CREDIT_PACKAGES;
+export function getConversationPackages(): ConversationPackage[] {
+    return CONVERSATION_PACKAGES;
 }
 
 /**
@@ -181,6 +187,7 @@ export async function createSubscriptionCheckoutSession(
             },
             success_url: successUrl,
             cancel_url: cancelUrl,
+            allow_promotion_codes: true,
         });
 
         console.log(`[stripeService] Created subscription checkout session ${session.id} for org ${orgId}, plan ${planId}`);
@@ -200,9 +207,9 @@ export async function createSubscriptionCheckoutSession(
     }
 }
 
-/** Credit package id for auto-recharge (must match a CREDIT_PACKAGES entry). */
-export function packageIdForCreditAmount(credits: number): string {
-    const pkg = CREDIT_PACKAGES.find((p) => p.credits === credits);
+/** Conversation package id for auto-recharge (must match a CONVERSATION_PACKAGES entry). */
+export function packageIdForConversationAmount(conversations: number): string {
+    const pkg = CONVERSATION_PACKAGES.find((p) => p.conversations === conversations);
     return pkg?.id ?? "extra_40";
 }
 
@@ -262,7 +269,7 @@ export async function createConfirmedOffSessionTopUp(
     paymentMethodId: string,
     packageId: string
 ): Promise<Stripe.PaymentIntent> {
-    const pkg = CREDIT_PACKAGES.find((p) => p.id === packageId);
+    const pkg = CONVERSATION_PACKAGES.find((p) => p.id === packageId);
     if (!pkg) {
         throw new Error(`Invalid package ID: ${packageId}`);
     }
@@ -280,7 +287,7 @@ export async function createConfirmedOffSessionTopUp(
             metadata: {
                 orgId,
                 packageId,
-                credits: String(pkg.credits),
+                conversations: String(pkg.conversations),
                 source: "auto_recharge",
             },
         },

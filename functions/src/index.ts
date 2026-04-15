@@ -3,9 +3,10 @@ import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineString } from "firebase-functions/params";
-import { AuditAction, AuditEntityType, ConversationState, HistoryItem, InboundMessage, LeadSummary, ListingRow, OperationType, PendingItem } from "./types";
+import { AuditAction, AuditEntityType, ConversationState, HistoryItem, InboundMessage, LeadRow, LeadSummary, ListingRow, OperationType, PendingItem } from "./types";
 import {
   fetchListingByCode,
+  fetchListingGlobally,
   listActiveListingsForResolution,
   findLeadByChatId,
   findLeadByPhone,
@@ -14,6 +15,7 @@ import {
   createPendingCallLead,
   updateLeadListingByChatId,
   appendConversationRow,
+  findOrgIdByChatId,
 
   getActiveStyle,
   getConversationByChatId,
@@ -53,23 +55,23 @@ import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS } f
 import { sendAlert, sendHealthReport } from "./services/alertService";
 import { ALERT_CATALOG } from "./services/alertCatalog";
 import { syncConversationsWithWhapi, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
-import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN } from "./secrets";
+import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS } from "./secrets";
 import {
-  addOrgCredits,
-  addOrgCreditsForPaymentIntentOnce,
+  addOrgConversations,
+  addOrgConversationsForPaymentIntentOnce,
   getOrgAutoRechargeSettingsForApi,
-  getOrgCredits,
+  getOrgConversationBalance,
   getOrgStripeCustomerId,
   mergeOrgStripeBillingFields,
   saveOrgAutoRechargeSettings,
-} from "./services/creditsService";
+} from "./services/billingService";
 import { getAuditLogs as getAuditLogsFromService, recordLeadChange, recordConversationChange, recordListingChange, recordSystemAction } from "./services/auditService";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import {
   createCheckoutSession,
   createSubscriptionCheckoutSession,
   extractBillingFromCheckoutSession,
-  getCreditPackages,
+  getConversationPackages,
   constructWebhookEvent,
   createBillingPortalSession as createBillingPortalSessionService,
   previewSubscriptionProration,
@@ -78,8 +80,8 @@ import {
 import {
   getOrgSubscription,
   setOrgSubscription,
-  grantSubscriptionCredits,
-  SUBSCRIPTION_CREDITS,
+  grantSubscriptionConversations,
+  PLAN_BASE_CONVERSATIONS,
   calculateProratedConversations,
 } from "./services/subscriptionService";
 import type { SubscriptionPlanId } from "./types";
@@ -91,6 +93,9 @@ import {
   normalizeToCanonicalChatId,
 } from "./utils";
 import { normalizeForSearch } from "./utils/addressNormalize";
+import { getActiveOrgId, requestContext } from "./services/requestContext";
+import { sendPaymentFailedNotification, sendWelcomeNotification, sendInvitationNotification } from "./services/emailService";
+import * as crypto from "crypto";
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
   admin.initializeApp();
@@ -111,8 +116,8 @@ if (admin.apps.length === 0) {
 // Region configuration
 const REGION = "europe-west1";
 
-// Organisation identifier (single-tenant for now)
-const ORG_ID = "org_paco_granados";
+// Organisation identifier (removed global static getActiveOrgId() for multi-tenancy)
+// const getActiveOrgId() = getActiveOrgId(); 
 
 // Config params
 const NOTIFICATION_NUMBER = defineString("NOTIFICATION_NUMBER");
@@ -130,6 +135,20 @@ const CALL_PENDING_LISTING_CODE = "__pending__";
 // Current v10 durations: part1 ~6.9s + pause 3s + part2 ~13.9s => ~24s total.
 const CALL_HANDOFF_DELAY_SECONDS = 24;
 
+const SUBSCRIPTION_BASE_PRICES: Record<string, number> = {
+  free: 0,
+  plus: 19,
+  pro: 69,
+  pro_plus: 99,
+};
+
+const PLAN_RANKS: Record<string, number> = {
+  free: 0,
+  plus: 1,
+  pro: 2,
+  pro_plus: 3,
+};
+
 function getAgentNotificationTemplateSid(): string | undefined {
   const sid = TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION.value();
   const normalized = typeof sid === "string" ? sid.trim() : "";
@@ -138,6 +157,24 @@ function getAgentNotificationTemplateSid(): string | undefined {
 
 function buildTwiml(xmlBody: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n${xmlBody}\n</Response>`;
+}
+
+async function resolveOrgIdFromToken(authHeader?: string): Promise<string> {
+  if (!authHeader?.startsWith("Bearer ")) {
+    throw new Error("Unauthorized");
+  }
+  const token = authHeader.split("Bearer ")[1];
+  const decoded = await admin.auth().verifyIdToken(token);
+  const uid = decoded.uid;
+  
+  const DATABASE_ID = "realestate-whatsapp-bot";
+  const userDoc = await getFirestore(admin.app(), DATABASE_ID).collection("users").doc(uid).get();
+  const orgId = userDoc.data()?.orgId;
+  
+  if (!orgId) {
+    throw new Error("Organization not found for user");
+  }
+  return orgId;
 }
 
 function twimlEscape(text: string): string {
@@ -1453,38 +1490,60 @@ export const webhook = onRequest(
     await Promise.all(
       Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
         try {
-          // Ensure we have a valid conversation state
-          const state = await ensureConversationState(chatId, messages[0].phone);
-          if (!state) {
-            console.warn("Could not reconstruct conversation state", chatId);
-            await sendAlert("Estado no encontrado", `No se pudo reconstruir el estado para el chat: ${chatId}. Es posible que no haya un lead asociado o los datos del anuncio no existan.`, { chatId, phone: messages[0].phone });
-            return;
+          // Tiered organization resolution:
+          // 1. Explicit query parameter (highest priority)
+          // 2. Recency-based lookup (searching all organizations)
+          const orgQueryId = req.query.orgId as string | undefined;
+          let orgId = orgQueryId || await findOrgIdByChatId(chatId);
+          
+          if (orgQueryId) {
+            console.log(`Using explicit orgId from query: ${orgQueryId} for chatId ${chatId}`);
+          } else if (orgId) {
+            console.log(`Resolved orgId via recency for chatId ${chatId}: ${orgId}`);
+          } else {
+            console.warn(`Could not resolve organization for chatId ${chatId}`);
           }
 
-          // If conversation is finished, skip buffering
-          if (state.isFinished) {
-            console.log("Conversation already finished, skipping buffer", chatId);
-            return;
-          }
+          await requestContext.run({ orgId: orgId || "" }, async () => {
+            // Filter out ignored chats (must run within org context)
+            if (await isChatIgnored(chatId)) {
+                console.log(`Chat ${chatId} is ignored in org ${orgId}, skipping.`);
+                return;
+            }
 
-          const canonicalChatId = state.chatId;
+            // Ensure we have a valid conversation state
+            const state = await ensureConversationState(chatId, messages[0].phone);
+            if (!state) {
+              console.warn("Could not reconstruct conversation state", chatId, "in org", orgId);
+              await sendAlert("Estado no encontrado", `No se pudo reconstruir el estado para el chat: ${chatId}. Es posible que no haya un lead asociado o los datos del anuncio no existan.`, { chatId, phone: messages[0].phone, orgId });
+              return;
+            }
 
-          // Add messages to pending buffer in Firestore (always using canonical ID)
-          for (const msg of messages) {
-            await addPendingMessage(canonicalChatId, {
-              text: msg.text,
-              timestamp: msg.timestamp,
-            });
-          }
+            // If conversation is finished, skip buffering
+            if (state.isFinished) {
+              console.log("Conversation already finished, skipping buffer", chatId);
+              return;
+            }
 
-          // Schedule (or reschedule) the buffer task
-          const processUrl = getProcessBufferUrl();
-          const { taskName, scheduledTime } = await scheduleBufferTask(canonicalChatId, processUrl, state.pendingTaskName);
+            const canonicalChatId = state.chatId;
 
-          // Update conversation with task info
-          await updateBufferTask(canonicalChatId, taskName, scheduledTime);
+            // Add messages to pending buffer in Firestore (always using canonical ID)
+            for (const msg of messages) {
+              await addPendingMessage(canonicalChatId, {
+                text: msg.text,
+                timestamp: msg.timestamp,
+              });
+            }
 
-          console.log(`Buffered ${messages.length} message(s) for ${canonicalChatId} (via ${chatId}), will process at ${new Date(scheduledTime).toISOString()}`);
+            // Schedule (or reschedule) the buffer task
+            const processUrl = getProcessBufferUrl();
+            const { taskName, scheduledTime } = await scheduleBufferTask(canonicalChatId, processUrl, state.pendingTaskName, orgId || undefined);
+
+            // Update conversation with task info
+            await updateBufferTask(canonicalChatId, taskName, scheduledTime);
+
+            console.log(`Buffered ${messages.length} message(s) for ${canonicalChatId} (via ${chatId}), will process at ${new Date(scheduledTime).toISOString()} (Org: ${orgId})`);
+          });
         } catch (error) {
           console.error("Error buffering messages for", chatId, error);
           await sendAlert("Webhook Error", `Error al bufferear mensajes para ${chatId}`, {
@@ -1661,7 +1720,7 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
 
     console.log(`processBuffer called by task: ${taskName} from queue: ${queueName}`);
 
-    const { chatId } = req.body as { chatId?: string };
+    const { chatId, orgId } = req.body as { chatId?: string; orgId?: string };
 
     if (!chatId) {
       console.error("No chatId provided in request body");
@@ -1669,39 +1728,41 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
       return;
     }
 
-    console.log(`Processing buffered messages for chatId: ${chatId}`);
+    await requestContext.run({ orgId: orgId || "" }, async () => {
+      console.log(`Processing buffered messages for chatId: ${chatId} (Org: ${orgId})`);
 
-    // Get pending messages and clear them atomically
-    const pendingMessages = await getPendingMessagesAndClear(chatId);
+      // Get pending messages and clear them atomically
+      const pendingMessages = await getPendingMessagesAndClear(chatId);
 
-    if (pendingMessages.length === 0) {
-      console.log(`No pending messages for ${chatId}, possibly already processed`);
-      res.status(200).json({ processed: false, reason: "No pending messages" });
-      return;
-    }
+      if (pendingMessages.length === 0) {
+        console.log(`No pending messages for ${chatId}, possibly already processed`);
+        res.status(200).json({ processed: false, reason: "No pending messages" });
+        return;
+      }
 
-    console.log(`Found ${pendingMessages.length} pending message(s) to process for ${chatId}`);
+      console.log(`Found ${pendingMessages.length} pending message(s) to process for ${chatId}`);
 
-    // Get conversation state
-    const state = await ensureConversationState(chatId);
-    if (!state) {
-      console.error(`Could not get conversation state for ${chatId}`);
-      res.status(404).json({ error: "Conversation not found" });
-      return;
-    }
+      // Get conversation state
+      const state = await ensureConversationState(chatId);
+      if (!state) {
+        console.error(`Could not get conversation state for ${chatId} in org ${orgId}`);
+        res.status(404).json({ error: "Conversation not found" });
+        return;
+      }
 
-    // Process all buffered messages at once
-    await processBufferedMessages(state, pendingMessages);
+      // Process all buffered messages at once
+      await processBufferedMessages(state, pendingMessages);
 
-    // Update in-memory cache
-    conversationStates.set(chatId, state);
+      // Update in-memory cache
+      conversationStates.set(chatId, state);
 
-    console.log(`Successfully processed ${pendingMessages.length} message(s) for ${chatId}`);
+      console.log(`Successfully processed ${pendingMessages.length} message(s) for ${chatId}`);
 
-    res.status(200).json({
-      processed: true,
-      messageCount: pendingMessages.length,
-      chatId,
+      res.status(200).json({
+        processed: true,
+        messageCount: pendingMessages.length,
+        chatId,
+      });
     });
   } catch (error) {
     console.error("processBuffer error:", error);
@@ -1953,6 +2014,7 @@ async function runIdealistaConfirmPipeline(params: {
     }
   } catch (error) {
     const details = error instanceof Error ? error.message : String(error);
+    console.error(`runIdealistaConfirmPipeline failed for ${phone}: ${details}`, error);
     const state: ConversationState = {
       phone,
       listingCode,
@@ -1973,7 +2035,21 @@ async function runIdealistaConfirmPipeline(params: {
       botDisabled: false,
     };
 
-    await upsertConversation(chatId, { ...state, type: "lead", idealistaDescription: listingData.idealistaDescription || "" });
+    // Prepare fallback text for retry queue if available
+    const fallbackText = initialHistory.length > 0 ? initialHistory[initialHistory.length - 1].text : "Hola, nos has contactado por un anuncio en Idealista. ¿Es correcto?";
+    
+    try {
+      await queueFailedMessage(chatId, phone, fallbackText, details);
+    } catch (retryError) {
+      console.warn("Failed to queue message for retry", retryError);
+    }
+
+    await upsertConversation(chatId, { 
+      ...state, 
+      type: "lead", 
+      idealistaDescription: listingData.idealistaDescription || "",
+      errorDetails: details // Save error for debugging
+    });
     conversationStates.set(chatId, state);
     return { ok: false, kind: "send_failed", chatId, details, initialHistory, featuresText };
   }
@@ -2013,6 +2089,7 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
 
   const phone = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
   const listingCode = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
+  const orgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
   const leadName = typeof req.body?.nombre === "string" ? req.body.nombre.trim() : "";
   const language = typeof req.body?.language === "string" ? req.body.language.trim() : "";
   const languageNorm = language === "en" ? "en" : language === "es" ? "es" : "";
@@ -2022,90 +2099,109 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
     return;
   }
 
-  // Check if conversation already exists for this phone and listing and is still open
-  const existingConv = await getConversationByPhoneAndListing(phone, listingCode);
-  if (existingConv && !existingConv.isFinished) {
-    console.log(`Lead ${phone} already has an open conversation for ${listingCode}. Sending returning message.`);
-
-    const isSpanish = isSpanishPhoneNumber(phone);
-    const returnMessage = isSpanish
-      ? "Has vuelto a contactar por Idealista en relación al anuncio mostrado arriba, ¿cómo te puedo ayudar?"
-      : "You have contacted us again through Idealista regarding the property shown above, how can I help you?";
-
-    try {
-      await sendTextMessage({ to: phone, body: returnMessage, chatId: existingConv.chatId });
-
-      // Update history
-      const updatedHistory = [...(existingConv.history || [])];
-      updatedHistory.push({
-        role: "assistant",
-        text: returnMessage,
-        timestamp: Date.now(),
-      });
-
-      await upsertConversation(existingConv.chatId, { history: updatedHistory, tags: ["lead"], type: "lead" });
-
-      // Update in-memory cache
-      conversationStates.set(existingConv.chatId, {
-        ...existingConv,
-        history: updatedHistory,
-      });
-
-      // Also update lead info to mark recent activity
-      await updateLeadChatInfo({
-        phone,
-        listingCode,
-        chatId: existingConv.chatId,
-        operationType: existingConv.operationType as OperationType,
-      });
-
-      res.status(200).json({ chatId: existingConv.chatId, message: "Returning lead message sent" });
-      return;
-    } catch (error) {
-      console.error("Error handling returning lead:", error);
-      // If error sending returning message, we could continue to normal flow, 
-      // but usually if one fails, the others will too.
-    }
-  }
-
-  let listingData: ListingRow | null;
+  // 1. Resolve organization from listing code
+  let resolvedOrgId = orgId;
+  let listingData: ListingRow | null = null;
+  
   try {
-    listingData = await fetchListingByCode(listingCode);
+    if (resolvedOrgId) {
+      // If orgId is provided, fetch listing within that org context
+      await requestContext.run({ orgId: resolvedOrgId }, async () => {
+        listingData = await fetchListingByCode(listingCode);
+      });
+    } else {
+      // Fallback to global search if orgId is not provided
+      const globalResult = await fetchListingGlobally(listingCode);
+      if (globalResult) {
+        resolvedOrgId = globalResult.orgId;
+        listingData = globalResult.data;
+      }
+    }
   } catch (error) {
-    console.error("Error fetching listing", error);
-    await sendAlert("NewLead Error", `Error al buscar anuncio ${listingCode}`, {
-      error: error instanceof Error ? error.message : String(error),
-      phone,
-      listingCode
+    console.error(`Error resolving listing ${listingCode} (orgId: ${resolvedOrgId || "global"}):`, error);
+    res.status(500).json({ 
+      error: "Error interno al buscar el anuncio",
+      details: error instanceof Error ? error.message : String(error),
+      listingCode,
+      orgId: resolvedOrgId || undefined
     });
-    res.status(500).json({ error: "Error consultando datos del anuncio" });
     return;
   }
 
-  if (!listingData) {
+  if (!listingData || !resolvedOrgId) {
+    console.warn(`Listing ${listingCode} not found in any organization.`);
     res.status(404).json({ error: "Anuncio no encontrado" });
     return;
   }
 
-  const pipeline = await runIdealistaConfirmPipeline({
-    phone,
-    listingCode,
-    listingData,
-    leadTags: ["lead"],
-    leadName: leadName || undefined,
-    language: (languageNorm as "es" | "en" | "") || undefined,
-  });
+  // 2. Run the rest of the logic with the correct organization context
+  try {
+    await requestContext.run({ orgId: resolvedOrgId }, async () => {
+      // Check if conversation already exists for this phone and listing and is still open
+      const existingConv = await getConversationByPhoneAndListing(phone, listingCode);
+      if (existingConv && !existingConv.isFinished) {
+        console.log(`Lead ${phone} already has an open conversation for ${listingCode} in org ${resolvedOrgId}. Sending returning message.`);
 
-  if (!pipeline.ok) {
-    res.status(502).json({
-      error: "No se pudieron enviar los mensajes iniciales (pero el lead ha sido guardado)",
-      details: pipeline.details,
-      chatId: pipeline.chatId,
+        const isSpanish = isSpanishPhoneNumber(phone);
+        const returnMessage = isSpanish
+          ? "Has vuelto a contactar por Idealista en relación al anuncio mostrado arriba, ¿cómo te puedo ayudar?"
+          : "You have contacted us again through Idealista regarding the property shown above, how can I help you?";
+
+        try {
+          await sendTextMessage({ to: phone, body: returnMessage, chatId: existingConv.chatId });
+
+          // Update history
+          const updatedHistory = [...(existingConv.history || [])];
+          updatedHistory.push({
+            role: "assistant",
+            text: returnMessage,
+            timestamp: Date.now(),
+          });
+
+          await upsertConversation(existingConv.chatId, { history: updatedHistory, tags: ["lead"], type: "lead" });
+
+          // Also update lead info to mark recent activity
+          await updateLeadChatInfo({
+            phone,
+            listingCode,
+            chatId: existingConv.chatId,
+            operationType: existingConv.operationType as OperationType,
+          });
+
+          res.status(200).json({ chatId: existingConv.chatId, message: "Returning lead message sent" });
+          return;
+        } catch (error) {
+          console.error("Error handling returning lead:", error);
+        }
+      }
+
+      const pipeline = await runIdealistaConfirmPipeline({
+        phone,
+        listingCode,
+        listingData: listingData!,
+        leadTags: ["lead"],
+        leadName: leadName || undefined,
+        language: (languageNorm as "es" | "en" | "") || undefined,
+      });
+
+      if (!pipeline.ok) {
+        res.status(502).json({
+          error: "No se pudieron enviar los mensajes iniciales (pero el lead ha sido guardado)",
+          details: pipeline.details,
+          chatId: pipeline.chatId,
+        });
+        return;
+      }
+
+      res.status(200).json({ chatId: pipeline.chatId, success: true });
     });
-    return;
+  } catch (error) {
+    console.error("Fatal error in newLead pipeline:", error);
+    res.status(500).json({ 
+      error: "Error interno procesando el lead", 
+      details: error instanceof Error ? error.message : String(error) 
+    });
   }
-
-  res.status(200).json({ chatId: pipeline.chatId, success: true });
 });
 
 export const sendMessage = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
@@ -2121,27 +2217,32 @@ export const sendMessage = onRequest({ cors: true, region: REGION, secrets: [WHA
   }
 
   try {
-    const state = await ensureConversationState(chatId);
-    if (!state) {
-      res.status(404).json({ error: "Conversación no encontrada" });
-      return;
-    }
+    const authHeader = req.headers.authorization;
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-    // Send via messaging provider
-    await sendTextMessage({ to: state.phone, body: text, chatId });
+    await requestContext.run({ orgId }, async () => {
+      const state = await ensureConversationState(chatId);
+      if (!state) {
+        res.status(404).json({ error: "Conversación no encontrada" });
+        return;
+      }
 
-    // Add to history
-    const updatedHistory = [...(state.history || [])];
-    updatedHistory.push({
-      role: "assistant",
-      text,
-      timestamp: Date.now(),
+      // Send via messaging provider
+      await sendTextMessage({ to: state.phone, body: text, chatId });
+
+      // Add to history
+      const updatedHistory = [...(state.history || [])];
+      updatedHistory.push({
+        role: "assistant",
+        text,
+        timestamp: Date.now(),
+      });
+
+      await upsertConversation(chatId, { history: updatedHistory });
+      conversationStates.set(chatId, { ...state, history: updatedHistory });
+
+      res.status(200).json({ success: true });
     });
-
-    await upsertConversation(chatId, { history: updatedHistory });
-    conversationStates.set(chatId, { ...state, history: updatedHistory });
-
-    res.status(200).json({ success: true });
   } catch (error) {
     console.error("Error in sendMessage:", error);
     res.status(500).json({ error: String(error) });
@@ -2162,51 +2263,146 @@ export const sendMassMessage = onRequest({ cors: true, region: REGION, secrets: 
 
   console.log(`Sending mass message to ${chatIds.length} chats`);
 
-  const results = {
-    success: 0,
-    failed: 0,
-    errors: [] as { chatId: string; error: string }[],
-  };
+  try {
+    const authHeader = req.headers.authorization;
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-  await Promise.all(
-    chatIds.map(async (chatId) => {
-      try {
-        const state = await ensureConversationState(chatId);
-        if (!state) {
-          throw new Error("Conversación no encontrada");
+    await requestContext.run({ orgId }, async () => {
+      console.log(`Sending mass message to ${chatIds.length} chats in org ${orgId}`);
+
+      const results = {
+        success: 0,
+        failed: 0,
+        errors: [] as { chatId: string; error: string }[],
+      };
+
+      await Promise.all(
+        chatIds.map(async (chatId) => {
+          try {
+            const state = await ensureConversationState(chatId);
+            if (!state) {
+              throw new Error("Conversación no encontrada");
+            }
+
+            // Send via messaging provider
+            await sendTextMessage({ to: state.phone, body: text, chatId });
+
+            // Add to history
+            const updatedHistory = [...(state.history || [])];
+            updatedHistory.push({
+              role: "assistant",
+              text,
+              timestamp: Date.now(),
+            });
+
+            await upsertConversation(chatId, { history: updatedHistory });
+            conversationStates.set(chatId, { ...state, history: updatedHistory });
+
+            results.success++;
+          } catch (error) {
+            console.error(`Error sending mass message to ${chatId}:`, error);
+            results.failed++;
+            results.errors.push({ chatId, error: String(error) });
+          }
+        })
+      );
+
+      res.status(200).json({
+        success: true,
+        summary: {
+          total: chatIds.length,
+          sent: results.success,
+          failed: results.failed,
+        },
+        errors: results.errors,
+      });
+    });
+  } catch (error) {
+    console.error("Error in sendMassMessage:", error);
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+/**
+ * Utility endpoint to retry sending initial messages to leads stuck in the idealista_confirm state.
+ */
+export const retryMissingLeads = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+  const authHeader = req.headers.authorization;
+  let orgId = "";
+  try {
+    orgId = await resolveOrgIdFromToken(authHeader);
+  } catch (error) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const { chatIds: targetChatIds } = req.body;
+
+  await requestContext.run({ orgId }, async () => {
+    try {
+      const allLeads = await getAllLeadsWithChatId();
+      const stuckLeads = [];
+
+      for (const leadSummary of allLeads) {
+        const data = leadSummary.data as LeadRow;
+        if (!data.chatId) continue;
+        
+        // If specific chatIds provided, skip if not in list
+        if (targetChatIds && Array.isArray(targetChatIds) && !targetChatIds.includes(data.chatId)) {
+          continue;
         }
 
-        // Send via messaging provider
-        await sendTextMessage({ to: state.phone, body: text, chatId });
-
-        // Add to history
-        const updatedHistory = [...(state.history || [])];
-        updatedHistory.push({
-          role: "assistant",
-          text,
-          timestamp: Date.now(),
-        });
-
-        await upsertConversation(chatId, { history: updatedHistory });
-        conversationStates.set(chatId, { ...state, history: updatedHistory });
-
-        results.success++;
-      } catch (error) {
-        console.error(`Error sending mass message to ${chatId}:`, error);
-        results.failed++;
-        results.errors.push({ chatId, error: String(error) });
+        const conv = await getConversationByChatId(data.chatId);
+        // Case 1: Conv exists and is in confirm step with no messages
+        // Case 2: Conv doesn't exist at all (initialization failed)
+        const isStuck = !conv || (conv.flowStep === "idealista_confirm" && (!conv.history || conv.history.length === 0));
+        
+        if (isStuck) {
+          stuckLeads.push({ data, conv });
+        }
       }
-    })
-  );
 
-  res.status(200).json({
-    success: true,
-    summary: {
-      total: chatIds.length,
-      sent: results.success,
-      failed: results.failed,
-    },
-    errors: results.errors,
+      console.log(`Found ${stuckLeads.length} leads to process in org ${orgId}`);
+      let processed = 0;
+      let failed = 0;
+
+      for (const { data, conv } of stuckLeads) {
+        try {
+          const listingData = await fetchListingByCode(data.listingCode);
+          if (!listingData) {
+            console.warn(`Listing ${data.listingCode} not found for lead ${data.phone}`);
+            continue;
+          }
+
+          const pipeline = await runIdealistaConfirmPipeline({
+            phone: data.phone,
+            listingCode: data.listingCode,
+            listingData,
+            leadTags: (conv && conv.tags) || ["lead"],
+            leadName: data.name || undefined,
+          });
+
+          if (pipeline.ok) {
+            processed++;
+          } else {
+            failed++;
+          }
+        } catch (e) {
+          console.error(`Error retrying lead ${data.phone}:`, e);
+          failed++;
+        }
+      }
+
+      res.status(200).json({
+        message: `Retry process complete`,
+        found: stuckLeads.length,
+        processed,
+        failed,
+      });
+    } catch (error) {
+      console.error("Error in retryMissingLeads:", error);
+      res.status(500).json({ error: String(error) });
+    }
   });
 });
 
@@ -2314,21 +2510,26 @@ export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPEN
   }
 
   try {
-    const state = await ensureConversationState(chatId);
-    if (!state) {
-      res.status(404).json({ error: "Conversación no encontrada" });
-      return;
-    }
+    const authHeader = req.headers.authorization;
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-    // Explicitly check for botDisabled to avoid confusion, 
-    // though processBufferedMessages will also check it.
-    if (state.botDisabled) {
-      res.status(400).json({ error: "El bot está desactivado para esta conversación" });
-      return;
-    }
+    await requestContext.run({ orgId }, async () => {
+      const state = await ensureConversationState(chatId);
+      if (!state) {
+        res.status(404).json({ error: "Conversación no encontrada" });
+        return;
+      }
 
-    await processBufferedMessages(state, []);
-    res.status(200).json({ success: true });
+      // Explicitly check for botDisabled to avoid confusion, 
+      // though processBufferedMessages will also check it.
+      if (state.botDisabled) {
+        res.status(400).json({ error: "El bot está desactivado para esta conversación" });
+        return;
+      }
+
+      await processBufferedMessages(state, []);
+      res.status(200).json({ success: true });
+    });
   } catch (error) {
     console.error("Error in triggerBot:", error);
     res.status(500).json({ error: String(error) });
@@ -2366,7 +2567,7 @@ export const monitoringTask = onSchedule({
   // Persist last test time + status even when Whapi is OK.
   try {
     const databaseId = "realestate-whatsapp-bot";
-    const orgId = "org_paco_granados";
+    const orgId = getActiveOrgId();
     const db = getFirestore(admin.app(), databaseId);
     const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
     await settingsRef.set(
@@ -2490,6 +2691,37 @@ export const testAlert = onRequest({ cors: true, region: REGION }, async (_req, 
     res.status(500).json({ success: false, error: String(error) });
   }
 });
+
+/**
+ * Manual trigger for testing the welcome email.
+ * Usage: https://.../testWelcomeEmail?email=user@example.com&name=Eddy
+ */
+export const testWelcomeEmail = onRequest(
+  {
+    cors: true,
+    region: REGION,
+    secrets: ["SENDGRID_API_KEY"]
+  },
+  async (req, res) => {
+    try {
+      const email = (req.query.email as string) || "eddyperez1221@gmail.com";
+      const name = (req.query.name as string) || "Eddy";
+
+      console.log(`Sending test welcome email to ${email}...`);
+
+      const { sendWelcomeEmail } = await import("./services/authTriggers");
+      await sendWelcomeEmail(email, name);
+      
+      res.status(200).json({ 
+        success: true, 
+        message: `Test welcome email sent to ${email} successfully.` 
+      });
+    } catch (error) {
+      console.error("Error in testWelcomeEmail:", error);
+      res.status(500).json({ success: false, error: String(error) });
+    }
+  }
+);
 
 /**
  * Sync conversations with Whapi every 30 minutes
@@ -2774,11 +3006,11 @@ export const triggerAnalyzeLeads = onRequest({ cors: true, region: REGION, timeo
 // ==================== CREDITS & STRIPE FUNCTIONS ====================
 
 /**
- * Get available credit packages
+ * Get available conversation packages
  */
 export const getPackages = onRequest({ cors: true, region: REGION }, async (_req, res) => {
   try {
-    const packages = getCreditPackages();
+    const packages = getConversationPackages();
     res.status(200).json({ packages });
   } catch (error) {
     console.error("Error getting packages:", error);
@@ -2787,27 +3019,22 @@ export const getPackages = onRequest({ cors: true, region: REGION }, async (_req
 });
 
 /**
- * Get user's credit balance
+ * Get user's conversation balance
  * Requires Authorization header with Firebase ID token
  */
-export const getCredits = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const getConversations = onRequest({ cors: true, region: REGION }, async (req, res) => {
   try {
     // Verify auth token
     const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-    const token = authHeader.split("Bearer ")[1];
-    await admin.auth().verifyIdToken(token);
-
-    // Return organization-level credit balance
-    const balance = await getOrgCredits();
-    res.status(200).json({ balance });
+    await requestContext.run({ orgId }, async () => {
+      const balance = await getOrgConversationBalance();
+      res.status(200).json({ balance });
+    });
   } catch (error) {
-    console.error("Error getting credits:", error);
-    res.status(500).json({ error: "Failed to get credits" });
+    console.error("Error getting conversations:", error);
+    res.status(500).json({ error: "Failed to get conversations" });
   }
 });
 
@@ -2890,61 +3117,59 @@ export const createSubscriptionCheckout = onRequest(
       }
 
       const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
+      const orgId = await resolveOrgIdFromToken(authHeader);
 
-      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+      await requestContext.run({ orgId }, async () => {
+        const { planId, successUrl, cancelUrl, billingInterval: rawBilling, extraBlocks = 0 } = req.body as {
+          planId?: string;
+          successUrl?: string;
+          cancelUrl?: string;
+          billingInterval?: string;
+          extraBlocks?: number;
+        };
 
-      const { planId, successUrl, cancelUrl, billingInterval: rawBilling, extraBlocks = 0 } = req.body as {
-        planId?: string;
-        successUrl?: string;
-        cancelUrl?: string;
-        billingInterval?: string;
-        extraBlocks?: number;
-      };
-
-      if (!planId || !successUrl || !cancelUrl) {
-        res.status(400).json({ error: "planId, successUrl, and cancelUrl are required" });
-        return;
-      }
-
-      if (!["plus", "pro", "pro_plus"].includes(planId)) {
-        res.status(400).json({ error: `Invalid planId: ${planId}. Must be one of: plus, pro, pro_plus` });
-        return;
-      }
-
-      const billingInterval: SubscriptionBillingInterval =
-        rawBilling === "year" ? "year" : "month";
-
-      const basePriceId = getPriceIdForPlan(planId, billingInterval);
-      const extraPriceId = getExtraBlocksPriceId(billingInterval);
-      
-      const lineItems: any[] = [
-        {
-          price: basePriceId,
-          quantity: 1
+        if (!planId || !successUrl || !cancelUrl) {
+          res.status(400).json({ error: "planId, successUrl, and cancelUrl are required" });
+          return;
         }
-      ];
 
-      if (extraBlocks > 0) {
-        lineItems.push({
-          price: extraPriceId,
-          quantity: extraBlocks
-        });
-      }
+        if (!["plus", "pro", "pro_plus"].includes(planId)) {
+          res.status(400).json({ error: `Invalid planId: ${planId}. Must be one of: plus, pro, pro_plus` });
+          return;
+        }
 
-      const session = await createSubscriptionCheckoutSession(
-        ORG_ID,
-        planId,
-        lineItems,
-        extraBlocks,
-        successUrl,
-        cancelUrl
-      );
+        const billingInterval: SubscriptionBillingInterval =
+          rawBilling === "year" ? "year" : "month";
 
-      res.status(200).json({ sessionId: session.sessionId, url: session.url });
+        const basePriceId = getPriceIdForPlan(planId, billingInterval);
+        const extraPriceId = getExtraBlocksPriceId(billingInterval);
+        
+        const lineItems: any[] = [
+          {
+            price: basePriceId,
+            quantity: 1
+          }
+        ];
+
+        if (extraBlocks > 0) {
+          lineItems.push({
+            price: extraPriceId,
+            quantity: extraBlocks
+          });
+        }
+
+        const session = await createSubscriptionCheckoutSession(
+          orgId,
+          planId,
+          lineItems,
+          extraBlocks,
+          successUrl,
+          cancelUrl
+        );
+        console.log(`[createSubscriptionCheckout] Created session for org: ${orgId}, plan: ${planId}`);
+
+        res.status(200).json({ sessionId: session.sessionId, url: session.url });
+      });
     } catch (error) {
       console.error("Error creating subscription checkout:", error);
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create subscription checkout" });
@@ -2965,31 +3190,29 @@ export const getSubscription = onRequest({ cors: true, region: REGION }, async (
     }
 
     const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-    await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+    await requestContext.run({ orgId }, async () => {
+      const activeOrgId = getActiveOrgId();
+      const sub = await getOrgSubscription(activeOrgId);
 
-    const sub = await getOrgSubscription(ORG_ID);
+      if (!sub) {
+        res.status(200).json({ planId: "free", status: "active", currentPeriodEnd: null, contractedConversations: PLAN_BASE_CONVERSATIONS["free"] });
+        return;
+      }
 
-    if (!sub) {
-      res.status(200).json({ planId: "free", status: "active", currentPeriodEnd: null, contractedConversations: SUBSCRIPTION_CREDITS["free"] });
-      return;
-    }
+      const baseConversations = PLAN_BASE_CONVERSATIONS[sub.planId] ?? 0;
+      const contractedConversations = baseConversations + (sub.extraBlocks ?? 0) * 40;
 
-    const baseCredits = SUBSCRIPTION_CREDITS[sub.planId] ?? 0;
-    const contractedConversations = baseCredits + (sub.extraBlocks ?? 0) * 40;
-
-    res.status(200).json({
-      planId: sub.planId,
-      status: sub.status,
-      currentPeriodEnd: sub.currentPeriodEnd,
-      contractedConversations,
-      billingInterval: sub.billingInterval || "month",
-      stripeSubscriptionId: sub.stripeSubscriptionId,
-      extraBlocks: sub.extraBlocks || 0,
+      res.status(200).json({
+        planId: sub.planId,
+        status: sub.status,
+        currentPeriodEnd: sub.currentPeriodEnd,
+        contractedConversations,
+        billingInterval: sub.billingInterval || "month",
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+        extraBlocks: sub.extraBlocks || 0,
+      });
     });
   } catch (error) {
     console.error("Error getting subscription:", error);
@@ -3009,23 +3232,24 @@ export const createBillingPortalSession = onRequest(
         return;
       }
       const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
-      const { returnUrl } = req.body as { returnUrl?: string };
-      if (!returnUrl) {
-        res.status(400).json({ error: "returnUrl is required" });
-        return;
-      }
-      const customerId = await getOrgStripeCustomerId(ORG_ID);
-      if (!customerId) {
-        res.status(400).json({ error: "No Stripe customer found for this organization" });
-        return;
-      }
-      const session = await createBillingPortalSessionService(ORG_ID, customerId, returnUrl);
-      res.status(200).json({ url: session.url });
+      const orgId = await resolveOrgIdFromToken(authHeader);
+
+      await requestContext.run({ orgId }, async () => {
+        const { returnUrl } = req.body as { returnUrl?: string };
+        if (!returnUrl) {
+          res.status(400).json({ error: "returnUrl is required" });
+          return;
+        }
+        const activeOrgId = getActiveOrgId();
+        const customerId = await getOrgStripeCustomerId(activeOrgId);
+        if (!customerId) {
+          res.status(400).json({ error: "No Stripe customer found for this organization" });
+          return;
+        }
+        const session = await createBillingPortalSessionService(orgId, customerId, returnUrl);
+        console.log(`[createBillingPortalSession] Created portal for org: ${orgId}`);
+        res.status(200).json({ url: session.url });
+      });
     } catch (error) {
       console.error("Error creating billing portal session:", error);
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create billing portal session" });
@@ -3036,58 +3260,58 @@ export const createBillingPortalSession = onRequest(
 /**
  * Create a Stripe Checkout session for purchasing credits
  */
-export const createStripeCheckout = onRequest({ cors: true, region: REGION, secrets: ["STRIPE_API_KEY"] }, async (req, res) => {
+export const createStripeCheckout = onRequest({ cors: true, region: REGION, secrets: ["STRIPE_API_KEY", STRIPE_PRICE_TOPUP_40_CONVS] }, async (req, res) => {
   try {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
 
-    // Verify auth token
     const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-    const token = authHeader.split("Bearer ")[1];
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    const userId = decodedToken.uid;
+    await requestContext.run({ orgId }, async () => {
+      const decodedToken = await admin.auth().verifyIdToken(authHeader?.split("Bearer ")[1] || "");
+      const userId = decodedToken.uid;
 
-    const { packageId, successUrl, cancelUrl, quantity: rawQty } = req.body as {
-      packageId?: string;
-      successUrl?: string;
-      cancelUrl?: string;
-      quantity?: number;
-    };
+      const { packageId, successUrl, cancelUrl, quantity: rawQty } = req.body as {
+        packageId?: string;
+        successUrl?: string;
+        cancelUrl?: string;
+        quantity?: number;
+      };
 
-    if (!packageId || !successUrl || !cancelUrl) {
-      res.status(400).json({ error: "packageId, successUrl, and cancelUrl are required" });
-      return;
-    }
+      if (!packageId || !successUrl || !cancelUrl) {
+        res.status(400).json({ error: "packageId, successUrl, and cancelUrl are required" });
+        return;
+      }
 
-    const parsedQty =
-      rawQty === undefined || rawQty === null
-        ? 1
-        : typeof rawQty === "number"
-          ? rawQty
-          : parseInt(String(rawQty), 10);
-    const quantity = Number.isFinite(parsedQty) ? Math.floor(parsedQty) : 1;
+      const parsedQty =
+        rawQty === undefined || rawQty === null
+          ? 1
+          : typeof rawQty === "number"
+            ? rawQty
+            : parseInt(String(rawQty), 10);
+      const quantity = Number.isFinite(parsedQty) ? Math.floor(parsedQty) : 1;
 
-    const existingCustomerId = await getOrgStripeCustomerId(ORG_ID);
-    const session = await createCheckoutSession(
-      userId,
-      ORG_ID,
-      packageId,
-      successUrl,
-      cancelUrl,
-      existingCustomerId ?? undefined,
-      quantity
-    );
+      const activeOrgId = getActiveOrgId();
+      const existingCustomerId = await getOrgStripeCustomerId(activeOrgId);
+      const session = await createCheckoutSession(
+        userId,
+        orgId,
+        packageId,
+        successUrl,
+        cancelUrl,
+        existingCustomerId ?? undefined,
+        quantity,
+        packageId === "extra_40" ? STRIPE_PRICE_TOPUP_40_CONVS.value() : undefined
+      );
+      console.log(`[createStripeCheckout] Created checkout for org: ${orgId}, user: ${userId}`);
 
-    res.status(200).json({
-      sessionId: session.sessionId,
-      url: session.url,
+      res.status(200).json({
+        sessionId: session.sessionId,
+        url: session.url,
+      });
     });
   } catch (error) {
     console.error("Error creating checkout session:", error);
@@ -3098,37 +3322,36 @@ export const createStripeCheckout = onRequest({ cors: true, region: REGION, secr
 /**
  * Persist auto-recharge preferences for the org.
  */
-export const saveAutoRecharge = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const saveAutoRechargeSettings = onRequest({ cors: true, region: REGION }, async (req, res) => {
   try {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
     const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-    const body = req.body as {
-      enabled?: boolean;
-      thresholdCredits?: number;
-      rechargeCredits?: number;
-    };
-    if (typeof body.enabled !== "boolean") {
-      res.status(400).json({ error: "enabled (boolean) is required" });
-      return;
-    }
+    await requestContext.run({ orgId }, async () => {
+      const body = req.body as {
+        enabled?: boolean;
+        thresholdConversations?: number;
+        rechargeConversations?: number;
+      };
+      if (typeof body.enabled !== "boolean") {
+        res.status(400).json({ error: "enabled (boolean) is required" });
+        return;
+      }
 
-    await saveOrgAutoRechargeSettings(ORG_ID, {
-      enabled: body.enabled,
-      thresholdCredits: typeof body.thresholdCredits === "number" ? body.thresholdCredits : 20,
-      rechargeCredits: typeof body.rechargeCredits === "number" ? body.rechargeCredits : 100,
+      await saveOrgAutoRechargeSettings(orgId, {
+        enabled: body.enabled,
+        thresholdConversations: typeof body.thresholdConversations === "number" ? body.thresholdConversations : 20,
+        rechargeConversations: typeof body.rechargeConversations === "number" ? body.rechargeConversations : 40,
+      });
+      console.log(`[saveAutoRechargeSettings] Settings saved for org: ${orgId}`);
+      res.status(200).json({ ok: true });
     });
-    res.status(200).json({ ok: true });
   } catch (error) {
-    console.error("saveAutoRecharge:", error);
+    console.error("saveAutoRechargeSettings:", error);
     res.status(500).json({ error: "Failed to save auto-recharge settings" });
   }
 });
@@ -3136,23 +3359,21 @@ export const saveAutoRecharge = onRequest({ cors: true, region: REGION }, async 
 /**
  * Read auto-recharge preferences (and whether a card is on file).
  */
-export const getAutoRecharge = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const getAutoRechargeSettings = onRequest({ cors: true, region: REGION }, async (req, res) => {
   try {
     if (req.method !== "GET") {
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
     const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+    const orgId = await resolveOrgIdFromToken(authHeader);
 
-    const settings = await getOrgAutoRechargeSettingsForApi(ORG_ID);
-    res.status(200).json(settings);
+    await requestContext.run({ orgId }, async () => {
+      const settings = await getOrgAutoRechargeSettingsForApi(getActiveOrgId());
+      res.status(200).json(settings);
+    });
   } catch (error) {
-    console.error("getAutoRecharge:", error);
+    console.error("getAutoRechargeSettings:", error);
     res.status(500).json({ error: "Failed to get auto-recharge settings" });
   }
 });
@@ -3169,72 +3390,80 @@ export const previewSubscriptionChange = onRequest(
         return;
       }
       const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+      const orgId = await resolveOrgIdFromToken(authHeader);
 
-      const { newPlanId, newExtraBlocks } = req.body as {
-        newPlanId: SubscriptionPlanId;
-        newExtraBlocks: number;
-        billingInterval: "month" | "year";
-      };
-
-      const sub = await getOrgSubscription(ORG_ID);
-      const subId = sub?.stripeSubscriptionId;
-
-      const priceId = process.env[`STRIPE_${newPlanId.toUpperCase()}_PRICE_ID`];
-      if (!priceId) {
-        res.status(400).json({ error: `Price ID for plan ${newPlanId} not found` });
-        return;
-      }
-
-      const oldContracted = (SUBSCRIPTION_CREDITS[sub?.planId || "free"] ?? 0) + (sub?.extraBlocks ?? 0) * 40;
-      const newContracted = (SUBSCRIPTION_CREDITS[newPlanId] ?? 0) + newExtraBlocks * 40;
-
-      let proration;
-      if (!subId || subId.startsWith("manual_")) {
-        // Fallback for manual subscriptions or missing ones: treat as new subscription (no proration)
-        proration = {
-          amountDue: 0, // Mock for now, or calculate full price
-          currency: "eur",
-          periodEnd: Math.floor(Date.now() / 1000) + 30 * 24 * 3600
+      await requestContext.run({ orgId }, async () => {
+        const { newPlanId, newExtraBlocks } = req.body as {
+          newPlanId: SubscriptionPlanId;
+          newExtraBlocks: number;
+          billingInterval: "month" | "year";
         };
-      } else {
-        try {
-          proration = await previewSubscriptionProration(subId, [
-            { price: priceId, quantity: 1 }
-          ]);
-        } catch (err: any) {
-          console.warn(`Stripe preview failed for sub ${subId}, falling back:`, err.message);
-          proration = {
-            amountDue: 0,
-            currency: "eur",
-            periodEnd: Math.floor(Date.now() / 1000) + 30 * 24 * 3600
-          };
+
+        const activeOrgId = getActiveOrgId();
+        const sub = await getOrgSubscription(activeOrgId);
+        const subId = sub?.stripeSubscriptionId;
+
+        const priceId = process.env[`STRIPE_${newPlanId.toUpperCase()}_PRICE_ID`]?.trim();
+        if (!priceId) {
+          res.status(400).json({ error: `Price ID for plan ${newPlanId} not found` });
+          return;
         }
-      }
 
-      const proratedConversations = calculateProratedConversations(
-        oldContracted,
-        newContracted,
-        proration.periodEnd * 1000
-      );
+        const oldBaseConvs = PLAN_BASE_CONVERSATIONS[sub?.planId || "free"] ?? 0;
+        const newBaseConvs = PLAN_BASE_CONVERSATIONS[newPlanId] ?? 0;
+        const oldContracted = oldBaseConvs + (sub?.extraBlocks ?? 0) * 40;
+        const newContracted = newBaseConvs + newExtraBlocks * 40;
 
-      res.status(200).json({
-        proratedAmountCents: proration.amountDue,
-        currency: proration.currency,
-        renewalDate: proration.periodEnd * 1000,
-        currentConversations: oldContracted,
-        newConversations: newContracted,
-        proratedConversations,
-        isUpgrade: newContracted > oldContracted,
-        newMonthlyPrice: 0, // Simplified for now
+        const oldRank = PLAN_RANKS[sub?.planId || "free"] ?? 0;
+        const newRank = PLAN_RANKS[newPlanId] ?? 0;
+        
+        // Upgrade if:
+        // 1. Moving to a higher tier plan (e.g. Plus -> Pro)
+        // 2. Staying on same plan but increasing total contracted conversations (e.g. adding extra blocks)
+        const isUpgrade = newRank > oldRank || (newRank === oldRank && newContracted > oldContracted);
+
+        if (!subId || subId.startsWith("manual_")) {
+          res.status(200).json({
+            proratedAmountCents: 0,
+            renewalDate: sub?.currentPeriodEnd?.toMillis() || Date.now(),
+            isUpgrade,
+            currentConversations: oldContracted,
+            newConversations: newContracted,
+            newMonthlyPrice: SUBSCRIPTION_BASE_PRICES[newPlanId] + newExtraBlocks * 10,
+            newPlanId,
+            proratedConversations: 0,
+          });
+          return;
+        }
+
+        const billingInterval = (req.body as any).billingInterval === "year" ? "year" : "month";
+        const extraPriceId = getExtraBlocksPriceId(billingInterval);
+        
+        const newItems = [{ price: priceId, quantity: 1 }];
+        if (newExtraBlocks > 0) {
+          newItems.push({ price: extraPriceId, quantity: newExtraBlocks });
+        }
+
+        const preview = await previewSubscriptionProration(subId, newItems);
+
+        const proratedConvs = isUpgrade
+          ? calculateProratedConversations(oldContracted, newContracted, preview.periodEnd * 1000)
+          : 0;
+
+        res.status(200).json({
+          proratedAmountCents: preview.amountDue,
+          renewalDate: preview.periodEnd * 1000,
+          isUpgrade,
+          currentConversations: oldContracted,
+          newConversations: newContracted,
+          newMonthlyPrice: SUBSCRIPTION_BASE_PRICES[newPlanId] + (newPlanId === "free" ? 0 : newExtraBlocks * 10),
+          newPlanId,
+          proratedConversations: proratedConvs,
+        });
       });
     } catch (error) {
       console.error("Error previewing subscription change:", error);
-      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to preview change" });
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to preview subscription change" });
     }
   }
 );
@@ -3251,81 +3480,90 @@ export const updateSubscriptionPlan = onRequest(
         return;
       }
       const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+      const orgId = await resolveOrgIdFromToken(authHeader);
 
-      const { newPlanId, newExtraBlocks, billingInterval } = req.body as {
-        newPlanId: SubscriptionPlanId;
-        newExtraBlocks: number;
-        billingInterval: "month" | "year";
-      };
+      await requestContext.run({ orgId }, async () => {
+        const { newPlanId, newExtraBlocks, billingInterval } = req.body as {
+          newPlanId: SubscriptionPlanId;
+          newExtraBlocks: number;
+          billingInterval: "month" | "year";
+        };
 
-      const sub = await getOrgSubscription(ORG_ID);
-      const subId = sub?.stripeSubscriptionId;
-      if (!subId || subId.startsWith("manual_")) {
-        res.status(400).json({ 
-          error: "Your current subscription is manual and cannot be updated directly through Stripe. Please contact support or start a new plan.",
-          code: "MANUAL_SUBSCRIPTION"
-        });
-        return;
-      }
-
-      const priceKey = `STRIPE_${newPlanId.toUpperCase()}_PRICE_ID`;
-      const priceId = process.env[priceKey];
-      if (!priceId) {
-        res.status(400).json({ error: `Price mapping not found for ${newPlanId}` });
-        return;
-      }
-
-      const oldContracted = (SUBSCRIPTION_CREDITS[sub.planId] ?? 0) + (sub.extraBlocks ?? 0) * 40;
-      const newContracted = (SUBSCRIPTION_CREDITS[newPlanId] ?? 0) + newExtraBlocks * 40;
-      const isUpgrade = newContracted > oldContracted;
-
-      const newItems = [{ price: priceId, quantity: 1 }];
-      const updatedSub = await updateExistingSubscription(
-        sub.stripeSubscriptionId,
-        newItems,
-        isUpgrade
-      );
-
-      // Update Firestore subscription record
-      const updatedPeriodEnd = (updatedSub as any).items?.data?.[0]?.current_period_end ?? 0;
-      await setOrgSubscription(ORG_ID, {
-        planId: newPlanId as SubscriptionPlanId,
-        stripeSubscriptionId: updatedSub.id,
-        stripeCustomerId: typeof updatedSub.customer === "string" ? updatedSub.customer : updatedSub.customer?.id ?? sub.stripeCustomerId,
-        status: "active",
-        currentPeriodEnd: admin.firestore.Timestamp.fromMillis(updatedPeriodEnd * 1000),
-        extraBlocks: newExtraBlocks,
-        billingInterval,
-      } as any);
-
-      // For upgrades: grant prorated conversations immediately
-      if (isUpgrade && newContracted > oldContracted) {
-        const proratedConvs = calculateProratedConversations(
-          oldContracted,
-          newContracted,
-          updatedPeriodEnd * 1000
-        );
-        if (proratedConvs > 0) {
-          await addOrgCredits(
-            proratedConvs,
-            `Actualización de plan: +${proratedConvs} conversaciones prorrateadas (${sub.planId} → ${newPlanId})`,
-            ORG_ID
-          );
+        const activeOrgId = getActiveOrgId();
+        const sub = await getOrgSubscription(activeOrgId);
+        const subId = sub?.stripeSubscriptionId;
+        if (!subId || subId.startsWith("manual_")) {
+          res.status(400).json({ 
+            error: "Your current subscription is manual and cannot be updated directly through Stripe. Please contact support or start a new plan.",
+            code: "MANUAL_SUBSCRIPTION"
+          });
+          return;
         }
-      }
 
-      res.status(200).json({
-        success: true,
-        message: isUpgrade ? "Plan actualizado correctamente" : "Cambio de plan programado para la próxima renovación",
+        const priceKey = `STRIPE_${newPlanId.toUpperCase()}_PRICE_ID`;
+        const priceId = process.env[priceKey]?.trim();
+        if (!priceId) {
+          res.status(400).json({ error: `Price mapping not found for ${newPlanId}` });
+          return;
+        }
+
+        const extraPriceId = getExtraBlocksPriceId(billingInterval);
+        
+        const newItems = [{ price: priceId, quantity: 1 }];
+        if (newExtraBlocks > 0) {
+          newItems.push({ price: extraPriceId, quantity: newExtraBlocks });
+        }
+
+        const oldBaseConvs = PLAN_BASE_CONVERSATIONS[sub.planId] ?? 0;
+        const newBaseConvs = PLAN_BASE_CONVERSATIONS[newPlanId] ?? 0;
+        const oldContracted = oldBaseConvs + (sub.extraBlocks ?? 0) * 40;
+        const newContracted = newBaseConvs + newExtraBlocks * 40;
+        const oldRank = PLAN_RANKS[sub.planId] ?? 0;
+        const newRank = PLAN_RANKS[newPlanId] ?? 0;
+        const isUpgrade = newRank > oldRank || (newRank === oldRank && newContracted > oldContracted);
+
+        const updatedSub = await updateExistingSubscription(
+          sub.stripeSubscriptionId,
+          newItems,
+          isUpgrade
+        );
+
+        // Update Firestore subscription record
+        const updatedPeriodEnd = (updatedSub as any).items?.data?.[0]?.current_period_end ?? 0;
+        await setOrgSubscription(activeOrgId, {
+          planId: newPlanId as SubscriptionPlanId,
+          stripeSubscriptionId: updatedSub.id,
+          stripeCustomerId: typeof updatedSub.customer === "string" ? updatedSub.customer : updatedSub.customer?.id ?? sub.stripeCustomerId,
+          status: "active",
+          currentPeriodEnd: admin.firestore.Timestamp.fromMillis(updatedPeriodEnd * 1000),
+          extraBlocks: newExtraBlocks,
+          billingInterval,
+        } as any);
+
+        // For upgrades: grant prorated conversations immediately
+        if (isUpgrade && newContracted > oldContracted) {
+          const proratedConvs = calculateProratedConversations(
+            oldContracted,
+            newContracted,
+            updatedPeriodEnd * 1000
+          );
+          if (proratedConvs > 0) {
+            await addOrgConversations(
+              proratedConvs,
+              `Actualización de plan: +${proratedConvs} conversaciones prorrateadas (${sub.planId} → ${newPlanId})`,
+              activeOrgId
+            );
+          }
+        }
+
+        res.status(200).json({
+          success: true,
+          message: isUpgrade ? "Suscripción actualizada correctamente." : "Tu suscripción se actualizará al finalizar el periodo actual.",
+        });
       });
     } catch (error) {
-      console.error("Error updating subscription plan:", error);
-      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to update plan" });
+      console.error("Error updating subscription:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to update subscription" });
     }
   }
 );
@@ -3374,7 +3612,7 @@ export const stripeWebhook = onRequest({
       // ── One-time credit top-up ─────────────────────────────────────
       case "checkout.session.completed": {
         const session = event.data.object;
-        const orgId = session.metadata?.orgId ?? ORG_ID;
+        const orgId = session.metadata?.orgId ?? getActiveOrgId();
 
         if (session.mode === "subscription") {
           // Subscription checkout: record the subscription in Firestore.
@@ -3392,19 +3630,19 @@ export const stripeWebhook = onRequest({
           console.log(`Subscription checkout completed for org ${orgId}, plan ${planId}`);
 
         } else {
-          // One-time payment: add to org balance (same ledger as getCredits / deductOrgCredits)
+          // One-time payment: add to org balance (same ledger as getConversations / deductOrgConversations)
           const userId = session.metadata?.userId;
-          const credits = parseInt(session.metadata?.credits || "0", 10);
+          const conversations = parseInt(session.metadata?.conversations || "0", 10);
 
-          if (credits > 0) {
-            const newBalance = await addOrgCredits(
-              credits,
-              `Compra de ${credits} créditos${userId ? ` (uid ${userId})` : ""} · session ${session.id}`,
+          if (conversations > 0) {
+            const newBalance = await addOrgConversations(
+              conversations,
+              `Compra de ${conversations} conversaciones${userId ? ` (uid ${userId})` : ""} · session ${session.id}`,
               orgId
             );
-            console.log(`Added ${credits} org credits for ${orgId}. New balance: ${newBalance}`);
+            console.log(`Added ${conversations} org conversations for ${orgId}. New balance: ${newBalance}`);
           } else {
-            console.warn("One-time checkout completed but missing credits metadata:", session.metadata);
+            console.warn("One-time checkout completed but missing conversations metadata:", session.metadata);
           }
         }
 
@@ -3428,7 +3666,7 @@ export const stripeWebhook = onRequest({
       case "customer.subscription.updated": {
         const sub = event.data.object;
         const subMeta = asRecord((sub as any).metadata);
-        const orgId: string = (subMeta.orgId as string) || ORG_ID;
+        const orgId: string = (subMeta.orgId as string) || getActiveOrgId();
         const planId = ((subMeta.planId as string) || "free") as SubscriptionPlanId;
         const statusRaw = typeof (sub as any).status === "string" ? (sub as any).status : "active";
         const status =
@@ -3450,7 +3688,7 @@ export const stripeWebhook = onRequest({
         break;
       }
 
-      // ── Monthly credit grant (first payment + all renewals) ────────
+      // ── Monthly conversation grant (first payment + all renewals) ────────
       case "invoice.paid": {
         const invoice = asRecord(event.data.object);
         // Only process subscription invoices
@@ -3470,15 +3708,15 @@ export const stripeWebhook = onRequest({
 
         const planId = ((subMeta.planId as string) || (line0Meta.planId as string) || "free") as SubscriptionPlanId;
 
-        const orgId: string = (subMeta.orgId as string) || ORG_ID;
+        const orgId: string = (subMeta.orgId as string) || getActiveOrgId();
         const extraBlocks = parseInt((subMeta.extraBlocks as string) || "0", 10);
 
-        if (!SUBSCRIPTION_CREDITS[planId]) {
+        if (!PLAN_BASE_CONVERSATIONS[planId]) {
           console.warn(`invoice.paid: unknown planId "${planId}" on invoice ${invoiceId}`);
           break;
         }
 
-        await grantSubscriptionCredits(orgId, planId, invoiceId, extraBlocks);
+        await grantSubscriptionConversations(orgId, planId, invoiceId, extraBlocks);
         break;
       }
 
@@ -3488,7 +3726,7 @@ export const stripeWebhook = onRequest({
       case "customer.subscription.deleted": {
         const sub = asRecord(event.data.object);
         const subMeta = asRecord(sub.metadata);
-        const orgId: string = (subMeta.orgId as string) || ORG_ID;
+        const orgId: string = (subMeta.orgId as string) || getActiveOrgId();
 
         await setOrgSubscription(orgId, {
           planId: "free",
@@ -3510,13 +3748,19 @@ export const stripeWebhook = onRequest({
         if (!oid || credits <= 0) {
           break;
         }
-        await addOrgCreditsForPaymentIntentOnce(oid, credits, pi.id, "Auto-compra créditos");
+        await addOrgConversationsForPaymentIntentOnce(oid, credits, pi.id, "Auto-compra conversaciones");
         break;
       }
 
       case "payment_intent.payment_failed": {
-        const paymentIntent = event.data.object;
-        console.warn("Payment failed:", paymentIntent.id, paymentIntent.last_payment_error?.message);
+        const pi = event.data.object as any;
+        const orgId = pi.metadata?.orgId ?? getActiveOrgId();
+        const amount = `${(pi.amount / 100).toFixed(2)}€`;
+        console.warn(`Payment failed for org ${orgId}: ${pi.id}, ${pi.last_payment_error?.message}`);
+        
+        await sendPaymentFailedNotification(orgId, amount).catch(e => 
+          console.error("Failed to send payment failed notification:", e)
+        );
         break;
       }
 
@@ -3567,7 +3811,7 @@ export const getAlertCatalogStatus = onRequest({ cors: true, region: REGION }, a
 
   try {
     const databaseId = "realestate-whatsapp-bot";
-    const orgId = "org_paco_granados";
+    const orgId = getActiveOrgId();
     const db = getFirestore(admin.app(), databaseId);
     const alertsRef = db.collection("organizations").doc(orgId).collection("system_alerts");
     const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
@@ -3719,7 +3963,7 @@ export const setAlertEnabled = onRequest({ cors: true, region: REGION }, async (
     }
 
     const databaseId = "realestate-whatsapp-bot";
-    const orgId = "org_paco_granados";
+    const orgId = getActiveOrgId();
     const db = getFirestore(admin.app(), databaseId);
     const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
 
@@ -3766,7 +4010,7 @@ export const runAlertCheck = onRequest({ cors: true, region: REGION, secrets: [W
     const checkedAtMsBase = Date.now();
 
     const databaseId = "realestate-whatsapp-bot";
-    const orgId = "org_paco_granados";
+    const orgId = getActiveOrgId();
     const db = getFirestore(admin.app(), databaseId);
     const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
     const alertsRef = db.collection("organizations").doc(orgId).collection("system_alerts");
@@ -4254,4 +4498,31 @@ export const onConfigWritten = onDocumentWritten({
   );
 });
 
-export * from "./calendlyWebhook";
+export const testEmailTemplates = onRequest({ cors: true, region: REGION }, async (req, res) => {
+  const { type, email, name, orgName, balance, amount, inviterName, token } = req.body;
+  
+  try {
+    if (type === "welcome") {
+      await sendWelcomeNotification(testEmail, "User Test", "Proplead Org Test");
+    } else if (type === "low_balance") {
+      // Mock data for test
+      const { formatLowBalanceEmail } = await import("./services/emailTemplates");
+      const { sendEmailToUser } = await import("./services/emailService");
+      const html = formatLowBalanceEmail({ name: "User Test", balance: 8 });
+      await sendEmailToUser({ to: testEmail, subject: "Pausa programada del Agente Virtual ⏳", html });
+    } else if (type === "payment_failed") {
+      const { formatPaymentFailedEmail } = await import("./services/emailTemplates");
+      const { sendEmailToUser } = await import("./services/emailService");
+      const html = formatPaymentFailedEmail({ name: "User Test", orgName: "Proplead Org Test", lastPaymentAmount: "39.00€" });
+      await sendEmailToUser({ to: testEmail, subject: "Fallo en la renovación 💳", html });
+    } else {
+      res.status(400).send("Specify type: welcome, low_balance, or payment_failed");
+      return;
+    }
+    
+    res.status(200).json({ success: true, message: `Email ${type} sent to ${testEmail}` });
+  } catch (error) {
+    console.error("Test email error:", error);
+    res.status(500).json({ error: String(error) });
+  }
+});

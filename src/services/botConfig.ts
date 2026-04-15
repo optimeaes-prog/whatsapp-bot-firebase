@@ -5,7 +5,9 @@ import type { BotConfig, BotStyle, MessagingProvider } from "../types";
 import { getOrganizationBasePath } from "../lib/organization";
 
 const CONFIG_DOC_ID = "config";
-const COLLECTION_NAME = `${getOrganizationBasePath()}/botConfig`;
+function getBotConfigCollection() {
+  return `${getOrganizationBasePath()}/botConfig`;
+}
 
 // Default assistant styles
 export const DEFAULT_STYLES: BotStyle[] = [
@@ -62,7 +64,7 @@ export const DEFAULT_STYLES: BotStyle[] = [
 ];
 
 export async function getBotConfig(): Promise<BotConfig> {
-  const docRef = doc(db, COLLECTION_NAME, CONFIG_DOC_ID);
+  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
   const snapshot = await getDoc(docRef);
 
   if (!snapshot.exists()) {
@@ -86,17 +88,17 @@ export async function getBotConfig(): Promise<BotConfig> {
 }
 
 export async function updateActiveStyle(styleId: string): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, CONFIG_DOC_ID);
+  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
   await setDoc(docRef, { activeStyleId: styleId }, { merge: true });
 }
 
 export async function updateMessagingProvider(provider: MessagingProvider): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, CONFIG_DOC_ID);
+  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
   await setDoc(docRef, { messagingProvider: provider }, { merge: true });
 }
 
 export async function updateOrgName(orgName: string): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, CONFIG_DOC_ID);
+  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
   await setDoc(docRef, { orgName }, { merge: true });
 }
 

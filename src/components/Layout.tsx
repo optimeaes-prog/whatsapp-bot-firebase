@@ -12,13 +12,15 @@ import {
   Menu,
   X,
   Bell,
+  Mail,
   History,
   UserCog,
   Shield,
   ChevronDown,
-  Coins,
   Rocket,
   FileBox,
+  CreditCard,
+  Wrench,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -35,25 +37,29 @@ const mainNavItems: NavItem[] = [
   { href: "/leads", label: "Leads", icon: <Users size={20} /> },
   { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
 
-  { href: "/suscripcion", label: "Suscripción", icon: <Coins size={20} /> },
+  { href: "/suscripcion", label: "Suscripción", icon: <CreditCard size={20} /> },
+  { href: "/equipo", label: "Equipo", icon: <Users size={20} /> },
 ];
 
 const adminNavItems: NavItem[] = [
   { href: "/onboards", label: "Onboards", icon: <FileBox size={20} /> },
+  { href: "/admin/tools", label: "Herramientas", icon: <Wrench size={20} /> },
   { href: "/alertas", label: "Alertas", icon: <Bell size={20} /> },
+  { href: "/email-templates", label: "Templates de Email", icon: <Mail size={20} /> },
   { href: "/historial", label: "Historial", icon: <History size={20} /> },
   { href: "/usuarios", label: "Usuarios", icon: <UserCog size={20} /> },
   { href: "/configuracion", label: "Configuración", icon: <Settings size={20} /> },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { user, signOut } = useAuth();
+  const { user, signOut, role } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCurrentlyInAdminRoute = adminNavItems.some(item => location.pathname === item.href);
   const [adminExpanded, setAdminExpanded] = useState(isCurrentlyInAdminRoute);
   const isAdmin = user?.email === "ejperezreyes@gmail.com";
+  const isOwnerOrAdmin = role === 'owner' || role === 'admin';
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(true);
 
   useEffect(() => {

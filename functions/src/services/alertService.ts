@@ -2,6 +2,7 @@ import * as nodemailer from "nodemailer";
 import { defineString, defineSecret } from "firebase-functions/params";
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
+import { getActiveOrgId } from "./requestContext";
 import { AlertSeverity } from "../types";
 
 const SMTP_HOST = defineString("SMTP_HOST", { default: "smtp.gmail.com" });
@@ -30,7 +31,7 @@ export async function sendAlert(
     // 1. Log to Firestore
     try {
         const db = getFirestore(admin.app(), DATABASE_ID);
-        await db.collection("organizations/org_paco_granados/system_alerts").add({
+        await db.collection(`organizations/${getActiveOrgId()}/system_alerts`).add({
             subject,
             message,
             details: details || null,
@@ -146,7 +147,7 @@ export async function sendHealthReport(
     // 1. Log to Firestore
     try {
         const db = getFirestore(admin.app(), DATABASE_ID);
-        await db.collection("organizations/org_paco_granados/system_alerts").add({
+        await db.collection(`organizations/${getActiveOrgId()}/system_alerts`).add({
             subject: `STATUS REPORT: ${subject}`,
             message,
             details: { ...summary, ...(details || {}) },

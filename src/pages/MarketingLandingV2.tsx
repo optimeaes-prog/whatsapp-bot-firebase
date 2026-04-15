@@ -3,12 +3,13 @@ import { Link } from "react-router-dom";
 import {
   ArrowRight,
   Star,
-  MessageSquare,
   LayoutGrid,
   Check,
   ChevronDown,
   Clock,
   Info,
+  Minus,
+  Plus
 } from "lucide-react";
 
 import idealistaLogo from "../../idealista.png";
@@ -41,7 +42,7 @@ const SUBSCRIPTION_PLANS = [
     assistancesMonthly: 40,
     listingsIdeal: "1 anuncio activo/mes",
     benefits: [
-      "Soporte hasta 72h",
+      "Respuesta de soporte maximo 72h",
       "Acceso: 1 agente",
       "Solo leads de mensajes",
     ],
@@ -49,14 +50,14 @@ const SUBSCRIPTION_PLANS = [
   {
     id: "plus" as const,
     name: "Plus",
-    priceMonthly: 19,
+    priceMonthly: 39,
     assistancesMonthly: 80,
     listingsIdeal: "2-4 anuncios activos/mes",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
-      "Soporte hasta 24h",
+      "Respuesta de soporte maximo 24h",
       "Acceso: 1 agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
     ],
   },
   {
@@ -67,9 +68,9 @@ const SUBSCRIPTION_PLANS = [
     listingsIdeal: "3–6 anuncios activos/mes",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
-      "Soporte hasta 6h",
+      "Respuesta de soporte maximo 12h",
       "Acceso multi-agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
       "Promoción de marca en cualificación",
     ],
   },
@@ -83,9 +84,9 @@ const SUBSCRIPTION_PLANS = [
       "Compra 40 conversaciones por 10€ cuando quieras",
       "Soporte dedicado 1 a 1",
       "Acceso multi-agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
       "Promoción de marca en cualificación",
-      "Avatar IA personalizado",
+      "Tu propio Avatar en vez de Marcos.",
     ],
   },
   {
@@ -95,7 +96,6 @@ const SUBSCRIPTION_PLANS = [
     assistancesMonthly: 0,
     listingsIdeal: "A medida",
     benefits: [
-      "Compra 40 conversaciones por 10€ cuando quieras",
       "Soporte personalizado",
       "Acceso ilimitado",
       "Volumen a medida",
@@ -121,6 +121,11 @@ function PricingSection() {
   const [demandValue, setDemandValue] = useState(40);
   const [planBilling, setPlanBilling] = useState<"monthly" | "annual">("monthly");
   const [checkoutData, setCheckoutData] = useState<CheckoutBreakdownData | null>(null);
+  const [planCustomConversations, setPlanCustomConversations] = useState<Record<string, number>>({ 
+    plus: 80, 
+    pro: 80, 
+    pro_plus: 80 
+  });
 
   const conversations = numListings * demandValue;
   const hoursSaved = Math.round((conversations * 7) / 60);
@@ -158,11 +163,11 @@ function PricingSection() {
             <div className="p-5 sm:p-6 flex flex-col lg:flex-row items-center gap-8 lg:gap-12">
 
               {/* Volume & Demand Controls */}
-              <div className="flex-1 w-full lg:w-3/5 px-4 space-y-6">
+              <div className="flex-1 w-full lg:w-2/3 px-4 space-y-6">
                 {/* Listings Slider */}
                 <div>
                   <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">Anuncios activos/mes</span>
+                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuántos anuncios tienes activos por mes?</span>
                     <span className="text-primary-400 text-lg font-black font-heading tracking-tight">
                       {numListings > 25 ? "25+" : numListings} {numListings === 1 ? "anuncio" : "anuncios"}
                     </span>
@@ -181,7 +186,7 @@ function PricingSection() {
                 {/* Demand Selector */}
                 <div>
                   <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">Demanda media por anuncio</span>
+                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuál es la demanda media de cada uno?</span>
                     <span className="text-primary-400 text-lg font-black font-heading tracking-tight">
                       {demandValue} leads
                     </span>
@@ -203,14 +208,14 @@ function PricingSection() {
               {/* Metrics Short Summary */}
               <div className="flex flex-wrap items-center justify-center lg:justify-start gap-x-8 gap-y-4 px-6 lg:border-l border-white/5 py-1">
                 <div className="text-center lg:text-left text-white">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 opacity-70 font-heading">Conversaciones/mes</p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 opacity-70 font-heading leading-tight">Conversaciones<br />necesarias por mes</p>
                   <p className="text-lg font-black font-heading leading-none tabular-nums text-primary-400">
                     {conversations}
                   </p>
                 </div>
                 <div className="text-center lg:text-left group relative">
                   <div className="flex items-center gap-1 mb-1 justify-center lg:justify-start">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest opacity-70 font-heading">Ahorro</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest opacity-70 font-heading leading-tight">Ahorro<br />estimado</p>
                     <Info size={10} className="text-slate-400 opacity-50 cursor-help" />
                     {/* Tooltip */}
                     <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-[10px] text-white rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 text-center font-medium leading-tight">
@@ -222,7 +227,7 @@ function PricingSection() {
               </div>
 
               {/* Billing Toggle */}
-              <div className="shrink-0 scale-90 sm:scale-100">
+              <div className="shrink-0 scale-90 sm:scale-100 lg:-translate-x-4">
                 <SegmentedControl
                   ariaLabel="Facturación"
                   colorScheme="amber"
@@ -251,7 +256,14 @@ function PricingSection() {
           {SUBSCRIPTION_PLANS.map((plan) => {
             const isEnterprise = plan.id === "enterprise";
             const isFree = plan.id === "free";
-            const extraConversations = isFree ? 0 : Math.max(0, conversations - 80);
+            
+            // Simulator recommended value (for guidance only)
+            const recommendedValue = conversations;
+            
+            // Actual contracted value (managed per plan card)
+            const contractedValue = isFree ? 40 : (isEnterprise ? 0 : (planCustomConversations[plan.id as string] || 80));
+            
+            const extraConversations = isFree ? 0 : Math.max(0, contractedValue - 80);
             const extraBlocks = extraConversations / 40;
             const extraPrice = extraBlocks * 10;
             const currentPriceMonthly = plan.priceMonthly !== null ? plan.priceMonthly + extraPrice : null;
@@ -313,27 +325,72 @@ function PricingSection() {
 
                     {!isEnterprise && (
                       <div className="mb-4">
-                        <div className="space-y-1 mb-3">
-                          <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-heading">Consumo mensual</label>
-                          <div className="flex items-start gap-1.5 pt-1">
-                            <MessageSquare size={13} className="text-primary-500 shrink-0 mt-0.5" />
-                            <div className="flex flex-col">
-                              <span className="text-xs text-primary-600 font-bold leading-tight font-heading">
-                                {(isFree ? 40 : Math.max(80, conversations)).toLocaleString()} conversaciones
-                              </span>
-                              {!isFree && (
-                                <span className="text-[10px] text-gray-400 leading-tight mt-0.5">
-                                  {extraConversations > 0
-                                    ? `80 incluidas + ${extraConversations} extra`
-                                    : "80 incluidas en el plan"}
+                        <div className="space-y-3 mb-3">
+                          <div className="flex flex-col gap-1.5 pt-1">
+                            <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-heading">Conversaciones contratadas</label>
+                            
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center bg-gray-50 border border-gray-100 rounded-lg p-1">
+                                {!isFree && (
+                                  <button 
+                                    onClick={() => {
+                                      const current = planCustomConversations[plan.id as string] || 80;
+                                      if (current > 80) {
+                                        setPlanCustomConversations(prev => ({
+                                          ...prev,
+                                          [plan.id]: current - 40
+                                        }));
+                                      }
+                                    }}
+                                    disabled={contractedValue <= 80}
+                                    className="p-1 text-gray-400 hover:text-primary-600 disabled:opacity-30 disabled:hover:text-gray-400 transition-colors"
+                                  >
+                                    <Minus size={14} strokeWidth={3} />
+                                  </button>
+                                )}
+                                <span className={cn(
+                                  "text-sm font-black font-heading px-2 min-w-[50px] text-center",
+                                  !isFree ? "text-primary-600" : "text-gray-600"
+                                )}>
+                                  {contractedValue.toLocaleString()}
                                 </span>
-                              )}
+                                {!isFree && (
+                                  <button 
+                                    onClick={() => {
+                                      const current = planCustomConversations[plan.id as string] || 80;
+                                      setPlanCustomConversations(prev => ({
+                                        ...prev,
+                                        [plan.id]: current + 40
+                                      }));
+                                    }}
+                                    className="p-1 text-gray-400 hover:text-primary-600 transition-colors"
+                                  >
+                                    <Plus size={14} strokeWidth={3} />
+                                  </button>
+                                )}
+                              </div>
                             </div>
+
+                            {/* Recommended Guidance Tag */}
+                            {!isFree && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold text-gray-400">Recomendado x simulador:</span>
+                                <span className={cn(
+                                  "text-[10px] font-black px-1.5 py-0.5 rounded",
+                                  contractedValue >= recommendedValue 
+                                    ? "bg-emerald-50 text-emerald-600" 
+                                    : "bg-amber-50 text-amber-600"
+                                )}>
+                                  {recommendedValue.toLocaleString()}
+                                </span>
+                              </div>
+                            )}
                           </div>
+
                           <div className="flex items-center gap-1.5 mt-0.5 group relative">
                             <Clock size={13} className="text-emerald-500 shrink-0" />
                             <span className="text-xs text-emerald-600 font-heading">
-                              {Math.round(((isFree ? 40 : Math.max(80, conversations)) * 7) / 60)}h ahorradas
+                              {Math.round((contractedValue * 7) / 60)}h ahorradas
                             </span>
                             <Info size={10} className="text-emerald-500 opacity-40 cursor-help" />
                             {/* Tooltip */}
@@ -379,7 +436,7 @@ function PricingSection() {
                             basePrice,
                             billing: planBilling === "annual" ? "year" : "monthly",
                             extraBlocks,
-                            totalConversations: isFree ? 40 : Math.max(80, conversations),
+                            totalConversations: contractedValue,
                             totalPrice: basePrice + extraPriceTotal
                           });
                         }

@@ -7,6 +7,7 @@ import { cn } from "../lib/utils";
 import { Button, PageHeader, PageLoading } from "../components/ui";
 
 export function Configuracion() {
+  const { role } = useAuth();
   const [config, setConfig] = useState<BotConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -113,7 +114,7 @@ export function Configuracion() {
           <div className="flex items-end">
             <Button
               onClick={handleUpdateOrgName}
-              disabled={orgName === config?.orgName}
+              disabled={role === "member" || orgName === config?.orgName}
               loading={savingOrg}
             >
               Guardar
@@ -137,7 +138,7 @@ export function Configuracion() {
           {/* Whapi Option */}
           <button
             onClick={() => handleSelectProvider("whapi")}
-            disabled={savingProvider}
+            disabled={role === "member" || savingProvider}
             className={cn(
               "w-full text-left p-5 rounded-btn border-2 transition-all",
               config?.messagingProvider === "whapi" || !config?.messagingProvider
@@ -166,7 +167,7 @@ export function Configuracion() {
           {/* Twilio Option */}
           <button
             onClick={() => handleSelectProvider("twilio")}
-            disabled={savingProvider}
+            disabled={role === "member" || savingProvider}
             className={cn(
               "w-full text-left p-5 rounded-btn border-2 transition-all",
               config?.messagingProvider === "twilio"
@@ -222,7 +223,7 @@ export function Configuracion() {
                   onClick={() => handleSelectStyle(style.id)}
                   onMouseEnter={() => setPreviewStyle(style)}
                   onMouseLeave={() => setPreviewStyle(null)}
-                  disabled={saving}
+                  disabled={role === "member" || saving}
                   className={cn(
                     "w-full text-left p-4 rounded-btn border-2 transition-all",
                     config?.activeStyleId === style.id

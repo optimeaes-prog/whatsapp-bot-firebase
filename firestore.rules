@@ -2,45 +2,80 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Only authenticated users can read/write
-    match /{document=**} {
-      allow read, write: if request.auth != null;
+    
+    function isAuthenticated() {
+      return request.auth != null;
     }
     
-    match /organizations/{orgId} {
-      allow read, write: if request.auth != null;
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function getOrgId() {
+      return getUserData().orgId;
+    }
+    
+    function getRole() {
+       return getUserData().role;
+    }
 
-      // Listings (formerly anuncios) - authenticated users can CRUD
+    // Users can read/write their own profile
+    // Admins/Owners can read other users in the same organization (for member lists)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || getOrgId() == resource.data.orgId);
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Invitations management
+    match /invitations/{inviteId} {
+      // Allow read during signup (with token) - this is tricky without token check, 
+      // but Cloud Functions handle the token validation. 
+      // For Firestore directly, we restrict to the org.
+      allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || getRole() == 'owner' || getRole() == 'admin');
+      allow write: if isAuthenticated() && (getRole() == 'owner' || getRole() == 'admin');
+    }
+
+    match /organizations/{orgId} {
+      // Organization access is restricted to members
+      allow read: if isAuthenticated() && getOrgId() == orgId;
+      // Only owners/admins can update organization settings
+      allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
+
       match /listings/{listingId} {
-        allow read, write: if request.auth != null;
+        allow read: if isAuthenticated() && getOrgId() == orgId;
+        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
       }
       
-      // Leads - authenticated users can read, functions can write
       match /leads/{leadId} {
-        allow read, write: if request.auth != null;
+        allow read: if isAuthenticated() && getOrgId() == orgId;
+        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
       }
       
-      // Conversations (formerly conversaciones) - authenticated users can read, functions can write
       match /conversations/{convId} {
-        allow read, write: if request.auth != null;
+        allow read: if isAuthenticated() && getOrgId() == orgId;
+        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
       }
       
-      // Bot Config - authenticated users can read/write
       match /botConfig/{configId} {
-        allow read, write: if request.auth != null;
+        allow read: if isAuthenticated() && getOrgId() == orgId;
+        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
       }
       
-      // Credits - users can read their own balance, only backend functions can write
       match /credits/{userId} {
-        allow read: if request.auth != null; // Since org id encapsulates, kept simple for now
+        allow read: if isAuthenticated() && getOrgId() == orgId;
         allow write: if false;  
       }
       
-      // Credit Transactions - users can read their own transactions
       match /creditTransactions/{transactionId} {
-        allow read: if request.auth != null;
+        allow read: if isAuthenticated() && getOrgId() == orgId;
         allow write: if false;  
       }
+    }
+
+    // Global Audit Logs (if applicable)
+    match /auditLogs/{logId} {
+       allow read: if isAuthenticated() && getOrgId() == resource.data.orgId;
+       allow write: if false;
     }
   }
 }

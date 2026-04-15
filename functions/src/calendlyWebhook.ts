@@ -2,6 +2,7 @@ import * as crypto from "crypto";
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
+import { getActiveOrgId } from "./services/requestContext";
 
 import { CALENDLY_PAT, CALENDLY_WEBHOOK_SIGNING_KEY } from "./secrets";
 
@@ -100,7 +101,7 @@ export const calendlyWebhook = onRequest(
         }
 
         // Usamos la misma lógica hardcodeada que en el frontend para org_paco_granados
-        const orgId = "org_paco_granados";
+        const orgId = getActiveOrgId();
         const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
         const docRef = db.collection("organizations").doc(orgId);
 
@@ -112,7 +113,7 @@ export const calendlyWebhook = onRequest(
         console.log("Successfully marked onboardingCallScheduled with details", updates);
       } else if (event === "invitee.canceled") {
          // Si se cancela la cita, reabrimos el banner
-         const orgId = "org_paco_granados";
+         const orgId = getActiveOrgId();
          const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
          const docRef = db.collection("organizations").doc(orgId);
          await docRef.set({ 

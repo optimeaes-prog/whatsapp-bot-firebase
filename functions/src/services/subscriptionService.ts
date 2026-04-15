@@ -1,7 +1,7 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { OrgSubscription, SubscriptionPlanId } from "../types";
-import { addOrgCredits } from "./creditsService";
+import { addOrgConversations } from "./billingService";
 
 const DATABASE_ID = "realestate-whatsapp-bot";
 
@@ -14,8 +14,8 @@ function getDb(): FirebaseFirestore.Firestore {
     return firestoreInstance;
 }
 
-/** Monthly credits granted per subscription plan */
-export const SUBSCRIPTION_CREDITS: Record<SubscriptionPlanId, number> = {
+/** Monthly conversations granted per subscription plan */
+export const PLAN_BASE_CONVERSATIONS: Record<SubscriptionPlanId, number> = {
     free: 40,
     plus: 80,
     pro: 80,
@@ -86,10 +86,10 @@ export async function markInvoiceProcessed(orgId: string, invoiceId: string): Pr
 }
 
 /**
- * Grant the monthly credits for a given plan, keyed on the Stripe invoice ID.
+ * Grant the monthly conversations for a given plan, keyed on the Stripe invoice ID.
  * Idempotent: subsequent calls with the same invoiceId are safely ignored.
  */
-export async function grantSubscriptionCredits(
+export async function grantSubscriptionConversations(
     orgId: string,
     planId: SubscriptionPlanId,
     invoiceId: string,
@@ -101,19 +101,19 @@ export async function grantSubscriptionCredits(
         return;
     }
 
-    let credits = SUBSCRIPTION_CREDITS[planId] ?? 0;
+    let conversations = PLAN_BASE_CONVERSATIONS[planId] ?? 0;
     
     if (extraBlocks > 0) {
-        credits += extraBlocks * 40;
+        conversations += extraBlocks * 40;
     }
 
-    if (credits === 0) {
-        console.warn(`[subscriptionService] No credits configured for plan ${planId}`);
+    if (conversations === 0) {
+        console.warn(`[subscriptionService] No conversations configured for plan ${planId}`);
         return;
     }
 
-    await addOrgCredits(
-        credits,
+    await addOrgConversations(
+        conversations,
         `Suscripción: Plan ${planId.toUpperCase()} (Base + ${extraBlocks} packs extra)`,
         orgId
     );
@@ -124,7 +124,7 @@ export async function grantSubscriptionCredits(
         .doc(orgId)
         .set({ subscription: { extraBlocks } }, { merge: true });
 
-    console.log(`[subscriptionService] Granted ${credits} credits to org ${orgId} for plan ${planId}, invoice ${invoiceId}`);
+    console.log(`[subscriptionService] Granted ${conversations} conversations to org ${orgId} for plan ${planId}, invoice ${invoiceId}`);
 }
 
 /**

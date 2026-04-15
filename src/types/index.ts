@@ -77,6 +77,7 @@ export type Lead = {
   tags?: string[];
   lastAnalyzedAt?: Timestamp;
   conversationSummary?: string;
+  errorDetails?: string;
 };
 
 export type HistoryItem = {
@@ -133,18 +134,18 @@ export type SystemAlert = {
 export type ListingFormData = Omit<Listing, 'id' | 'createdAt' | 'updatedAt' | 'isActive' | 'closureInfo'>;
 export type LeadFormData = Omit<Lead, 'id' | 'createdAt' | 'firstMessageDate' | 'lastMessageDate'>;
 
-// Credit System Types
-export type UserCredits = {
+// Billing / Conversation System Types
+export type UserConversations = {
   userId: string;
   balance: number;
   updatedAt: Timestamp;
 };
 
-export type CreditPackage = {
+export type ConversationPackage = {
   id: string;
   name: string;
-  amount: number;       // Price in cents (e.g., 500 = €5.00)
-  credits: number;      // Credits to add (e.g., 50)
+  amount: number;       // Price in cents (e.g., 1000 = €10.00)
+  conversations: number;      // Conversations to add (e.g., 40)
   currency: "eur" | "usd" | "gbp";
 };
 
@@ -154,16 +155,15 @@ export type SubscriptionPlan = {
   id: SubscriptionPlanId;
   name: string;
   priceMonthly: number | null;    // null = enterprise (contact sales)
-  creditsMonthly: number;
-  bonusCredits: number;
   conversationsMonthly: number;
+  bonusConversations: number;
   popular?: boolean;
 };
 
 export type AutoRechargeSettings = {
   enabled: boolean;
-  thresholdCredits: number;   // Trigger auto-buy when balance drops below this
-  rechargeCredits: number;    // Credits to purchase automatically (100 = €10)
+  thresholdConversations: number;   // Trigger auto-buy when balance drops below this
+  rechargeConversations: number;    // Conversations to purchase automatically (40 = €10)
 };
 
 // Audit Log Types

@@ -7,16 +7,21 @@ import {
   MessageSquare,
   LayoutGrid,
   Info,
+  Rocket,
+  ExternalLink,
+  Minus,
+  Plus,
 } from "lucide-react";
-import { PageHeader, SegmentedControl } from "../components/ui";
+import { Button, PageHeader, SegmentedControl } from "../components/ui";
 import { cn } from "../lib/utils";
-import { getSubscription, getUserCredits, createSubscriptionCheckout, previewSubscriptionChange } from "../services/credits";
-import type { OrgSubscriptionInfo, SubscriptionChangePreview } from "../services/credits";
+import { getSubscription, getAvailableConversations, createSubscriptionCheckout, createCheckoutSession, previewSubscriptionChange, createBillingPortalSession } from "../services/subscription";
+import type { OrgSubscriptionInfo, SubscriptionChangePreview } from "../services/subscription";
 import { BreakdownModal, type SubscriptionChangeData } from "../components/BreakdownModal";
 import { getActiveListings } from "../services/listings";
 import { getLeads } from "../services/leads";
 import { useSearchParams } from "react-router-dom";
 import { analytics } from "../lib/analytics";
+import { useAuth } from "../contexts/AuthContext";
 
 const TITLE = "#402e32";
 
@@ -33,10 +38,10 @@ const SUBSCRIPTION_PLANS = [
     id: "free" as const,
     name: "Free",
     priceMonthly: 0,
-    assistancesMonthly: 40,
+    conversationsMonthly: 40,
     listingsIdeal: "1 anuncio activo/mes",
     benefits: [
-      "Soporte hasta 72h",
+      "Respuesta de soporte maximo 72h",
       "Acceso: 1 agente",
       "Solo leads de mensajes",
     ],
@@ -45,55 +50,55 @@ const SUBSCRIPTION_PLANS = [
     id: "plus" as const,
     name: "Plus",
     priceMonthly: 39,
-    assistancesMonthly: 80,
+    conversationsMonthly: 80,
     listingsIdeal: "2-4 anuncios activos/mes",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
-      "Soporte hasta 24h",
+      "Respuesta de soporte maximo 24h",
       "Acceso: 1 agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
     ],
   },
   {
     id: "pro" as const,
     name: "Pro",
-    priceMonthly: 89,
-    assistancesMonthly: 80,
+    priceMonthly: 69,
+    conversationsMonthly: 80,
     listingsIdeal: "3–6 anuncios activos/mes",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
-      "Soporte hasta 6h",
+      "Respuesta de soporte maximo 12h",
       "Acceso multi-agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
       "Promoción de marca en cualificación",
     ],
   },
   {
     id: "pro_plus" as const,
     name: "Pro+",
-    priceMonthly: 119,
-    assistancesMonthly: 80,
+    priceMonthly: 99,
+    conversationsMonthly: 80,
     listingsIdeal: "6–12 anuncios activos/mes",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
       "Soporte dedicado 1 a 1",
       "Acceso multi-agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
       "Promoción de marca en cualificación",
-      "Avatar IA personalizado",
+      "Tu propio Avatar en vez de Marcos.",
     ],
   },
   {
     id: "enterprise" as const,
     name: "Enterprise",
     priceMonthly: null as number | null,
-    assistancesMonthly: 0,
+    conversationsMonthly: 0,
     listingsIdeal: "A medida",
     benefits: [
-      "Soporte dedicado SLA",
-      "Funciones personalizadas",
-      "Acceso a API y Webhooks",
+      "Soporte personalizado",
+      "Acceso ilimitado",
       "Volumen a medida",
+      "Integraciones API",
     ],
   },
 ] as const;
@@ -103,7 +108,8 @@ function ceilToMultiple(value: number, multiple: number): number {
   return Math.ceil(value / multiple) * multiple;
 }
 
-export function Credits() {
+export function Subscription() {
+  const { organizationId, role } = useAuth();
   const [numListings, setNumListings] = useState(3);
   const [numLeadsPerAd, setNumLeadsPerAd] = useState(20);
   const [planBilling, setPlanBilling] = useState<"monthly" | "annual">("monthly");
@@ -114,13 +120,20 @@ export function Credits() {
   const [loading, setLoading] = useState(true);
   const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
-  const [credits, setCredits] = useState<number>(0);
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [availableConversations, setAvailableConversations] = useState<number>(0);
   const [subscription, setSubscription] = useState<OrgSubscriptionInfo | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const simulatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Modal state
   const [subscriptionChangeData, setSubscriptionChangeData] = useState<SubscriptionChangeData | null>(null);
+  const [planCustomConversations, setPlanCustomConversations] = useState<Record<string, number>>({ 
+    plus: 80, 
+    pro: 80, 
+    pro_plus: 80 
+  });
+  const [extraPackQty, setExtraPackQty] = useState(1);
 
   // Conversations calculation: anuncios × leads/anuncio, rounded up to next multiple of 40
   const rawConversations = numListings * numLeadsPerAd;
@@ -138,15 +151,17 @@ export function Credits() {
 
   useEffect(() => {
     async function loadData() {
+      if (!organizationId) return;
+      setLoading(true);
       try {
         const [sub, creds, listings, leads] = await Promise.all([
           getSubscription().catch(() => null),
-          getUserCredits().catch(() => 0),
+          getAvailableConversations().catch(() => 0),
           getActiveListings().catch(() => []),
           getLeads().catch(() => []),
         ]);
         setSubscription(sub);
-        setCredits(creds);
+        setAvailableConversations(creds);
         if (sub?.billingInterval) {
           setPlanBilling(sub.billingInterval === "year" ? "annual" : "monthly");
         }
@@ -172,12 +187,20 @@ export function Credits() {
         setActualLeadsPerAd(leadsPerAd);
         setNumListings(activeCount);
         setNumLeadsPerAd(leadsPerAd);
+
+        // Initialize custom conversations with current subscription value if present
+        if (sub?.planId && sub.planId !== "free" && sub.contractedConversations) {
+          setPlanCustomConversations(prev => ({
+            ...prev,
+            [sub.planId as string]: sub.contractedConversations || 80
+          }));
+        }
       } finally {
         setLoading(false);
       }
     }
     loadData();
-  }, []);
+  }, [organizationId]);
 
   // Track payment return from Stripe
   useEffect(() => {
@@ -253,34 +276,49 @@ export function Credits() {
     }
   };
 
+  const handleManageBilling = async () => {
+    setPortalLoading(true);
+    try {
+      const url = await createBillingPortalSession("/suscripcion");
+      window.location.href = url;
+    } catch (error) {
+      console.error(error);
+      toast.error("Error al acceder al portal de facturación");
+    } finally {
+      // url redirect will happen, but if it fails we reset
+      setPortalLoading(false);
+    }
+  };
+
   const handleSubscriptionUpdated = () => {
     // Reload the page data after a successful subscription change
     setLoading(true);
     setHasUserInteracted(false);
     Promise.all([
       getSubscription().catch(() => null),
-      getUserCredits().catch(() => 0),
-    ]).then(([sub, creds]) => {
+      getAvailableConversations().catch(() => 0),
+    ]).then(([sub, convs]) => {
       setSubscription(sub);
-      setCredits(creds);
+      setAvailableConversations(convs);
     }).finally(() => setLoading(false));
   };
 
   const currentPlanId = subscription?.planId ?? "free";
   const hasActivePaidSub = subscription?.status === "active" && currentPlanId !== "free";
+  const isNewUser = currentPlanId === "free" && !subscription?.stripeSubscriptionId;
   
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <Loader2 className="animate-spin text-primary-500 mb-4" size={32} />
-        <p className="text-gray-500 font-medium">Cargando suscripción...</p>
+        <p className="text-gray-500 font-medium">Cargando detalles...</p>
       </div>
     );
   }
 
   // Display value for conversations in right panel
   const displayConversations = hasUserInteracted ? conversations : contractedConversations;
-  const displayConversationsLabel = hasUserInteracted ? "Conversaciones a contratar" : "Conversaciones contratadas";
+  const displayConversationsLabel = hasUserInteracted ? "Conversaciones mínimas a contratar" : "Conversaciones contratadas";
   const displayHoursSaved = Math.round((displayConversations * 7) / 60);
 
   return (
@@ -291,15 +329,33 @@ export function Credits() {
         className="mb-8"
       />
 
+      {isNewUser && (
+        <div className="card p-6 border-2 border-primary-200 bg-primary-50/50 mb-10 overflow-hidden relative">
+          <div className="absolute -right-4 -top-4 text-primary-100 opacity-20 pointer-events-none">
+            <Rocket size={120} />
+          </div>
+          <div className="relative z-10 max-w-2xl">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-100 text-primary-700 text-[10px] font-black uppercase tracking-widest mb-4 font-heading">
+              Bienvenido a Proplead
+            </span>
+            <h2 className="text-2xl font-black text-gray-900 mb-3 font-heading">Empieza a automatizar tus leads hoy mismo</h2>
+            <p className="text-gray-600 mb-6 leading-relaxed">
+              Actualmente estás en el plan de prueba limitado. Para disfrutar de todas las funcionalidades, mayor volumen de conversaciones y soporte prioritario, 
+              <strong> utiliza el simulador a continuación para encontrar el plan que mejor se adapte a tu agencia</strong> y contrátalo en pocos clics.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-12">
         <div className="lg:col-span-2 card p-6 bg-gradient-to-br from-white to-primary-50/30 border border-primary-100 flex flex-col justify-center">
             <h3 className="text-sm font-bold text-gray-500 uppercase tracking-widest font-heading mb-4">Balance de Conversaciones</h3>
             {(() => {
               const contracted = contractedConversations;
-              const consumed = Math.max(0, contracted - credits);
-              const availablePct = contracted > 0 ? Math.min(100, (credits / contracted) * 100) : 0;
+              const consumed = Math.max(0, contracted - availableConversations);
+              const availablePct = contracted > 0 ? Math.min(100, (availableConversations / contracted) * 100) : 0;
               const consumedPct = contracted > 0 ? Math.min(100, (consumed / contracted) * 100) : 0;
-              const strokeColor = availablePct > 25 ? "#10B981" : availablePct > 10 ? "#F59E0B" : "#EF4444";
+              const strokeColor = "#F59E0B";
               return (
                 <div className="flex items-center gap-6">
                   <div className="w-20 h-20 shrink-0 relative flex items-center justify-center">
@@ -307,7 +363,7 @@ export function Credits() {
                       <circle cx="40" cy="40" r="36" fill="none" stroke="#F1F5F9" strokeWidth="6" />
                       <circle
                         cx="40" cy="40" r="36" fill="none"
-                        stroke="#E2E8F0"
+                        stroke="#FEF3C7"
                         strokeWidth="6" strokeDasharray={226}
                         strokeDashoffset={226 - (consumedPct * 226) / 100}
                         strokeLinecap="round"
@@ -320,7 +376,7 @@ export function Credits() {
                         strokeLinecap="round"
                       />
                     </svg>
-                    <MessageSquare className={cn(availablePct > 25 ? "text-emerald-500" : "text-rose-500")} size={24} />
+                    <MessageSquare className="text-primary-600" size={24} />
                   </div>
                   <div className="flex-1">
                     <div className="flex flex-wrap gap-x-8 gap-y-2">
@@ -334,7 +390,7 @@ export function Credits() {
                       </div>
                       <div>
                         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Disponibles</p>
-                        <p className="text-2xl font-bold tabular-nums font-heading" style={{ color: strokeColor }}>{credits.toLocaleString()}</p>
+                        <p className="text-2xl font-bold tabular-nums font-heading text-primary-600">{availableConversations.toLocaleString()}</p>
                       </div>
                     </div>
                     <p className="text-xs text-gray-400 mt-2 font-medium">
@@ -345,6 +401,63 @@ export function Credits() {
                         return isNaN(date.getTime()) ? "---" : date.toLocaleDateString("es-ES");
                       })()}
                     </p>
+                  </div>
+
+                  {/* Quantity Selector Style similar to Plans */}
+                  <div className="shrink-0 border-l border-primary-100 pl-6 ml-6 flex flex-col justify-center min-w-[240px]">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading mb-3">Compra Puntual</p>
+                    
+                    <div className="flex flex-col gap-4">
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-heading">Añadir packs (40 convs.)</label>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center bg-white border border-gray-200 rounded-lg p-1 shadow-sm">
+                            <button 
+                              onClick={() => setExtraPackQty(prev => Math.max(1, prev - 1))}
+                              disabled={extraPackQty <= 1}
+                              className="p-1 px-2 text-gray-400 hover:text-primary-600 disabled:opacity-30 transition-colors"
+                            >
+                              <Minus size={14} strokeWidth={3} />
+                            </button>
+                            <span className="text-sm font-black font-heading px-3 min-w-[40px] text-center text-primary-600">
+                              {extraPackQty}
+                            </span>
+                            <button 
+                              onClick={() => setExtraPackQty(prev => prev + 1)}
+                              className="p-1 px-2 text-gray-400 hover:text-primary-600 transition-colors"
+                            >
+                              <Plus size={14} strokeWidth={3} />
+                            </button>
+                          </div>
+                          <span className="text-sm font-bold text-gray-900 font-heading">
+                            {extraPackQty * 10}€
+                          </span>
+                        </div>
+                      </div>
+
+                      <Button
+                        loading={purchaseLoading === "extra_40"}
+                        disabled={role === "member"}
+                        onClick={async () => {
+                          try {
+                            setPurchaseLoading("extra_40");
+                            analytics.trackPackagePurchaseInitiated("extra_40");
+                            const checkoutUrl = await createCheckoutSession("extra_40", "/suscripcion", extraPackQty);
+                            window.location.href = checkoutUrl;
+                          } catch (err) {
+                            console.error("Failed to buy extra pack", err);
+                            toast.error("Error al iniciar la compra");
+                            setPurchaseLoading(null);
+                          }
+                        }}
+                        className="w-full"
+                        size="md"
+                      >
+                        {!purchaseLoading && <Rocket size={16} />}
+                        <span>Comprar {(extraPackQty * 40).toLocaleString()} convs.</span>
+                      </Button>
+                      <p className="text-[10px] text-gray-400 italic text-center">Las conversaciones extra no expiran</p>
+                    </div>
                   </div>
                 </div>
               );
@@ -360,8 +473,28 @@ export function Credits() {
              {subscription?.status === "active" ? "Suscripción activa" : "Plan gratuito"}
            </p>
            {subscription?.status === "active" && (
-             <div className="mt-4 pt-4 border-t border-gray-100 w-full text-center">
-               <a href="mailto:hola@proplead.com" className="text-xs text-primary-600 font-bold hover:underline">Solicitar historial de facturas</a>
+             <div className="mt-4 pt-4 border-t border-gray-100 w-full flex flex-col items-center">
+               <button
+                 disabled={portalLoading}
+                 onClick={handleManageBilling}
+                 className="text-xs text-primary-600 font-bold hover:underline flex items-center gap-1.5 transition-all disabled:opacity-50 h-6"
+               >
+                 {portalLoading ? (
+                   <Loader2 size={12} className="animate-spin" />
+                 ) : (
+                   <ExternalLink size={12} />
+                 )}
+                 Ver facturas y recibos
+               </button>
+               {currentPlanId !== "free" && (
+                 <button
+                   disabled={portalLoading}
+                   onClick={handleManageBilling}
+                   className="mt-2 text-[10px] text-gray-400 hover:text-rose-500 font-medium hover:underline transition-all disabled:opacity-50"
+                 >
+                   Cancelar suscripción
+                 </button>
+               )}
              </div>
            )}
         </div>
@@ -369,34 +502,29 @@ export function Credits() {
 
 
       {/* Simulator Section */}
-      <div className="max-w-5xl mx-auto mb-10 relative px-4 sm:px-0">
+      <div className="max-w-6xl mx-auto mb-10 relative px-4 sm:px-0">
           <div className="text-center mb-6">
-            <h2 className="text-xl font-extrabold tracking-tight mb-2 font-heading" style={{ color: TITLE }}>
-              Configurar o Actualizar Plan
-            </h2>
             <p className="text-sm font-black uppercase tracking-[0.2em] opacity-50 font-heading" style={{ color: TITLE }}>
-              Usa este simulador para ajustar tu suscripción
+              Usa este simulador para configurar o ajustar tu suscripción.
             </p>
           </div>
           <div className="bg-[#2d1b0d] rounded-2xl shadow-xl border border-[#3d2b1d] overflow-hidden">
-            <div className="p-5 sm:p-6 flex flex-col lg:flex-row items-center gap-8 lg:gap-12">
-              <div className="flex-1 w-full lg:w-3/5 px-4 space-y-6">
+            <div className="p-4 sm:p-5 flex flex-col lg:flex-row items-stretch gap-6 lg:gap-10">
+              <div className="flex-1 w-full lg:w-2/3 px-2 space-y-5 flex flex-col justify-center">
 
                 {/* Listings Slider */}
                 <div>
-                  <div className="flex justify-between items-center mb-3">
+                  <div className="flex justify-between items-center mb-1.5">
                     <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuántos anuncios tendrás activos por mes?</span>
-                    <div className="flex items-end gap-2">
+                    <div className="flex items-center gap-2">
                       {actualListings !== null && numListings !== actualListings && (
-                        <div className="flex flex-col items-center">
-                          <span className="text-[9px] text-[#6b5040] uppercase font-bold font-heading tracking-wide">actual</span>
-                          <span className="text-sm font-black text-[#6b5040] font-heading line-through decoration-[#6b5040]">
-                            {actualListings}
-                          </span>
+                        <div className="flex flex-col items-center opacity-40">
+                          <span className="text-[8px] uppercase font-bold font-heading">actual</span>
+                          <span className="text-xs font-black font-heading line-through">{actualListings}</span>
                         </div>
                       )}
                       <div className="flex flex-col items-center">
-                        <span className="text-[9px] uppercase font-bold font-heading tracking-wide" style={{ color: numListings !== actualListings && actualListings !== null ? "#fbbf24" : "#6b5040" }}>
+                        <span className="text-[8px] uppercase font-bold font-heading" style={{ color: numListings !== actualListings && actualListings !== null ? "#fbbf24" : "#6b5040" }}>
                           {numListings !== actualListings && actualListings !== null ? "nuevo" : "actual"}
                         </span>
                         <span className="text-primary-400 text-lg font-black font-heading tracking-tight leading-none">
@@ -412,9 +540,9 @@ export function Credits() {
                     step="1"
                     value={numListings}
                     onChange={handleSliderChange(setNumListings)}
-                    className="w-full h-1.5 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-primary-400 hover:accent-primary-300 transition-all"
+                    className="w-full h-1 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-primary-400 hover:accent-primary-300 transition-all"
                   />
-                  <div className="flex justify-between text-[10px] text-[#8b6b47] mt-2 font-bold font-heading">
+                  <div className="flex justify-between text-[8px] text-[#8b6b47] mt-1 font-bold font-heading uppercase tracking-tighter opacity-50">
                     <span>1</span>
                     <span>13</span>
                     <span>25+</span>
@@ -423,19 +551,17 @@ export function Credits() {
 
                 {/* Leads Per Ad Slider */}
                 <div>
-                  <div className="flex justify-between items-center mb-3">
+                  <div className="flex justify-between items-center mb-1.5">
                     <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuántos leads recibes de media por anuncio?</span>
-                    <div className="flex items-end gap-2">
+                    <div className="flex items-center gap-2">
                       {actualLeadsPerAd !== null && numLeadsPerAd !== actualLeadsPerAd && (
-                        <div className="flex flex-col items-center">
-                          <span className="text-[9px] text-[#6b5040] uppercase font-bold font-heading tracking-wide">actual</span>
-                          <span className="text-sm font-black text-[#6b5040] font-heading line-through decoration-[#6b5040]">
-                            {actualLeadsPerAd}
-                          </span>
+                        <div className="flex flex-col items-center opacity-40">
+                          <span className="text-[8px] uppercase font-bold font-heading">actual</span>
+                          <span className="text-xs font-black font-heading line-through">{actualLeadsPerAd}</span>
                         </div>
                       )}
                       <div className="flex flex-col items-center">
-                        <span className="text-[9px] uppercase font-bold font-heading tracking-wide" style={{ color: numLeadsPerAd !== actualLeadsPerAd && actualLeadsPerAd !== null ? "#34d399" : "#6b5040" }}>
+                        <span className="text-[8px] uppercase font-bold font-heading" style={{ color: numLeadsPerAd !== actualLeadsPerAd && actualLeadsPerAd !== null ? "#34d399" : "#6b5040" }}>
                           {numLeadsPerAd !== actualLeadsPerAd && actualLeadsPerAd !== null ? "nuevo" : "actual"}
                         </span>
                         <span className="text-emerald-400 text-lg font-black font-heading tracking-tight leading-none">
@@ -451,9 +577,9 @@ export function Credits() {
                     step="10"
                     value={numLeadsPerAd}
                     onChange={handleSliderChange(setNumLeadsPerAd)}
-                    className="w-full h-1.5 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-emerald-500 hover:accent-emerald-400 transition-all"
+                    className="w-full h-1 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-emerald-500 hover:accent-emerald-400 transition-all"
                   />
-                  <div className="flex justify-between text-[10px] text-[#8b6b47] mt-2 font-bold font-heading">
+                  <div className="flex justify-between text-[8px] text-[#8b6b47] mt-1 font-bold font-heading uppercase tracking-tighter opacity-50">
                     <span>10</span>
                     <span>200</span>
                     <span>400</span>
@@ -463,10 +589,10 @@ export function Credits() {
               </div>
 
               {/* Metrics + Billing Toggle */}
-              <div className="w-full lg:w-2/5 flex flex-col items-center gap-6 border-t lg:border-t-0 lg:border-l border-[#3d2b1d] pt-8 lg:pt-0 lg:pl-10">
-                <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-4">
+              <div className="w-full lg:w-1/3 flex flex-col justify-center items-center gap-4 border-t lg:border-t-0 lg:border-l border-[#3d2b1d] pt-6 lg:pt-0 lg:pl-6">
+                <div className="flex flex-row lg:flex-col items-center justify-center gap-x-12 gap-y-4 w-full">
                   <div className="text-center text-white">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 opacity-70 font-heading">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 opacity-60 font-heading">
                       {displayConversationsLabel}
                     </p>
                     <p className="text-lg font-black font-heading leading-none tabular-nums text-primary-400">
@@ -506,11 +632,21 @@ export function Credits() {
           </div>
         </div>
 
+        <div className="mt-8 pt-8 border-t border-gray-100 mb-8">
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2 max-w-[1500px] mx-auto">
           {SUBSCRIPTION_PLANS.map((plan) => {
             const isEnterprise = plan.id === "enterprise";
             const isFree = plan.id === "free";
-            const extraConversations = isFree ? 0 : Math.max(0, conversations - 80);
+            
+            // Simulator recommended value (for guidance only)
+            const recommendedValue = conversations;
+            
+            // Actual contracted value (managed per plan card)
+            const contractedValue = isFree ? 40 : (isEnterprise ? 0 : (planCustomConversations[plan.id as string] || 80));
+
+            const extraConversations = isFree ? 0 : Math.max(0, contractedValue - 80);
             const extraBlocks = extraConversations / 40;
             const extraPrice = extraBlocks * 10;
             const currentPriceMonthly = plan.priceMonthly !== null ? plan.priceMonthly + extraPrice : null;
@@ -522,18 +658,14 @@ export function Credits() {
               (numListings > 25 && plan.id === "enterprise");
 
             const isCurrentPlan = currentPlanId === plan.id;
+            const isConfigurationChanged = isCurrentPlan && contractedValue !== (subscription?.contractedConversations ?? (isFree ? 40 : 80));
             const isBoth = isCurrentPlan && isRecommended;
 
             return (
               <div key={plan.id} className="relative flex flex-col h-full">
-                {(isRecommended || isBoth) && (
-                  <div className={cn(
-                    "absolute -top-8 left-0 right-0 text-[10px] font-black h-8 flex items-center justify-center rounded-t-2xl uppercase tracking-widest border-2 border-b-0 font-heading",
-                    isBoth
-                      ? "bg-gradient-to-r from-amber-500 to-primary-500 text-white border-primary-500"
-                      : "bg-primary-500 text-white border-primary-500"
-                  )}>
-                    {isBoth ? "Tu Plan · Recomendado" : "Recomendado"}
+                {isRecommended && (
+                  <div className="absolute -top-8 left-0 right-0 bg-primary-500 text-white text-[10px] font-black h-8 flex items-center justify-center rounded-t-2xl uppercase tracking-widest border-2 border-primary-500 border-b-0 font-heading">
+                    Recomendado
                   </div>
                 )}
                 <div
@@ -544,15 +676,13 @@ export function Credits() {
                       : isRecommended
                         ? "border-primary-500 rounded-b-2xl bg-white"
                         : isCurrentPlan
-                          ? "border-amber-400 rounded-2xl bg-amber-50/30"
+                          ? "border-primary-500 rounded-2xl bg-white"
                           : "border-gray-100 rounded-2xl bg-white hover:border-gray-200"
                   )}
                 >
                   <div className="flex-1 flex flex-col">
                     <div className="flex items-center gap-2 mb-1">
                       <p className="font-bold text-gray-900 text-base font-heading">{plan.name}</p>
-                      {isCurrentPlan && !isBoth && <span className="ml-auto text-[10px] uppercase font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full">Activo</span>}
-                      {isBoth && <span className="ml-auto text-[10px] uppercase font-bold text-primary-600 bg-primary-100 px-2 py-0.5 rounded-full">Activo</span>}
                     </div>
 
                     {isEnterprise ? (
@@ -586,18 +716,72 @@ export function Credits() {
 
                     {!isEnterprise && (
                       <div className="mb-4">
-                        <div className="space-y-1 mb-3">
-                          <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-heading">Consumo mensual</label>
-                          <div className="flex items-start gap-1.5 pt-1">
-                            <MessageSquare size={13} className="text-primary-500 shrink-0 mt-0.5" />
-                            <span className="text-xs text-primary-600 font-bold leading-tight font-heading">
-                              {(isFree ? 40 : Math.max(80, conversations)).toLocaleString()} conversaciones
-                            </span>
+                        <div className="space-y-3 mb-3">
+                          <div className="flex flex-col gap-1.5 pt-1">
+                            <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-heading">Conversaciones contratadas</label>
+                            
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center bg-gray-50 border border-gray-100 rounded-lg p-1">
+                                {!isFree && (
+                                  <button 
+                                    onClick={() => {
+                                      const current = planCustomConversations[plan.id as string] || 80;
+                                      if (current > 80) {
+                                        setPlanCustomConversations(prev => ({
+                                          ...prev,
+                                          [plan.id]: current - 40
+                                        }));
+                                      }
+                                    }}
+                                    disabled={contractedValue <= 80}
+                                    className="p-1 text-gray-400 hover:text-primary-600 disabled:opacity-30 disabled:hover:text-gray-400 transition-colors"
+                                  >
+                                    <Minus size={14} strokeWidth={3} />
+                                  </button>
+                                )}
+                                <span className={cn(
+                                  "text-sm font-black font-heading px-2 min-w-[50px] text-center",
+                                  !isFree ? "text-primary-600" : "text-gray-600"
+                                )}>
+                                  {contractedValue.toLocaleString()}
+                                </span>
+                                {!isFree && (
+                                  <button 
+                                    onClick={() => {
+                                      const current = planCustomConversations[plan.id as string] || 80;
+                                      setPlanCustomConversations(prev => ({
+                                        ...prev,
+                                        [plan.id]: current + 40
+                                      }));
+                                    }}
+                                    className="p-1 text-gray-400 hover:text-primary-600 transition-colors"
+                                  >
+                                    <Plus size={14} strokeWidth={3} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Recommended Guidance Tag */}
+                            {!isFree && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold text-gray-400">Recomendado x simulador:</span>
+                                <span className={cn(
+                                  "text-[10px] font-black px-1.5 py-0.5 rounded",
+                                  contractedValue >= recommendedValue 
+                                    ? "bg-emerald-50 text-emerald-600" 
+                                    : "bg-amber-50 text-amber-600"
+                                )}>
+                                  {recommendedValue.toLocaleString()}
+                                </span>
+                              </div>
+                            )}
                           </div>
+
                           <div className="flex items-center gap-1.5 mt-0.5 group relative">
                             <Clock size={13} className="text-emerald-500 shrink-0" />
                             <span className="text-xs text-emerald-600 font-heading">
-                              {Math.round(((isFree ? 40 : Math.max(80, conversations)) * 7) / 60)}h ahorradas
+                              {Math.round((contractedValue * 7) / 60)}h ahorradas
                             </span>
                           </div>
                         </div>
@@ -614,15 +798,15 @@ export function Credits() {
                     </ul>
 
                     <button
-                      disabled={isCurrentPlan || purchaseLoading === plan.id || previewLoading === plan.id}
+                      disabled={role === "member" || (isCurrentPlan && !isConfigurationChanged) || purchaseLoading === plan.id || previewLoading === plan.id}
                       onClick={() => {
                         if (plan.id === "enterprise") {
                           analytics.trackCtaClick({ location: "pricing", label: "enterprise_contact" });
                           window.location.href = "mailto:hola@proplead.com";
-                        } else if (plan.priceMonthly === 0 || isCurrentPlan) {
-                          // free or already on this plan — no action
-                        } else if (hasActivePaidSub) {
-                          // Existing subscriber: show breakdown modal with proration preview
+                        } else if (plan.priceMonthly === 0 && !isConfigurationChanged) {
+                          // free and no change — no action
+                        } else if (hasActivePaidSub || isConfigurationChanged) {
+                          // Existing subscriber or update within same plan: show breakdown modal with proration preview
                           handleChangePlan(plan.id, plan.name, extraBlocks);
                         } else {
                           const value = planBilling === "annual"
@@ -639,14 +823,16 @@ export function Credits() {
                       }}
                       className={cn(
                         "flex items-center justify-center gap-1.5 w-full py-2 rounded-btn border text-sm font-bold font-heading transition-colors",
-                        isCurrentPlan
+                        isCurrentPlan && !isConfigurationChanged
                           ? "bg-amber-100 border-amber-300 text-amber-900 opacity-50 cursor-not-allowed"
                           : "border-gray-300 bg-white text-gray-800 hover:bg-gray-50"
                       )}
                     >
                       {(purchaseLoading === plan.id || previewLoading === plan.id) ? (
                         <><Loader2 className="animate-spin" size={14} /> Procesando...</>
-                      ) : isCurrentPlan
+                      ) : isConfigurationChanged
+                        ? "Actualizar plan"
+                        : isCurrentPlan
                         ? "Plan activo"
                         : plan.id === "enterprise"
                           ? "Contactar"

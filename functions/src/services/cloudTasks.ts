@@ -41,7 +41,8 @@ function getGenericTaskName(prefix: string, id: string, timestamp?: number): str
 export async function scheduleBufferTask(
   chatId: string,
   processUrl: string,
-  previousTaskName?: string
+  previousTaskName?: string,
+  orgId?: string
 ): Promise<{ taskName: string; scheduledTime: number }> {
   // Use a unique name for EACH task creation to avoid the "already exists" error
   // which happens if we reuse the exact same name too soon after deletion.
@@ -72,7 +73,7 @@ export async function scheduleBufferTask(
       headers: {
         "Content-Type": "application/json",
       },
-      body: Buffer.from(JSON.stringify({ chatId })).toString("base64"),
+      body: Buffer.from(JSON.stringify({ chatId, orgId })).toString("base64"),
       oidcToken: {
         serviceAccountEmail: `${PROJECT_ID}@appspot.gserviceaccount.com`,
       },

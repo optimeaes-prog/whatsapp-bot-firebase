@@ -1,5 +1,5 @@
 import { auth } from "../lib/firebase";
-import type { AutoRechargeSettings, CreditPackage, SubscriptionPlanId } from "../types";
+import type { AutoRechargeSettings, ConversationPackage, SubscriptionPlanId } from "../types";
 
 export type OrgSubscriptionInfo = {
   planId: SubscriptionPlanId;
@@ -14,8 +14,8 @@ export type OrgSubscriptionInfo = {
 
 export type AutoRechargeInfo = {
   enabled: boolean;
-  thresholdCredits: number;
-  rechargeCredits: number;
+  thresholdConversations: number;
+  rechargeConversations: number;
   hasSavedCard: boolean;
 };
 
@@ -43,16 +43,16 @@ export type SubscriptionChangeResult = {
 const FUNCTIONS_BASE_URL = "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
 
 /**
- * Get user's current credit balance
+ * Get user's current available conversations balance
  */
-export async function getUserCredits(): Promise<number> {
+export async function getAvailableConversations(): Promise<number> {
     const user = auth.currentUser;
     if (!user) {
         throw new Error("User not authenticated");
     }
 
     const token = await user.getIdToken();
-    const response = await fetch(`${FUNCTIONS_BASE_URL}/getCredits`, {
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/getConversations`, {
         method: "GET",
         headers: {
             "Authorization": `Bearer ${token}`,
@@ -61,7 +61,7 @@ export async function getUserCredits(): Promise<number> {
     });
 
     if (!response.ok) {
-        throw new Error(`Failed to get credits: ${response.status}`);
+        throw new Error(`Failed to get conversations: ${response.status}`);
     }
 
     const data = await response.json();
@@ -69,9 +69,9 @@ export async function getUserCredits(): Promise<number> {
 }
 
 /**
- * Get available credit packages
+ * Get available conversation packages
  */
-export async function getCreditPackages(): Promise<CreditPackage[]> {
+export async function getConversationPackages(): Promise<ConversationPackage[]> {
     const response = await fetch(`${FUNCTIONS_BASE_URL}/getPackages`, {
         method: "GET",
         headers: {
@@ -92,7 +92,7 @@ export async function getCreditPackages(): Promise<CreditPackage[]> {
  */
 export async function createCheckoutSession(
     packageId: string,
-    returnPath: string = "/creditos",
+    returnPath: string = "/suscripcion",
     quantity: number = 1
 ): Promise<string> {
     const user = auth.currentUser;
@@ -250,7 +250,7 @@ export async function saveAutoRecharge(settings: AutoRechargeSettings): Promise<
     }
 
     const token = await user.getIdToken();
-    const response = await fetch(`${FUNCTIONS_BASE_URL}/saveAutoRecharge`, {
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/saveAutoRechargeSettings`, {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${token}`,
@@ -275,7 +275,7 @@ export async function getAutoRecharge(): Promise<AutoRechargeInfo> {
     }
 
     const token = await user.getIdToken();
-    const response = await fetch(`${FUNCTIONS_BASE_URL}/getAutoRecharge`, {
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/getAutoRechargeSettings`, {
         method: "GET",
         headers: {
             "Authorization": `Bearer ${token}`,

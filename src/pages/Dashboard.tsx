@@ -14,12 +14,14 @@ import type { Listing, Lead, Conversation } from "../types";
 import { PageHeader } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
 import { getCheckoutIntent, clearCheckoutIntent } from "../lib/checkoutStorage";
-import { createSubscriptionCheckout } from "../services/credits";
+import { createSubscriptionCheckout } from "../services/subscription";
 import { analytics } from "../lib/analytics";
 import { toast } from "sonner";
 import { PageLoading } from "../components/ui/PageLoading";
+import { useAuth } from "../contexts/AuthContext";
 
 export function Dashboard() {
+  const { organizationId } = useAuth();
   const [dateFilter, setDateFilter] = useState("last_30");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -107,6 +109,9 @@ export function Dashboard() {
   };
   useEffect(() => {
     async function loadStats() {
+      if (!organizationId) return;
+
+      setLoading(true);
       try {
         const [listings, leads, conversations] = await Promise.all([
           getListings(),
@@ -122,7 +127,7 @@ export function Dashboard() {
     }
 
     loadStats();
-  }, []);
+  }, [organizationId]);
 
   useEffect(() => {
     const fn = async () => {

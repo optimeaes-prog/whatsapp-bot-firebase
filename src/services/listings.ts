@@ -14,7 +14,10 @@ import type { Listing, ListingFormData, ListingClosureReason, ListingClosureInfo
 
 import { getOrganizationBasePath } from "../lib/organization";
 
-const COLLECTION_NAME = `${getOrganizationBasePath()}/listings`;
+// Function to get the current collection path dynamically
+function getListingsCollection() {
+  return `${getOrganizationBasePath()}/listings`;
+}
 
 // Helper function to add timeout to promises
 function withTimeout<T>(promise: Promise<T>, ms: number, operation: string): Promise<T> {
@@ -36,7 +39,7 @@ export async function getListings(): Promise<Listing[]> {
     }
 
     console.log("Fetching listings (timeout: 60s)...");
-    const colRef = collection(db, COLLECTION_NAME);
+    const colRef = collection(db, getListingsCollection());
 
     const snapshot = await withTimeout(getDocs(colRef), 60000, "getListings");
     console.log(`Fetched ${snapshot.docs.length} listings`);
@@ -60,7 +63,7 @@ export async function getListings(): Promise<Listing[]> {
 }
 
 export async function getListingById(id: string): Promise<Listing | null> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getListingsCollection(), id);
   const snapshot = await getDoc(docRef);
   if (!snapshot.exists()) {
     return null;
@@ -69,7 +72,7 @@ export async function getListingById(id: string): Promise<Listing | null> {
 }
 
 export async function getListingByCode(listingCode: string): Promise<Listing | null> {
-  const q = query(collection(db, COLLECTION_NAME));
+  const q = query(collection(db, getListingsCollection()));
   const snapshot = await getDocs(q);
   const found = snapshot.docs.find((doc) => doc.data().listingCode === listingCode);
   if (!found) {
@@ -86,7 +89,7 @@ export async function createListing(data: ListingFormData): Promise<string> {
     console.log("Data:", JSON.stringify(data));
 
     const docRef = await withTimeout(
-      addDoc(collection(db, COLLECTION_NAME), {
+      addDoc(collection(db, getListingsCollection()), {
         description: data.description,
         listingCode: data.listingCode,
         listingCodeFotocasa: (data as any).listingCodeFotocasa || "",
@@ -131,7 +134,7 @@ export async function createListing(data: ListingFormData): Promise<string> {
 }
 
 export async function updateListing(id: string, data: Partial<ListingFormData>): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getListingsCollection(), id);
   const updateData: Record<string, unknown> = {
     updatedAt: Timestamp.now(),
   };
@@ -166,7 +169,7 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
 }
 
 export async function deleteListing(id: string): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getListingsCollection(), id);
   await deleteDoc(docRef);
 }
 
@@ -178,7 +181,7 @@ export async function deactivateListing(
   qualifiedLeadName?: string,
   notes?: string
 ): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getListingsCollection(), id);
   const closureInfo: ListingClosureInfo = {
     reason,
     closedAt: Timestamp.now(),
@@ -197,7 +200,7 @@ export async function deactivateListing(
 
 // Reactivar un anuncio
 export async function reactivateListing(id: string): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getListingsCollection(), id);
   await updateDoc(docRef, {
     isActive: true,
     closureInfo: null, // Eliminar info de cierre

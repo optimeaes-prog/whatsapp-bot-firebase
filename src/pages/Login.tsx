@@ -5,6 +5,7 @@ import { Button } from "../components/ui";
 import { Link } from "react-router-dom";
 
 export function Login() {
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isSignUp, setIsSignUp] = useState(false);
@@ -20,7 +21,8 @@ export function Login() {
 
     try {
       if (isSignUp) {
-        await signUp(email, password);
+        if (!name.trim()) throw new Error("Por favor, introduce tu nombre.");
+        await signUp(email, password, name);
       } else {
         await signIn(email, password);
       }
@@ -65,6 +67,23 @@ export function Login() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {isSignUp && (
+              <div>
+                <label htmlFor="name" className="block text-sm font-medium text-gray-700">
+                  Nombre y Apellidos
+                </label>
+                <input
+                  id="name"
+                  type="text"
+                  required={isSignUp}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="input mt-1"
+                  placeholder="Tu nombre completo"
+                />
+              </div>
+            )}
+
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700">
                 Email

@@ -1,5 +1,6 @@
 import * as admin from "firebase-admin";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getActiveOrgId } from "./requestContext";
 import type { AuditLogEntry, AuditAction, AuditEntityType } from "../types";
 
 const DATABASE_ID = "realestate-whatsapp-bot";
@@ -8,11 +9,9 @@ const getDb = () => {
     return getFirestore(admin.app(), DATABASE_ID);
 };
 
-const ORG_ID = "org_paco_granados";
-
-const getOrgDb = () => {
-  return getDb().collection("organizations").doc(ORG_ID);
-};
+function getOrgDb() {
+  return getDb().collection("organizations").doc(getActiveOrgId());
+}
 
 /**
  * Record an audit log entry

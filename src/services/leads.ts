@@ -17,7 +17,9 @@ import { updateConversation } from "./conversations";
 
 import { getOrganizationBasePath } from "../lib/organization";
 
-const COLLECTION_NAME = `${getOrganizationBasePath()}/leads`;
+function getLeadsCollection() {
+  return `${getOrganizationBasePath()}/leads`;
+}
 const LEADS_TAG_BLOCKLIST = new Set(["lead"]);
 
 function normalizeLeadTags(tags: string[]): string[] {
@@ -44,7 +46,7 @@ function leadRecencyMillis(lead: Lead): number {
 export async function getLeads(): Promise<Lead[]> {
   // Do not orderBy("createdAt") only: pipeline leads are upserted via updateLeadChatInfo and historically
   // omitted createdAt; Firestore excludes those docs from orderBy(createdAt) queries.
-  const snapshot = await getDocs(collection(db, COLLECTION_NAME));
+  const snapshot = await getDocs(collection(db, getLeadsCollection()));
   const rows = snapshot.docs.map((doc) => ({
     id: doc.id,
     ...doc.data(),
@@ -54,7 +56,7 @@ export async function getLeads(): Promise<Lead[]> {
 }
 
 export async function getLeadById(id: string): Promise<Lead | null> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getLeadsCollection(), id);
   const snapshot = await getDoc(docRef);
   if (!snapshot.exists()) {
     return null;
@@ -63,7 +65,7 @@ export async function getLeadById(id: string): Promise<Lead | null> {
 }
 
 export async function getLeadByChatId(chatId: string): Promise<Lead | null> {
-  const q = query(collection(db, COLLECTION_NAME), where("chatId", "==", chatId));
+  const q = query(collection(db, getLeadsCollection()), where("chatId", "==", chatId));
   const snapshot = await getDocs(q);
   if (snapshot.empty) {
     return null;
@@ -73,7 +75,7 @@ export async function getLeadByChatId(chatId: string): Promise<Lead | null> {
 }
 
 export async function createLead(data: LeadFormData): Promise<string> {
-  const docRef = await addDoc(collection(db, COLLECTION_NAME), {
+  const docRef = await addDoc(collection(db, getLeadsCollection()), {
     phone: data.phone,
     listingCode: data.listingCode,
     chatId: data.chatId,
@@ -91,7 +93,7 @@ export async function updateLeadChatInfo(
   chatId: string
 ): Promise<void> {
   const q = query(
-    collection(db, COLLECTION_NAME),
+    collection(db, getLeadsCollection()),
     where("phone", "==", phone),
     where("listingCode", "==", listingCode)
   );
@@ -99,7 +101,7 @@ export async function updateLeadChatInfo(
   if (snapshot.empty) {
     throw new Error(`Lead not found for phone ${phone} and listingCode ${listingCode}`);
   }
-  const docRef = doc(db, COLLECTION_NAME, snapshot.docs[0].id);
+  const docRef = doc(db, getLeadsCollection(), snapshot.docs[0].id);
   await updateDoc(docRef, { chatId });
 }
 
@@ -110,7 +112,7 @@ export async function updateLeadQualificationStatus(
   name?: string
 ): Promise<void> {
   const q = query(
-    collection(db, COLLECTION_NAME),
+    collection(db, getLeadsCollection()),
     where("phone", "==", phone),
     where("listingCode", "==", listingCode)
   );
@@ -118,7 +120,7 @@ export async function updateLeadQualificationStatus(
   if (snapshot.empty) {
     throw new Error(`Lead not found for phone ${phone} and listingCode ${listingCode}`);
   }
-  const docRef = doc(db, COLLECTION_NAME, snapshot.docs[0].id);
+  const docRef = doc(db, getLeadsCollection(), snapshot.docs[0].id);
   const updateData: any = { qualificationStatus };
   if (name) {
     updateData.name = name;
@@ -130,7 +132,7 @@ export async function updateLead(
   id: string,
   data: Partial<Pick<Lead, "notes" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus">>
 ): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getLeadsCollection(), id);
   const payload = data.tags ? { ...data, tags: normalizeLeadTags(data.tags) } : data;
   await updateDoc(docRef, payload);
 }
@@ -140,7 +142,7 @@ export async function deleteLead(id: string): Promise<void> {
   const lead = await getLeadById(id);
 
   // Delete the lead document
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getLeadsCollection(), id);
   await deleteDoc(docRef);
 
   // Delete the associated conversation if the lead exists and has a chatId

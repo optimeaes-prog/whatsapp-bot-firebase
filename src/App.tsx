@@ -17,13 +17,17 @@ import { Landing } from "./pages/Landing";
 import { MarketingLanding } from "./pages/MarketingLanding";
 import { MarketingLandingV2 } from "./pages/MarketingLandingV2";
 import { Users } from "./pages/Users";
-import { Credits } from "./pages/Credits";
+import { Subscription } from "./pages/Subscription";
 import { Onboarding } from "./pages/Onboarding";
 import { AdminOnboards } from "./pages/AdminOnboards";
+import { AdminTools } from "./pages/AdminTools";
 import { LegalDoc } from "./pages/LegalDoc";
 import { WhatsAppAnimationLab } from "./pages/WhatsAppAnimationLab";
 import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 import FontGallery from "./pages/FontGallery";
+import EmailGallery from "./pages/EmailGallery";
+import { TeamManagement } from "./pages/TeamManagement";
+import { useAuth } from "./contexts/AuthContext";
 
 import { useEffect } from "react";
 import { usePageTracking } from "./hooks/usePageTracking";
@@ -197,7 +201,7 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Layout>
-                    <Credits />
+                    <Subscription />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -213,11 +217,41 @@ function App() {
               }
             />
             <Route
+              path="/equipo"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <TeamManagement />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/onboards"
               element={
                 <ProtectedRoute>
                   <Layout>
                     <AdminOnboards />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/tools"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <AdminTools />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/email-templates"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <EmailGallery />
                   </Layout>
                 </ProtectedRoute>
               }

@@ -53,7 +53,9 @@ export type ConversationState = {
   tags?: string[];
   language?: "es" | "en";
   recordings?: string[];
-  /** Firestore server timestamp of last update (stored on conversation doc) */
+  /** Detailed error information if the pipeline failed */
+  errorDetails?: string;
+  /** Firestore server timestamp of last update */
   lastMessage?: FirebaseFirestore.Timestamp;
 };
 
@@ -226,15 +228,15 @@ export type OrgSubscription = {
   billingInterval?: "month" | "year";
 };
 
-// ==================== CREDIT SYSTEM TYPES ====================
+// ==================== BILLING / CONVERSATION SYSTEM TYPES ====================
 
-export type UserCredits = {
+export type UserConversations = {
   userId: string;
   balance: number;
   updatedAt: FirebaseFirestore.Timestamp;
 };
 
-export type CreditTransaction = {
+export type ConversationTransaction = {
   id?: string;
   userId: string;
   type: "purchase" | "deduction";
@@ -244,11 +246,11 @@ export type CreditTransaction = {
   createdAt: FirebaseFirestore.Timestamp;
 };
 
-export type CreditPackage = {
+export type ConversationPackage = {
   id: string;
   name: string;
-  amount: number;       // Price in cents (e.g., 500 = €5.00)
-  credits: number;      // Credits to add (e.g., 50)
+  amount: number;       // Price in cents (e.g., 1000 = €10.00)
+  conversations: number;      // Conversations to add (e.g., 40)
   currency: "eur" | "usd" | "gbp";
 };
 

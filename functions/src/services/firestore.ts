@@ -18,10 +18,10 @@ const getDb = () => {
   return firestoreInstance;
 };
 
-const ORG_ID = "org_paco_granados";
+import { getActiveOrgId } from "./requestContext";
 
 const getOrgDb = () => {
-  return getDb().collection("organizations").doc(ORG_ID);
+  return getDb().collection("organizations").doc(getActiveOrgId());
 };
 
 function buildLeadDocId(phone: string, listingCode: string): string {
@@ -66,11 +66,36 @@ export async function fetchListingByCode(listingCode: string): Promise<ListingRo
     .where("listingCode", "==", listingCode)
     .where("isActive", "==", true)
     .get();
+
   if (snapshot.empty) {
     return null;
   }
+
   const doc = snapshot.docs[0];
   return listingRowFromDoc(doc.data());
+}
+
+/**
+ * Find a listing by code across all organizations.
+ * Useful for public webhooks that don't specify an org context.
+ */
+export async function fetchListingGlobally(listingCode: string): Promise<{ data: ListingRow, orgId: string } | null> {
+  const snapshot = await getDb().collectionGroup("listings")
+    .where("listingCode", "==", listingCode)
+    .where("isActive", "==", true)
+    .get();
+    
+  if (snapshot.empty) {
+    return null;
+  }
+  
+  const doc = snapshot.docs[0];
+  const orgId = doc.ref.path.split("/")[1];
+  
+  return { 
+    data: listingRowFromDoc(doc.data()), 
+    orgId 
+  };
 }
 
 export async function listActiveListingsForResolution(params?: {
@@ -251,6 +276,45 @@ export async function findLeadByChatId(chatId: string): Promise<{
     qualificationStatus: data.qualificationStatus as QualificationStatus | undefined,
     hasResponse: data.hasResponse || false,
   };
+}
+
+/**
+ * Resolve the organization ID for a given chatId by searching all leads globally.
+ * If a lead belongs to multiple organizations, resolves to the one with the most recent activity.
+ */
+export async function findOrgIdByChatId(chatId: string): Promise<string | null> {
+  const variants = getChatIdVariants(chatId);
+  const phone = chatId.replace(/@(c\.us|s\.whatsapp\.net)$/, "").replace(/^whatsapp:/, "").replace(/^\+/, "");
+  
+  // Fetch matching leads from all organizations
+  const [variantsSnapshot, phoneSnapshot] = await Promise.all([
+    getDb().collectionGroup("leads").where("chatId", "in", variants).get(),
+    getDb().collectionGroup("leads").where("phone", "==", phone).get(),
+  ]);
+
+  const allDocs = [...variantsSnapshot.docs, ...phoneSnapshot.docs];
+  
+  if (allDocs.length === 0) {
+    return null;
+  }
+
+  // Deduplicate and sort by recency (lastMessageDate)
+  const sortedMatches = allDocs
+    .map(doc => ({
+      orgId: doc.ref.path.split("/")[1],
+      lastMessageDate: doc.data()?.lastMessageDate as FirebaseFirestore.Timestamp || null,
+      docId: doc.id
+    }))
+    .sort((a, b) => {
+      const timeA = a.lastMessageDate?.toMillis() || 0;
+      const timeB = b.lastMessageDate?.toMillis() || 0;
+      return timeB - timeA;
+    });
+
+  const bestMatch = sortedMatches[0];
+  console.log(`Resolved orgId ${bestMatch.orgId} for chatId ${chatId} (Matches: ${allDocs.length}, Recency: ${bestMatch.lastMessageDate?.toDate().toISOString()})`);
+  
+  return bestMatch.orgId;
 }
 
 export async function findLeadByPhone(phone: string): Promise<{

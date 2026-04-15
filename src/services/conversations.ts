@@ -15,7 +15,9 @@ import type { Conversation, HistoryItem } from "../types";
 
 import { getOrganizationBasePath } from "../lib/organization";
 
-const COLLECTION_NAME = `${getOrganizationBasePath()}/conversations`;
+function getConversationsCollection() {
+  return `${getOrganizationBasePath()}/conversations`;
+}
 
 /**
  * Extract phone number from chatId (removes @c.us or @s.whatsapp.net suffix)
@@ -65,7 +67,7 @@ function deduplicateByPhone(conversations: Conversation[]): Conversation[] {
 
 export async function getConversations(): Promise<Conversation[]> {
   const q = query(
-    collection(db, COLLECTION_NAME),
+    collection(db, getConversationsCollection()),
     orderBy("lastMessage", "desc")
   );
   const snapshot = await getDocs(q);
@@ -80,7 +82,7 @@ export async function getConversations(): Promise<Conversation[]> {
 
 
 export async function getConversationById(id: string): Promise<Conversation | null> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getConversationsCollection(), id);
   const snapshot = await getDoc(docRef);
   if (!snapshot.exists()) {
     return null;
@@ -89,7 +91,7 @@ export async function getConversationById(id: string): Promise<Conversation | nu
 }
 
 export async function getConversationByChatId(chatId: string): Promise<Conversation | null> {
-  const q = query(collection(db, COLLECTION_NAME), where("chatId", "==", chatId));
+  const q = query(collection(db, getConversationsCollection()), where("chatId", "==", chatId));
   const snapshot = await getDocs(q);
   if (snapshot.empty) {
     return null;
@@ -109,7 +111,7 @@ export async function upsertConversation(
     isFinished?: boolean;
   }
 ): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, chatId);
+  const docRef = doc(db, getConversationsCollection(), chatId);
   const existing = await getDoc(docRef);
 
   const now = Timestamp.now();
@@ -140,7 +142,7 @@ export async function upsertConversation(
 
 export async function getActiveConversations(): Promise<Conversation[]> {
   const q = query(
-    collection(db, COLLECTION_NAME),
+    collection(db, getConversationsCollection()),
     where("isFinished", "==", false),
     orderBy("lastMessage", "desc")
   );
@@ -152,7 +154,7 @@ export async function getActiveConversations(): Promise<Conversation[]> {
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getConversationsCollection(), id);
   await deleteDoc(docRef);
 }
 
@@ -160,18 +162,18 @@ export async function updateConversation(
   id: string,
   data: Partial<Pick<Conversation, "notes" | "tags" | "name" | "botDisabled" | "listingCode" | "qualified" | "isFinished">>
 ): Promise<void> {
-  const docRef = doc(db, COLLECTION_NAME, id);
+  const docRef = doc(db, getConversationsCollection(), id);
   // We use setDoc with merge: true because id is usually the chatId
   await setDoc(docRef, data, { merge: true });
 }
 
 export async function deleteConversationByChatId(chatId: string): Promise<void> {
-  const q = query(collection(db, COLLECTION_NAME), where("chatId", "==", chatId));
+  const q = query(collection(db, getConversationsCollection()), where("chatId", "==", chatId));
   const snapshot = await getDocs(q);
 
   if (!snapshot.empty) {
     const conversationDoc = snapshot.docs[0];
-    await deleteDoc(doc(db, COLLECTION_NAME, conversationDoc.id));
+    await deleteDoc(doc(db, getConversationsCollection(), conversationDoc.id));
   }
 }
 
@@ -222,5 +224,23 @@ export async function triggerAssistantResponse(chatId: string): Promise<void> {
     const error = await response.json();
     throw new Error(error.error || "Error triggering assistant");
   }
+}
+
+export async function retryMissingLeads(token: string, chatIds?: string[]): Promise<any> {
+  const response = await fetch(`${FUNCTIONS_BASE_URL}/retryMissingLeads`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({ chatIds }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || "Error retrying missing leads");
+  }
+
+  return response.json();
 }
 

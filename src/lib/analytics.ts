@@ -102,4 +102,7 @@ export const analytics = {
   trackCheckoutIntentResumed(plan_id: string) {
     trackEvent("checkout_intent_resumed", { plan_id });
   },
+  trackPackagePurchaseInitiated(package_id: string) {
+    trackEvent("package_purchase_initiated", { package_id });
+  },
 };

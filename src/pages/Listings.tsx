@@ -15,6 +15,7 @@ import { composeListingAddress, normalizeForSearch } from "../lib/addressNormali
 import { metricTheme, qualificationStatusClasses } from "../lib/metricTheme";
 import { PageHeader, PageLoading, Button, FilterCard } from "../components/ui";
 import { OperationTypeBadge } from "../components/StatusBadges";
+import { useAuth } from "../contexts/AuthContext";
 
 type AddressSuggestionOption = {
   label: string;
@@ -122,6 +123,7 @@ const closureReasonLabels: Record<ListingClosureReason, string> = {
 type ListingSortOption = "default" | "updated_desc" | "conversations_desc" | "qualified_desc" | "title_asc";
 
 export function Listings() {
+  const { organizationId } = useAuth();
   const navigate = useNavigate();
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
@@ -331,7 +333,7 @@ export function Listings() {
 
   useEffect(() => {
     loadListings();
-  }, []);
+  }, [organizationId]);
 
   useEffect(() => {
     const el = featuresRef.current;
@@ -358,6 +360,7 @@ export function Listings() {
   }, []);
 
   async function loadListings() {
+    if (!organizationId) return;
     setLoading(true);
     setLoadError(null);
     try {

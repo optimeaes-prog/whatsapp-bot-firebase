@@ -44,3 +44,11 @@ export async function confirmOnboarding(orgId: string): Promise<void> {
   const docRef = doc(db, "organizations", orgId);
   await updateDoc(docRef, { onboardingStep: 6 });
 }
+
+export async function getAllOrganizations(): Promise<{ id: string; agencyName?: string }[]> {
+  const snapshot = await getDocs(collection(db, "organizations"));
+  return snapshot.docs.map(doc => ({ 
+    id: doc.id, 
+    agencyName: doc.data().agencyName || doc.id 
+  }));
+}

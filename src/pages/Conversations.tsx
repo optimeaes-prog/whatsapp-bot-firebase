@@ -18,8 +18,10 @@ import { LeadDetails } from "../components/LeadDetails";
 import { getListings } from "../services/listings";
 import type { Listing } from "../types";
 import { Button, InboxShell, PageLoading } from "../components/ui";
+import { useAuth } from "../contexts/AuthContext";
 
 export function Conversations() {
+  const { organizationId } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,6 +32,7 @@ export function Conversations() {
   const [filterListingStatus, setFilterListingStatus] = useState<"all" | "active" | "inactive">("all");
   const [filterAssistantStatus, setFilterAssistantStatus] = useState<"all" | "active" | "disabled">("all");
   const [filterDate, setFilterDate] = useState("all");
+  const [filterType, setFilterType] = useState<"leads" | "unidentified">("leads");
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -45,9 +48,11 @@ export function Conversations() {
 
   useEffect(() => {
     loadConversations();
-  }, []);
+  }, [organizationId]);
 
   async function loadConversations() {
+    if (!organizationId) return;
+    setLoading(true);
     try {
       const [data, listingsData] = await Promise.all([
         getConversations(),
@@ -253,10 +258,15 @@ export function Conversations() {
         (filterAssistantStatus === "disabled" && conv.botDisabled);
 
       const matchesDate = isWithinRange(conv.lastMessage);
+
+      const isUnidentified = conv.tags?.includes("non-lead");
+      const matchesType = filterType === "leads" ? !isUnidentified : isUnidentified;
+
       return (
         matchesSearch &&
         matchesStatus &&
         matchesListing &&
+        matchesType &&
         matchesQualified &&
         matchesListingStatus &&
         matchesAssistantStatus &&
@@ -272,6 +282,7 @@ export function Conversations() {
     filterListingStatus,
     filterAssistantStatus,
     filterDate,
+    filterType,
     listingMap,
   ]);
 
@@ -293,6 +304,38 @@ export function Conversations() {
             <span className="bg-primary-100 text-primary-700 text-xs font-bold px-2 py-1 rounded-full font-heading">
               {filteredConversations.length}
             </span>
+          </div>
+
+          {/* Selector de tipo de conversación (Leads / No identificados) */}
+          <div className="flex bg-gray-100 p-1 rounded-lg w-full">
+            <button
+              onClick={() => {
+                setFilterType("leads");
+                setSelectedConversation(null); // Clear selection when switching modes to avoid context confusion
+              }}
+              className={cn(
+                "flex-1 py-1.5 px-3 text-xs font-bold rounded-md transition-all font-heading uppercase tracking-wider",
+                filterType === "leads" 
+                  ? "bg-white text-primary-700 shadow-sm" 
+                  : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              Leads
+            </button>
+            <button
+              onClick={() => {
+                setFilterType("unidentified");
+                setSelectedConversation(null);
+              }}
+              className={cn(
+                "flex-1 py-1.5 px-3 text-xs font-bold rounded-md transition-all font-heading uppercase tracking-wider",
+                filterType === "unidentified" 
+                  ? "bg-white text-primary-700 shadow-sm" 
+                  : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              No identificados
+            </button>
           </div>
 
           {/* Búsqueda */}

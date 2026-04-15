@@ -5,9 +5,9 @@ import { getOrganizationSettings, updateOrganizationSettings } from "../services
 import type { OrganizationSettings } from "../services/organization";
 import { PopupModal, useCalendlyEventListener } from "react-calendly";
 import { Link, useSearchParams } from "react-router-dom";
-import { getUserCredits, getCreditPackages, createCheckoutSession, formatPrice } from "../services/credits";
+import { getAvailableConversations, getConversationPackages, createCheckoutSession, formatPrice } from "../services/subscription";
 import { analytics } from "../lib/analytics";
-import type { CreditPackage } from "../types";
+import type { ConversationPackage } from "../types";
 import { CreditCard, AlertCircle } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button, PageLoading } from "../components/ui";
@@ -36,10 +36,10 @@ export function Onboarding() {
   const [forwardingEmail, setForwardingEmail] = useState("");
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const [credits, setCredits] = useState<number>(0);
-  const [packages, setPackages] = useState<CreditPackage[]>([]);
+  const [availableConversations, setAvailableConversations] = useState<number>(0);
+  const [packages, setPackages] = useState<ConversationPackage[]>([]);
   const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
-  const [creditsLoading, setCreditsLoading] = useState(true);
+  const [conversationsLoading, setConversationsLoading] = useState(true);
 
   const currentStep = settings?.onboardingStep || 1;
 
@@ -80,29 +80,29 @@ export function Onboarding() {
     }
   };
 
-  async function loadCreditsData() {
+  async function loadConversationsData() {
     try {
-      setCreditsLoading(true);
+      setConversationsLoading(true);
       const [balance, pkgs] = await Promise.all([
-        getUserCredits(),
-        getCreditPackages(),
+        getAvailableConversations(),
+        getConversationPackages(),
       ]);
-      setCredits(balance);
+      setAvailableConversations(balance);
       setPackages(pkgs);
     } catch (error) {
       console.error("Error loading credits:", error);
       // Fallback display
       setPackages([
-        { id: "extra_40", name: "40 Conversaciones", amount: 1000, credits: 40, currency: "eur" },
+        { id: "extra_40", name: "40 Conversaciones", amount: 1000, conversations: 40, currency: "eur" },
       ]);
     } finally {
-      setCreditsLoading(false);
+      setConversationsLoading(false);
     }
   }
 
   useEffect(() => {
     loadSettings();
-    loadCreditsData();
+    loadConversationsData();
 
     const payment = searchParams.get("payment");
     if (payment === "success") {
@@ -619,7 +619,7 @@ export function Onboarding() {
                         )}
                         <div className="flex items-center justify-center gap-1 mb-1 mt-2">
                           <Coins className="text-amber-500" size={18} />
-                          <span className="text-xl font-bold text-gray-900">{pkg.credits}</span>
+                          <span className="text-xl font-bold text-gray-900">{pkg.conversations}</span>
                         </div>
                         <p className="text-xs text-gray-500 mb-3 font-bold font-heading uppercase tracking-widest">conversaciones</p>
                         <p className="text-lg font-bold text-primary-600 mb-3">{formatPrice(pkg.amount, pkg.currency)}</p>
@@ -642,20 +642,20 @@ export function Onboarding() {
                 {currentStep === 4 && (
                   <div className="flex flex-col sm:flex-row items-center justify-between border-t border-gray-100 mt-6 pt-5 gap-4">
                     <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-1.5 rounded-md border border-gray-200">
-                      Saldo actual: <strong className="text-amber-600">{creditsLoading ? "..." : credits} conversaciones</strong>
+                      Saldo actual: <strong className="text-amber-600">{conversationsLoading ? "..." : availableConversations} conversaciones</strong>
                     </div>
                     <div className="flex flex-col items-end">
                       <Button
                         onClick={() => handleSaveStep4()}
-                        disabled={credits === 0}
+                        disabled={availableConversations === 0}
                         loading={saving}
                         className="flex items-center justify-center gap-2 text-sm"
-                        title={credits === 0 ? "Adquiere tu primer paquete para continuar" : ""}
+                        title={availableConversations === 0 ? "Adquiere tu primer paquete para continuar" : ""}
                       >
                         Confirmar saldo y continuar
                         <ArrowRight size={16} />
                       </Button>
-                      {credits === 0 && (
+                      {availableConversations === 0 && (
                         <p className="text-xs text-orange-600 mt-1.5 font-medium">Requiere adquirir saldo primero</p>
                       )}
                     </div>

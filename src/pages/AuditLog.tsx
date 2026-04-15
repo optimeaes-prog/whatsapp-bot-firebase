@@ -4,8 +4,10 @@ import type { AuditLogEntry, AuditAction, AuditEntityType } from "../types";
 import { getAuditLogs } from "../services/auditLog";
 import { formatDate, cn } from "../lib/utils";
 import { PageHeader, FilterCard, PageLoading } from "../components/ui";
+import { useAuth } from "../contexts/AuthContext";
 
 export function AuditLog() {
+    const { organizationId } = useAuth();
     const [logs, setLogs] = useState<AuditLogEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [filterEntityType, setFilterEntityType] = useState<AuditEntityType | "all">("all");
@@ -20,9 +22,10 @@ export function AuditLog() {
 
     useEffect(() => {
         loadLogs();
-    }, [filterEntityType, filterAction, filterSource]);
+    }, [organizationId, filterEntityType, filterAction, filterSource]);
 
     async function loadLogs() {
+        if (!organizationId) return;
         try {
             setLoading(true);
             const params: any = {};

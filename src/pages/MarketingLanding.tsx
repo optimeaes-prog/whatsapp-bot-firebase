@@ -39,21 +39,22 @@ const SUBSCRIPTION_PLANS = [
     assistancesMonthly: 40,
     listingsIdeal: "1 anuncio activo/mes",
     benefits: [
-      "Soporte hasta 72h",
+      "Respuesta de soporte maximo 72h",
       "Acceso: 1 agente",
       "Solo leads de mensajes",
     ],
   },
   {
-    id: "advance" as const,
+    id: "advance" as const, // Keeping 'advance' ID for local consistency
     name: "Plus",
-    priceMonthly: 19,
+    priceMonthly: 39,
     assistancesMonthly: 80,
     listingsIdeal: "2-4 anuncios activos/mes",
     benefits: [
-      "Soporte hasta 24h",
+      "Compra 40 conversaciones por 10€ cuando quieras",
+      "Respuesta de soporte maximo 24h",
       "Acceso: 1 agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
     ],
   },
   {
@@ -63,9 +64,10 @@ const SUBSCRIPTION_PLANS = [
     assistancesMonthly: 80,
     listingsIdeal: "3–6 anuncios activos/mes",
     benefits: [
-      "Soporte hasta 6h",
+      "Compra 40 conversaciones por 10€ cuando quieras",
+      "Respuesta de soporte maximo 12h",
       "Acceso multi-agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
       "Promoción de marca en cualificación",
     ],
   },
@@ -76,11 +78,12 @@ const SUBSCRIPTION_PLANS = [
     assistancesMonthly: 80,
     listingsIdeal: "6–12 anuncios activos/mes",
     benefits: [
+      "Compra 40 conversaciones por 10€ cuando quieras",
       "Soporte dedicado 1 a 1",
       "Acceso multi-agente",
-      "Leads de mensajes y llamadas",
+      "Asistencia a leads provenientes de mensajes o llamadas",
       "Promoción de marca en cualificación",
-      "Avatar IA personalizado",
+      "Tu propio Avatar en vez de Marcos.",
     ],
   },
   {
@@ -1137,3 +1140,4 @@ export function MarketingLanding() {
     </div>
   );
 }
+

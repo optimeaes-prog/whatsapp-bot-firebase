@@ -16,6 +16,7 @@ import { LeadEditModal } from "../components/LeadEditModal";
 import { Send } from "lucide-react";
 import { Button, PageHeader, PageLoading, FilterCard, SegmentedControl } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
+import { useAuth } from "../contexts/AuthContext";
 
 /** `?status=non_qualified_all` (p. ej. desde Anuncios) = todos salvo cualificados */
 const NON_QUALIFIED_ALL_STATUSES = ["not_qualified", "rejected", "no_response"] as const;
@@ -55,6 +56,7 @@ type LeadWithMessages = Lead & {
 };
 
 export function Leads() {
+  const { organizationId } = useAuth();
   const [leads, setLeads] = useState<LeadWithMessages[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -144,6 +146,7 @@ export function Leads() {
   const [isMassMessageModalOpen, setIsMassMessageModalOpen] = useState(false);
   const [massMessageText, setMassMessageText] = useState("");
   const [sendingMassMessage, setSendingMassMessage] = useState(false);
+  const { user } = useAuth();
 
   const [isBulkActionsOpen, setIsBulkActionsOpen] = useState(false);
   const [activeBulkModal, setActiveBulkModal] = useState<null | "delete" | "status" | "addTags" | "removeTag" | "listing">(null);
@@ -192,9 +195,12 @@ export function Leads() {
 
   useEffect(() => {
     loadLeads();
-  }, []);
+  }, [organizationId]);
+
 
   async function loadLeads() {
+    if (!organizationId) return;
+    setLoading(true);
     try {
       const [data, listingsData, conversationsData] = await Promise.all([
         getLeads(),

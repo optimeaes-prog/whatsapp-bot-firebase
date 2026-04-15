@@ -13,7 +13,9 @@ import type { SystemAlert } from "../types";
 
 import { getOrganizationBasePath } from "../lib/organization";
 
-const ALERTS_COLLECTION = `${getOrganizationBasePath()}/system_alerts`;
+function getAlertsCollection() {
+    return `${getOrganizationBasePath()}/system_alerts`;
+}
 export type AlertCatalogStatusRow = {
     key: string;
     subject: string;
@@ -27,7 +29,7 @@ export type AlertCatalogStatusRow = {
 };
 
 export async function getAlerts(): Promise<SystemAlert[]> {
-    const alertsRef = collection(db, ALERTS_COLLECTION);
+    const alertsRef = collection(db, getAlertsCollection());
 
     // Filter by last 7 days
     const sevenDaysAgo = new Date();
@@ -48,7 +50,7 @@ export async function getAlerts(): Promise<SystemAlert[]> {
 }
 
 export async function deleteAlert(id: string): Promise<void> {
-    const alertRef = doc(db, ALERTS_COLLECTION, id);
+    const alertRef = doc(db, getAlertsCollection(), id);
     await deleteDoc(alertRef);
 }
 

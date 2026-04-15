@@ -4,8 +4,8 @@ import { Check, ArrowRight, Calendar } from "lucide-react";
 import { Button } from "./ui";
 import { saveCheckoutIntent } from "../lib/checkoutStorage";
 import type { SubscriptionPlanId } from "../types";
-import { updateSubscriptionPlan } from "../services/credits";
-import type { SubscriptionChangePreview, SubscriptionChangeResult } from "../services/credits";
+import { updateSubscriptionPlan } from "../services/subscription";
+import type { SubscriptionChangePreview, SubscriptionChangeResult } from "../services/subscription";
 import { toast } from "sonner";
 
 export interface CheckoutBreakdownData {

@@ -3,17 +3,20 @@ import { Users as UsersIcon, Search, Mail, Calendar, LogIn } from "lucide-react"
 import { getSystemUsers, type SystemUser } from "../services/users";
 import { formatDate } from "../lib/utils";
 import { PageHeader, FilterCard, PageLoading } from "../components/ui";
+import { useAuth } from "../contexts/AuthContext";
 
 export function Users() {
+  const { organizationId } = useAuth();
   const [users, setUsers] = useState<SystemUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
     loadUsers();
-  }, []);
+  }, [organizationId]);
 
   async function loadUsers() {
+    if (!organizationId) return;
     try {
       setLoading(true);
       const data = await getSystemUsers();

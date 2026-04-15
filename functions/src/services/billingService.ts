@@ -1,7 +1,9 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-import { UserCredits, CreditTransaction } from "../types";
-import { createConfirmedOffSessionTopUp, packageIdForCreditAmount } from "./stripeService";
+import { getActiveOrgId } from "./requestContext";
+import { UserConversations, ConversationTransaction } from "../types";
+import { createConfirmedOffSessionTopUp, packageIdForConversationAmount } from "./stripeService";
+import { sendLowBalanceNotification } from "./emailService";
 
 const DATABASE_ID = "realestate-whatsapp-bot";
 
@@ -14,16 +16,14 @@ function getDb(): FirebaseFirestore.Firestore {
     return firestoreInstance;
 }
 
-const ORG_ID = "org_paco_granados";
-
 function getOrgDb() {
-  return getDb().collection("organizations").doc(ORG_ID);
+  return getDb().collection("organizations").doc(getActiveOrgId());
 }
 
 /**
- * Get user credits balance
+ * Get user conversations balance
  */
-export async function getUserCredits(userId: string): Promise<number> {
+export async function getUserConversationBalance(userId: string): Promise<number> {
     const db = getOrgDb();
     const doc = await db.collection("credits").doc(userId).get();
 
@@ -31,18 +31,18 @@ export async function getUserCredits(userId: string): Promise<number> {
         return 0;
     }
 
-    const data = doc.data() as UserCredits;
+    const data = doc.data() as UserConversations;
     return data.balance || 0;
 }
 
 /**
- * Add credits to a user's balance
+ * Add conversations to a user's balance
  */
-export async function addCredits(
+export async function addConversations(
     userId: string,
     amount: number,
     stripeSessionId?: string,
-    description: string = "Credit purchase"
+    description: string = "Conversation pack purchase"
 ): Promise<number> {
     const db = getOrgDb();
     const creditsRef = db.collection("credits").doc(userId);
@@ -50,20 +50,20 @@ export async function addCredits(
     // Use a transaction to ensure atomicity
     const newBalance = await getDb().runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
         const doc = await transaction.get(creditsRef);
-        const currentBalance = doc.exists ? (doc.data() as UserCredits).balance || 0 : 0;
+        const currentBalance = doc.exists ? (doc.data() as UserConversations).balance || 0 : 0;
         const updatedBalance = currentBalance + amount;
 
         transaction.set(creditsRef, {
             userId,
             balance: updatedBalance,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        } as Partial<UserCredits>, { merge: true });
+        } as Partial<UserConversations>, { merge: true });
 
         return updatedBalance;
     });
 
     // Record the transaction
-    const transactionData: Omit<CreditTransaction, "id"> = {
+    const transactionData: Omit<ConversationTransaction, "id"> = {
         userId,
         type: "purchase",
         amount,
@@ -74,25 +74,25 @@ export async function addCredits(
 
     await db.collection("creditTransactions").add(transactionData);
 
-    console.log(`Added ${amount} credits to user ${userId}. New balance: ${newBalance}`);
+    console.log(`Added ${amount} conversations to user ${userId}. New balance: ${newBalance}`);
     return newBalance;
 }
 
 /**
- * Deduct credits from a user's balance
- * Returns the new balance, or throws if insufficient credits
+ * Deduct conversations from a user's balance
+ * Returns the new balance, or throws if insufficient conversations
  */
-export async function deductCredits(
+export async function deductConversations(
     userId: string,
     amount: number,
-    description: string = "Credit usage"
+    description: string = "Conversation usage"
 ): Promise<number> {
     const db = getOrgDb();
     const creditsRef = db.collection("credits").doc(userId);
 
     const newBalance = await getDb().runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
         const doc = await transaction.get(creditsRef);
-        const currentBalance = doc.exists ? (doc.data() as UserCredits).balance || 0 : 0;
+        const currentBalance = doc.exists ? (doc.data() as UserConversations).balance || 0 : 0;
 
         if (currentBalance < amount) {
             throw new Error(`Insufficient credits. Required: ${amount}, Available: ${currentBalance}`);
@@ -104,13 +104,13 @@ export async function deductCredits(
             userId,
             balance: updatedBalance,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        } as Partial<UserCredits>, { merge: true });
+        } as Partial<UserConversations>, { merge: true });
 
         return updatedBalance;
     });
 
     // Record the transaction
-    const transactionData: Omit<CreditTransaction, "id"> = {
+    const transactionData: Omit<ConversationTransaction, "id"> = {
         userId,
         type: "deduction",
         amount: -amount,  // Negative for deductions
@@ -120,7 +120,7 @@ export async function deductCredits(
 
     await db.collection("creditTransactions").add(transactionData);
 
-    console.log(`Deducted ${amount} credits from user ${userId}. New balance: ${newBalance}`);
+    console.log(`Deducted ${amount} conversations from user ${userId}. New balance: ${newBalance}`);
     return newBalance;
 }
 
@@ -130,7 +130,7 @@ export async function deductCredits(
 export async function getTransactionHistory(
     userId: string,
     limit: number = 50
-): Promise<CreditTransaction[]> {
+): Promise<ConversationTransaction[]> {
     const db = getOrgDb();
     const snapshot = await db
         .collection("creditTransactions")
@@ -142,15 +142,15 @@ export async function getTransactionHistory(
     return snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
-    })) as CreditTransaction[];
+    })) as ConversationTransaction[];
 }
 
 // ==================== ORGANIZATION-LEVEL CREDITS ====================
 
 /**
- * Get organization credit balance
+ * Get organization conversation balance
  */
-export async function getOrgCredits(orgId: string = ORG_ID): Promise<number> {
+export async function getOrgConversationBalance(orgId: string = getActiveOrgId()): Promise<number> {
     const orgRef = getDb().collection("organizations").doc(orgId);
     const doc = await orgRef.get();
 
@@ -162,13 +162,13 @@ export async function getOrgCredits(orgId: string = ORG_ID): Promise<number> {
 }
 
 /**
- * Deduct credits from the organization's balance.
- * Returns the new balance, or throws if insufficient credits.
+ * Deduct conversations from the organization's balance.
+ * Returns the new balance, or throws if insufficient conversations.
  */
-export async function deductOrgCredits(
+export async function deductOrgConversations(
     amount: number,
-    description: string = "Uso de créditos",
-    orgId: string = ORG_ID
+    description: string = "Uso de conversaciones",
+    orgId: string = getActiveOrgId()
 ): Promise<number> {
     const orgRef = getDb().collection("organizations").doc(orgId);
 
@@ -198,7 +198,14 @@ export async function deductOrgCredits(
         createdAt: admin.firestore.Timestamp.now(),
     });
 
-    console.log(`Deducted ${amount} org credits from ${orgId}. New balance: ${newBalance}`);
+    console.log(`Deducted ${amount} org conversations from ${orgId}. New balance: ${newBalance}`);
+
+    // --- LOW BALANCE ALERT (< 20) ---
+    if (newBalance < 20) {
+        void handleLowBalanceAlert(orgId, newBalance).catch((e) =>
+            console.error("[billingService] handleLowBalanceAlert error:", e)
+        );
+    }
 
     void runOrgAutoRechargeIfNeeded(orgId, newBalance).catch((e) =>
         console.error("[auto-recharge] runOrgAutoRechargeIfNeeded:", e)
@@ -208,12 +215,33 @@ export async function deductOrgCredits(
 }
 
 /**
- * Add credits to the organization's balance.
+ * Sends a notification if the balance is low, with a cooldown.
  */
-export async function addOrgCredits(
+async function handleLowBalanceAlert(orgId: string, balance: number) {
+    const orgRef = getDb().collection("organizations").doc(orgId);
+    const snap = await orgRef.get();
+    if (!snap.exists) return;
+
+    const data = snap.data()!;
+    const lastAlert = data.lowBalanceAlertLastSentAt?.toMillis() || 0;
+    const cooldownMs = 24 * 60 * 60 * 1000; // 24 hours
+
+    if (Date.now() - lastAlert > cooldownMs) {
+        console.log(`[billingService] Triggering low balance notification for org ${orgId} (balance: ${balance})`);
+        await sendLowBalanceNotification(orgId, balance);
+        await orgRef.update({
+            lowBalanceAlertLastSentAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+    }
+}
+
+/**
+ * Add conversations to the organization's balance.
+ */
+export async function addOrgConversations(
     amount: number,
-    description: string = "Recarga de créditos",
-    orgId: string = ORG_ID
+    description: string = "Recarga de conversaciones",
+    orgId: string = getActiveOrgId()
 ): Promise<number> {
     const orgRef = getDb().collection("organizations").doc(orgId);
 
@@ -238,7 +266,7 @@ export async function addOrgCredits(
         createdAt: admin.firestore.Timestamp.now(),
     });
 
-    console.log(`Added ${amount} org credits to ${orgId}. New balance: ${newBalance}`);
+    console.log(`Added ${amount} org conversations to ${orgId}. New balance: ${newBalance}`);
     return newBalance;
 }
 
@@ -261,35 +289,35 @@ export async function mergeOrgStripeBillingFields(
         );
 }
 
-export async function getOrgStripeCustomerId(orgId: string = ORG_ID): Promise<string | undefined> {
+export async function getOrgStripeCustomerId(orgId: string = getActiveOrgId()): Promise<string | undefined> {
     const doc = await getDb().collection("organizations").doc(orgId).get();
     return doc.data()?.stripeCustomerId;
 }
 
-export async function getOrgAutoRechargeSettingsForApi(orgId: string = ORG_ID): Promise<{
+export async function getOrgAutoRechargeSettingsForApi(orgId: string = getActiveOrgId()): Promise<{
     enabled: boolean;
-    thresholdCredits: number;
-    rechargeCredits: number;
+    thresholdConversations: number;
+    rechargeConversations: number;
     hasSavedCard: boolean;
 }> {
     const doc = await getDb().collection("organizations").doc(orgId).get();
     const d = doc.data() ?? {};
     return {
         enabled: !!d.autoRechargeEnabled,
-        thresholdCredits:
+        thresholdConversations:
             typeof d.autoRechargeThresholdCredits === "number" ? d.autoRechargeThresholdCredits : 20,
-        rechargeCredits: typeof d.autoRechargeCredits === "number" ? d.autoRechargeCredits : 100,
+        rechargeConversations: typeof d.autoRechargeCredits === "number" ? d.autoRechargeCredits : 40,
         hasSavedCard: !!(d.stripeCustomerId && d.stripeDefaultPaymentMethodId),
     };
 }
 
 export async function saveOrgAutoRechargeSettings(
     orgId: string,
-    settings: { enabled: boolean; thresholdCredits: number; rechargeCredits: number }
+    settings: { enabled: boolean; thresholdConversations: number; rechargeConversations: number }
 ): Promise<void> {
-    const allowed = new Set([50, 100, 200]);
-    const recharge = allowed.has(settings.rechargeCredits) ? settings.rechargeCredits : 100;
-    const threshold = Math.max(0, Math.min(50000, Math.floor(settings.thresholdCredits)));
+    const allowed = new Set([40, 80, 120]);
+    const recharge = allowed.has(settings.rechargeConversations) ? settings.rechargeConversations : 40;
+    const threshold = Math.max(0, Math.min(50000, Math.floor(settings.thresholdConversations)));
     await getDb()
         .collection("organizations")
         .doc(orgId)
@@ -304,11 +332,11 @@ export async function saveOrgAutoRechargeSettings(
 }
 
 /**
- * Idempotent credit grant for a PaymentIntent (auto-recharge + webhook backup).
+ * Idempotent conversation grant for a PaymentIntent (auto-recharge + webhook backup).
  */
-export async function addOrgCreditsForPaymentIntentOnce(
+export async function addOrgConversationsForPaymentIntentOnce(
     orgId: string,
-    credits: number,
+    conversations: number,
     paymentIntentId: string,
     description: string
 ): Promise<boolean> {
@@ -328,7 +356,7 @@ export async function addOrgCreditsForPaymentIntentOnce(
         }
         throw e;
     }
-    await addOrgCredits(credits, `${description} · ${paymentIntentId}`, orgId);
+    await addOrgConversations(conversations, `${description} · ${paymentIntentId}`, orgId);
     return true;
 }
 
@@ -345,8 +373,8 @@ export async function runOrgAutoRechargeIfNeeded(orgId: string, balanceAfterDedu
 
     const threshold =
         typeof d.autoRechargeThresholdCredits === "number" ? d.autoRechargeThresholdCredits : 20;
-    const rechargeCredits =
-        typeof d.autoRechargeCredits === "number" ? d.autoRechargeCredits : 100;
+    const rechargeConversations =
+        typeof d.autoRechargeCredits === "number" ? d.autoRechargeCredits : 40;
 
     if (balanceAfterDeduction >= threshold) {
         return;
@@ -370,7 +398,7 @@ export async function runOrgAutoRechargeIfNeeded(orgId: string, balanceAfterDedu
         autoRechargeLastAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    const packageId = packageIdForCreditAmount(rechargeCredits);
+    const packageId = packageIdForConversationAmount(rechargeConversations);
     let pi: Awaited<ReturnType<typeof createConfirmedOffSessionTopUp>>;
     try {
         pi = await createConfirmedOffSessionTopUp(orgId, customerId, pmId, packageId);
@@ -380,16 +408,16 @@ export async function runOrgAutoRechargeIfNeeded(orgId: string, balanceAfterDedu
     }
 
     if (pi.status === "succeeded") {
-        const credits = parseInt(pi.metadata?.credits ?? "0", 10);
-        if (credits > 0) {
-            const added = await addOrgCreditsForPaymentIntentOnce(
+        const conversations = parseInt(pi.metadata?.conversations ?? "0", 10);
+        if (conversations > 0) {
+            const added = await addOrgConversationsForPaymentIntentOnce(
                 orgId,
-                credits,
+                conversations,
                 pi.id,
-                `Auto-compra ${credits} créditos`
+                `Auto-compra ${conversations} conversaciones`
             );
             if (added) {
-                console.log(`[auto-recharge] org ${orgId} +${credits} créditos (pi ${pi.id})`);
+                console.log(`[auto-recharge] org ${orgId} +${conversations} conversaciones (pi ${pi.id})`);
             }
         }
     } else {
