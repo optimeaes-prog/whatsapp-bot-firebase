@@ -99,6 +99,7 @@ function App() {
             <Route path="/terms" element={<LegalDoc title="Términos y Condiciones" path="/legal/terms.es.md" />} />
             <Route path="/privacy" element={<LegalDoc title="Política de Privacidad" path="/legal/privacy.es.md" />} />
             <Route path="/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
+            <Route path="/aviso-legal" element={<LegalDoc title="Aviso Legal" path="/legal/aviso.es.md" />} />
             <Route
               path="/_internal/whatsapp-leads-animation"
               element={

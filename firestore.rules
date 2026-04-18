@@ -20,26 +20,20 @@ service cloud.firestore {
     }
 
     // Users can read/write their own profile
-    // Admins/Owners can read other users in the same organization (for member lists)
     match /users/{userId} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || getOrgId() == resource.data.orgId);
-      allow write: if isAuthenticated() && request.auth.uid == userId;
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+      // Also allow owners/admins of the same org to read
+      allow read: if isAuthenticated() && getOrgId() == resource.data.orgId;
     }
     
-    // Invitations management
-    match /invitations/{inviteId} {
-      // Allow read during signup (with token) - this is tricky without token check, 
-      // but Cloud Functions handle the token validation. 
-      // For Firestore directly, we restrict to the org.
-      allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || getRole() == 'owner' || getRole() == 'admin');
-      allow write: if isAuthenticated() && (getRole() == 'owner' || getRole() == 'admin');
-    }
-
     match /organizations/{orgId} {
       // Organization access is restricted to members
       allow read: if isAuthenticated() && getOrgId() == orgId;
-      // Only owners/admins can update organization settings
       allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
+
+      match /botConfig/{configId} {
+        allow read, write: if isAuthenticated() && getOrgId() == orgId;
+      }
 
       match /listings/{listingId} {
         allow read: if isAuthenticated() && getOrgId() == orgId;
@@ -55,27 +49,36 @@ service cloud.firestore {
         allow read: if isAuthenticated() && getOrgId() == orgId;
         allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
       }
-      
-      match /botConfig/{configId} {
-        allow read: if isAuthenticated() && getOrgId() == orgId;
-        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
+
+      match /calls/{callId} {
+        allow read, write: if isAuthenticated() && getOrgId() == orgId;
       }
-      
-      match /credits/{userId} {
-        allow read: if isAuthenticated() && getOrgId() == orgId;
-        allow write: if false;  
-      }
-      
-      match /creditTransactions/{transactionId} {
-        allow read: if isAuthenticated() && getOrgId() == orgId;
-        allow write: if false;  
+
+      match /ignoredChats/{chatId} {
+        allow read, write: if isAuthenticated() && getOrgId() == orgId;
       }
     }
 
-    // Global Audit Logs (if applicable)
+    match /system_alerts/{alertId} {
+      allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || getRole() == 'admin' || getRole() == 'owner');
+      allow write: if isAuthenticated(); 
+    }
+
+    match /qualifiedLeads/{leadId} {
+      allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || getRole() == 'admin' || getRole() == 'owner');
+      allow write: if isAuthenticated() && (getRole() == 'admin' || getRole() == 'owner');
+    }
+
     match /auditLogs/{logId} {
        allow read: if isAuthenticated() && getOrgId() == resource.data.orgId;
-       allow write: if false;
+    }
+
+    // COLLECTION GROUP RULES
+    match /{path=**}/leads/{lead} {
+      allow read: if isAuthenticated();
+    }
+    match /{path=**}/conversations/{conversation} {
+      allow read: if isAuthenticated();
     }
   }
 }

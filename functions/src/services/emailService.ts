@@ -1,10 +1,9 @@
 import sgMail from "@sendgrid/mail";
-import { defineSecret } from "firebase-functions/params";
 import { getFirestore } from "firebase-admin/firestore";
 import * as admin from "firebase-admin";
 import { formatWelcomeEmail, formatLowBalanceEmail, formatPaymentFailedEmail, formatInvitationEmail } from "./emailTemplates";
 
-const SENDGRID_API_KEY = defineSecret("SENDGRID_API_KEY");
+import { SENDGRID_API_KEY } from "../secrets";
 
 /**
  * Unified Email Service for Proplead

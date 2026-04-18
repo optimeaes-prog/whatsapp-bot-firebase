@@ -219,3 +219,73 @@ export async function createContentTemplate(params: CreateContentTemplateParams)
   }
   return { contentSid: data.sid };
 }
+
+export type TwilioMessage = {
+  sid: string;
+  from: string;
+  to: string;
+  body: string;
+  dateSent: string;
+  timestamp: number;
+  direction: "inbound" | "outbound-api" | "outbound-call";
+  status: string;
+  chatId: string;
+  phone: string;
+};
+
+/**
+ * List messages received by the bot within a specific lookback window
+ */
+export async function listInboundMessages(params: {
+  lookbackHours: number;
+  maxResults?: number;
+}): Promise<TwilioMessage[]> {
+  const { accountSid, authToken, fromNumber } = getTwilioCredentials();
+  const botWhatsApp = formatWhatsAppNumber(fromNumber);
+  
+  const since = new Date(Date.now() - params.lookbackHours * 60 * 60 * 1000);
+  const dateSentStr = since.toISOString().split("T")[0]; // YYYY-MM-DD
+  
+  const allMessages: TwilioMessage[] = [];
+  let nextUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json?To=${encodeURIComponent(botWhatsApp)}&DateSent>=${dateSentStr}&PageSize=50`;
+
+  while (nextUrl && allMessages.length < (params.maxResults || 200)) {
+    const response = await axios.get(nextUrl, {
+      auth: { username: accountSid, password: authToken },
+    });
+
+    const data = response.data;
+    const messages = (data.messages || []) as any[];
+    
+    for (const m of messages) {
+      const sentAt = new Date(m.date_sent);
+      if (sentAt < since) continue;
+      if (m.direction !== "inbound") continue;
+
+      const phone = m.from.replace(/^whatsapp:/i, "").replace(/^\+/, "").trim();
+      const chatId = `${phone}@s.whatsapp.net`;
+
+      allMessages.push({
+        sid: m.sid,
+        from: m.from,
+        to: m.to,
+        body: m.body,
+        dateSent: m.date_sent,
+        timestamp: sentAt.getTime(),
+        direction: m.direction,
+        status: m.status,
+        chatId: chatId,
+        phone: phone,
+      });
+    }
+
+    if (data.next_page_uri) {
+      nextUrl = `https://api.twilio.com${data.next_page_uri}`;
+    } else {
+      break;
+    }
+  }
+
+  return allMessages;
+}
+

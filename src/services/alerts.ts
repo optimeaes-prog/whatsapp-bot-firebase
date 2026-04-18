@@ -14,7 +14,7 @@ import type { SystemAlert } from "../types";
 import { getOrganizationBasePath } from "../lib/organization";
 
 function getAlertsCollection() {
-    return `${getOrganizationBasePath()}/system_alerts`;
+    return "system_alerts";
 }
 export type AlertCatalogStatusRow = {
     key: string;

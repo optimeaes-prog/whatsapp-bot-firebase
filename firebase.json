@@ -38,16 +38,9 @@
       }
     ]
   },
-  "firestore": [
-    {
-      "database": "(default)",
-      "rules": "firestore.rules",
-      "indexes": "firestore.indexes.json"
-    },
-    {
-      "database": "realestate-whatsapp-bot",
-      "rules": "firestore.rules",
-      "indexes": "firestore.indexes.json"
-    }
-  ]
+  "firestore": {
+    "database": "realestate-whatsapp-bot",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
 }

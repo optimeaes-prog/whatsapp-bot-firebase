@@ -2,11 +2,14 @@ import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import type { BotConfig, BotStyle, MessagingProvider } from "../types";
 
-import { getOrganizationBasePath } from "../lib/organization";
+import { getOrganizationBasePath, getOrganizationId } from "../lib/organization";
 
 const CONFIG_DOC_ID = "config";
-function getBotConfigCollection() {
-  return `${getOrganizationBasePath()}/botConfig`;
+function getBotConfigDoc() {
+  const base = getOrganizationBasePath();
+  const orgId = getOrganizationId();
+  console.log(`[Diagnostic] Resolving BotConfigDoc: orgId="${orgId}", base="${base}"`);
+  return doc(db, `${base}/botConfig`, CONFIG_DOC_ID);
 }
 
 // Default assistant styles
@@ -64,10 +67,12 @@ export const DEFAULT_STYLES: BotStyle[] = [
 ];
 
 export async function getBotConfig(): Promise<BotConfig> {
-  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
+  const docRef = getBotConfigDoc();
+  console.log(`[Diagnostic] Attempting to fetch document from: ${docRef.path}`);
   const snapshot = await getDoc(docRef);
 
   if (!snapshot.exists()) {
+    console.warn(`[Diagnostic] Document NOT FOUND at path: ${docRef.path}. Initializing default.`);
     // Initialize with default config
     const defaultConfig: BotConfig = {
       activeStyleId: "directo",
@@ -88,18 +93,23 @@ export async function getBotConfig(): Promise<BotConfig> {
 }
 
 export async function updateActiveStyle(styleId: string): Promise<void> {
-  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
+  const docRef = getBotConfigDoc();
   await setDoc(docRef, { activeStyleId: styleId }, { merge: true });
 }
 
 export async function updateMessagingProvider(provider: MessagingProvider): Promise<void> {
-  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
+  const docRef = getBotConfigDoc();
   await setDoc(docRef, { messagingProvider: provider }, { merge: true });
 }
 
 export async function updateOrgName(orgName: string): Promise<void> {
-  const docRef = doc(db, getBotConfigCollection(), CONFIG_DOC_ID);
+  const docRef = getBotConfigDoc();
   await setDoc(docRef, { orgName }, { merge: true });
+}
+
+export async function updateNotificationNumbers(numbers: string): Promise<void> {
+  const docRef = getBotConfigDoc();
+  await setDoc(docRef, { notificationNumbers: numbers }, { merge: true });
 }
 
 export async function getActiveStyle(): Promise<BotStyle> {

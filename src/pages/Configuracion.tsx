@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Settings, Check, MessageSquare, Loader2, Phone, Home } from "lucide-react";
 import type { BotConfig, BotStyle, MessagingProvider } from "../types";
-import { getBotConfig, updateActiveStyle, updateMessagingProvider, updateOrgName, DEFAULT_STYLES } from "../services/botConfig";
+import { getBotConfig, updateActiveStyle, updateMessagingProvider, updateOrgName, updateNotificationNumbers, DEFAULT_STYLES } from "../services/botConfig";
+import { useAuth } from "../contexts/AuthContext";
+import { Bell } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button, PageHeader, PageLoading } from "../components/ui";
 
 export function Configuracion() {
-  const { role } = useAuth();
+  const { organizationId, role } = useAuth();
   const [config, setConfig] = useState<BotConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -15,18 +17,28 @@ export function Configuracion() {
   const [previewStyle, setPreviewStyle] = useState<BotStyle | null>(null);
   const [orgName, setOrgName] = useState("");
   const [savingOrg, setSavingOrg] = useState(false);
+  const [notificationNumbers, setNotificationNumbers] = useState("");
+  const [savingNotifications, setSavingNotifications] = useState(false);
 
   useEffect(() => {
-    loadConfig();
-  }, []);
+    if (organizationId) {
+      loadConfig();
+    }
+  }, [organizationId]);
 
   async function loadConfig() {
+    console.log(`[Diagnostic] loadConfig() triggered. Current organizationId state: "${organizationId}"`);
     try {
       const data = await getBotConfig();
+      console.log("[Diagnostic] loadConfig() success:", data);
       setConfig(data);
       setOrgName(data.orgName || "");
-    } catch (error) {
-      console.error("Error loading config:", error);
+      setNotificationNumbers(data.notificationNumbers || "");
+    } catch (error: any) {
+      console.error("[Diagnostic] loadConfig() FAILED:", error);
+      if (error.code === "permission-denied") {
+        console.warn("[Diagnostic] Permission Denied. This usually means the Firestore Security Rules are blocking the path or the user documentorgId doesn't match the path.");
+      }
     } finally {
       setLoading(false);
     }
@@ -81,6 +93,22 @@ export function Configuracion() {
     }
   }
 
+  async function handleUpdateNotifications() {
+    if (!config || notificationNumbers === config.notificationNumbers) return;
+    setSavingNotifications(true);
+
+    try {
+      await updateNotificationNumbers(notificationNumbers.trim());
+      setConfig({ ...config, notificationNumbers: notificationNumbers.trim() });
+      toast.success("Números de notificación guardados correctamente");
+    } catch (error) {
+      console.error("Error updating notification numbers:", error);
+      toast.error("Error al actualizar los números de notificación");
+    } finally {
+      setSavingNotifications(false);
+    }
+  }
+
   if (loading) {
     return <PageLoading className="h-64" />;
   }
@@ -118,6 +146,44 @@ export function Configuracion() {
               loading={savingOrg}
             >
               Guardar
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Lead Notifications Section */}
+      <div className="card mb-8">
+        <div className="flex items-center gap-2 mb-4">
+          <Bell className="text-amber-500" size={24} />
+          <h2 className="text-lg font-bold text-gray-900 font-heading">Notificaciones de Leads</h2>
+        </div>
+
+        <p className="text-gray-600 mb-4 text-sm">
+          Introduce los números de WhatsApp que recibirán un resumen cuando un lead sea 
+          <strong> cualificado</strong>. Separa varios números con comas.
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-4">
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Números de WhatsApp (formato internacional, ej: 34696000111)
+            </label>
+            <input
+              type="text"
+              value={notificationNumbers}
+              onChange={(e) => setNotificationNumbers(e.target.value)}
+              className="input"
+              placeholder="34696000111, 34600112233"
+            />
+          </div>
+          <div className="flex items-end">
+            <Button
+              onClick={handleUpdateNotifications}
+              disabled={role === "member" || notificationNumbers === config?.notificationNumbers}
+              loading={savingNotifications}
+              variant="outline"
+            >
+              Guardar Números
             </Button>
           </div>
         </div>

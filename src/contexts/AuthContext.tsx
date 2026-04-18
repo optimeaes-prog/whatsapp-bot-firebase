@@ -46,6 +46,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const userRef = doc(db, "users", user.uid);
     const userSnap = await getDoc(userRef);
 
+    console.log(`[Auth-Diagnostic] userSnap exists: ${userSnap.exists()}, data:`, userSnap.exists() ? userSnap.data() : "NO DOCUMENT");
+
     // Paco Granados Exception - prioritize this
     const pacoEmails = ["paco.granados@atlascapitalgroup.com", "ejperezreyes@gmail.com"];
     if (user.email && pacoEmails.some(email => user.email?.toLowerCase().includes(email.split('@')[0].toLowerCase()))) {
@@ -65,6 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       
       updateOrgId(orgId);
       setRole(finalRole);
+      console.log(`[Auth-Diagnostic] User resolved via Exception. orgId: "${orgId}" role: "${finalRole}"`);
       return;
     }
 
@@ -73,6 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data.orgId) {
         updateOrgId(data.orgId);
         if (data.role) setRole(data.role);
+        console.log(`[Auth-Diagnostic] User resolved via Firestore. orgId: "${data.orgId}" role: "${data.role}"`);
         return;
       }
     }

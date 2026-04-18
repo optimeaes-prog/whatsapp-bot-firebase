@@ -148,6 +148,7 @@ export type BotConfig = {
   styles: BotStyle[];
   messagingProvider?: string;
   orgName?: string;
+  notificationNumbers?: string;
 };
 
 export type InboundMessage = {

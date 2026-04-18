@@ -5,7 +5,7 @@ import { getAnalytics } from "firebase/analytics";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCUp1ZUmkZnCXhTF0H5NbtDqZgZLJSe7nU",
-  authDomain: "real-estate-idealista-bot.firebaseapp.com",
+  authDomain: "proplead.io",
   projectId: "real-estate-idealista-bot",
   storageBucket: "real-estate-idealista-bot.firebasestorage.app",
   messagingSenderId: "886555215384",

@@ -17,8 +17,9 @@ import {
   appendConversationRow,
   findOrgIdByChatId,
 
-  getActiveStyle,
-  getConversationByChatId,
+   getActiveStyle,
+   getBotConfig,
+   getConversationByChatId,
   getConversationByPhoneAndListing,
   upsertConversation,
   addPendingMessage,
@@ -26,6 +27,7 @@ import {
   getPendingMessagesAndClear,
   getConversationsForFollowUp,
   ignoreChat,
+  isChatIgnored,
   getAlertCountSince,
   markLeadAsResponded,
   getResponseRateStats,
@@ -51,11 +53,11 @@ import {
   translateTextToBritishEnglish,
   checkLeadPassesFilters,
 } from "./services/openaiClient";
-import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS } from "./services/cloudTasks";
+import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS, REGION } from "./shared";
 import { sendAlert, sendHealthReport } from "./services/alertService";
 import { ALERT_CATALOG } from "./services/alertCatalog";
 import { syncConversationsWithWhapi, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
-import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS } from "./secrets";
+import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY } from "./secrets";
 import {
   addOrgConversations,
   addOrgConversationsForPaymentIntentOnce,
@@ -94,8 +96,7 @@ import {
 } from "./utils";
 import { normalizeForSearch } from "./utils/addressNormalize";
 import { getActiveOrgId, requestContext } from "./services/requestContext";
-import { sendPaymentFailedNotification, sendWelcomeNotification, sendInvitationNotification } from "./services/emailService";
-import * as crypto from "crypto";
+import { sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
   admin.initializeApp();
@@ -113,8 +114,7 @@ if (admin.apps.length === 0) {
   }
 })();
 
-// Region configuration
-const REGION = "europe-west1";
+// REGION is now imported from ./shared
 
 // Organisation identifier (removed global static getActiveOrgId() for multi-tenancy)
 // const getActiveOrgId() = getActiveOrgId(); 
@@ -617,7 +617,7 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
   return result;
 }
 
-async function ensureConversationState(chatId: string, phoneHint?: string): Promise<ConversationState | undefined> {
+export async function ensureConversationState(chatId: string, phoneHint?: string): Promise<ConversationState | undefined> {
   // Get all possible chatId variants (handles @c.us vs @s.whatsapp.net)
   const chatIdVariants = getChatIdVariants(chatId);
 
@@ -1429,22 +1429,9 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
 // ==================== HTTP FUNCTIONS ====================
 
-/**
- * Get the URL for the processBuffer function
- * URL format from deployment: https://europe-west1-real-estate-idealista-bot.cloudfunctions.net/processBuffer
- */
-function getProcessBufferUrl(): string {
-  const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "";
-  return `https://europe-west1-${projectId}.cloudfunctions.net/processBuffer`;
-}
-
-function getSendCallHandoffUrl(): string {
-  const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "";
-  return `https://europe-west1-${projectId}.cloudfunctions.net/sendCallHandoffMessage`;
-}
 
 export const webhook = onRequest(
-  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] },
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
   async (req, res) => {
   try {
     // Handle GET requests (webhook verification)
@@ -1504,7 +1491,17 @@ export const webhook = onRequest(
             console.warn(`Could not resolve organization for chatId ${chatId}`);
           }
 
-          await requestContext.run({ orgId: orgId || "" }, async () => {
+          if (!orgId) {
+            console.warn(`Skipping inbound message for ${chatId}: could not resolve orgId`);
+            await sendAlert(
+              "Inbound message without org",
+              "No se pudo resolver la organización para un mensaje entrante. Mensaje no procesado para evitar escritura en tenant incorrecto.",
+              { chatId, phone: messages[0]?.phone || "", sampleText: messages[0]?.text || "" }
+            );
+            return;
+          }
+
+          await requestContext.run({ orgId }, async () => {
             // Filter out ignored chats (must run within org context)
             if (await isChatIgnored(chatId)) {
                 console.log(`Chat ${chatId} is ignored in org ${orgId}, skipping.`);
@@ -1535,9 +1532,8 @@ export const webhook = onRequest(
               });
             }
 
-            // Schedule (or reschedule) the buffer task
-            const processUrl = getProcessBufferUrl();
-            const { taskName, scheduledTime } = await scheduleBufferTask(canonicalChatId, processUrl, state.pendingTaskName, orgId || undefined);
+            const processUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`;
+            const { taskName, scheduledTime } = await scheduleBufferTask(canonicalChatId, processUrl, state.pendingTaskName, orgId);
 
             // Update conversation with task info
             await updateBufferTask(canonicalChatId, taskName, scheduledTime);
@@ -1629,7 +1625,7 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
       // This avoids missing the message if any non-critical write fails.
       try {
         await scheduleImmediateHttpTask({
-          url: getSendCallHandoffUrl(),
+          url: `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/sendCallHandoffMessage`,
           payload: {
             phone: fromPhone,
             chatId,
@@ -1702,7 +1698,7 @@ export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION }, 
 /**
  * Process buffered messages - called by Cloud Tasks after buffer delay expires
  */
-export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
   try {
     // Only accept POST from Cloud Tasks
     if (req.method !== "POST") {
@@ -1728,8 +1724,20 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
       return;
     }
 
-    await requestContext.run({ orgId: orgId || "" }, async () => {
-      console.log(`Processing buffered messages for chatId: ${chatId} (Org: ${orgId})`);
+    const resolvedOrgId = orgId || await findOrgIdByChatId(chatId);
+    if (!resolvedOrgId) {
+      console.error(`Could not resolve orgId in processBuffer for chatId ${chatId}`);
+      await sendAlert(
+        "ProcessBuffer missing org",
+        "No se pudo resolver orgId al procesar el buffer. Se omite el procesamiento para evitar datos cruzados.",
+        { chatId, incomingOrgId: orgId || null }
+      );
+      res.status(200).json({ processed: false, reason: "org_not_resolved", chatId });
+      return;
+    }
+
+    await requestContext.run({ orgId: resolvedOrgId }, async () => {
+      console.log(`Processing buffered messages for chatId: ${chatId} (Org: ${resolvedOrgId})`);
 
       // Get pending messages and clear them atomically
       const pendingMessages = await getPendingMessagesAndClear(chatId);
@@ -1745,7 +1753,7 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
       // Get conversation state
       const state = await ensureConversationState(chatId);
       if (!state) {
-        console.error(`Could not get conversation state for ${chatId} in org ${orgId}`);
+        console.error(`Could not get conversation state for ${chatId} in org ${resolvedOrgId}`);
         res.status(404).json({ error: "Conversation not found" });
         return;
       }
@@ -2081,7 +2089,7 @@ async function runIdealistaConfirmPipeline(params: {
   return { ok: true, chatId, initialHistory, featuresText };
 }
 
-export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -2407,6 +2415,54 @@ export const retryMissingLeads = onRequest({ cors: true, region: REGION, secrets
 });
 
 /**
+ * Sync missed messages from Twilio history (last 48h)
+ * Use dryRun=true to just see the orphans without injecting them.
+ */
+export const syncMissedMessages = onRequest({ 
+  cors: true, region: REGION, secrets: [TWILIO_AUTH_TOKEN, ADMIN_TEMPLATE_TOKEN] 
+}, async (req, res) => {
+  const token = typeof req.query.token === "string" ? req.query.token : "";
+  if (!token || token !== ADMIN_TEMPLATE_TOKEN.value()) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  try {
+    const { getOrphanedMessages, reprocessOrphans } = await import("./services/recoveryService");
+    const dryRun = req.query.dryRun !== "false"; // Default to true
+    const hours = parseInt(req.query.hours as string) || 48;
+
+    const orphans = await getOrphanedMessages(hours);
+
+    if (dryRun) {
+      res.status(200).json({
+        message: `Found ${orphans.length} orphaned messages in the last ${hours} hours.`,
+        dryRun: true,
+        orphans
+      });
+      return;
+    }
+
+    const { processed, errors } = await reprocessOrphans(orphans);
+    res.status(200).json({
+      message: `Recovery complete.`,
+      found: orphans.length,
+      processed,
+      errors
+    });
+
+  } catch (error) {
+    console.error("Error in syncMissedMessages:", error);
+    const details = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ 
+      error: "Internal Error", 
+      details,
+      status: 9
+    });
+  }
+});
+
+/**
  * One-shot helper to create Twilio Content templates used by this bot.
  * You will still need to submit them for WhatsApp approval in Twilio manually.
  *
@@ -2535,6 +2591,7 @@ export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPEN
     res.status(500).json({ error: String(error) });
   }
 });
+
 
 export const healthz = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN] }, async (_req, res) => {
   const whapiStatus = await checkWhapiHealth();
@@ -2674,7 +2731,7 @@ export const checkFollowUps = onSchedule({
   }
 });
 
-export const testAlert = onRequest({ cors: true, region: REGION }, async (_req, res) => {
+export const testAlert = onRequest({ cors: true, region: REGION, secrets: [SENDGRID_API_KEY] }, async (_req, res) => {
   try {
     console.log("Iniciando prueba manual de alerta...");
     await sendAlert(
@@ -3575,7 +3632,7 @@ export const updateSubscriptionPlan = onRequest(
 export const stripeWebhook = onRequest({
   cors: false,
   region: REGION,
-  secrets: ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PLUS_PRICE_ID", "STRIPE_PRO_PRICE_ID", "STRIPE_PRO_PLUS_PRICE_ID"],
+  secrets: ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PLUS_PRICE_ID", "STRIPE_PRO_PRICE_ID", "STRIPE_PRO_PLUS_PRICE_ID", SENDGRID_API_KEY],
 }, async (req, res) => {
   try {
     if (req.method !== "POST") {
@@ -3674,6 +3731,12 @@ export const stripeWebhook = onRequest({
             ? statusRaw
             : "active";
         const currentPeriodEnd = (sub as any).current_period_end ?? (sub as any).items?.data?.[0]?.current_period_end;
+
+        if (!orgId) {
+          console.error("[stripeWebhook] Missing orgId in metadata for subscription update");
+          res.status(400).json({ error: "Missing orgId metadata" });
+          return;
+        }
 
         await setOrgSubscription(orgId, {
           planId,
@@ -4317,7 +4380,8 @@ export const onLeadWritten = onDocumentWritten({
   region: REGION,
   secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN],
 }, async (event) => {
-  const before = event.data?.before.data();
+  return requestContext.run({ orgId: event.params.orgId }, async () => {
+    const before = event.data?.before.data();
   const after = event.data?.after.data();
 
   let action: AuditAction = "update";
@@ -4383,12 +4447,13 @@ export const onLeadWritten = onDocumentWritten({
     }
   }
 
-  const notificationNumberRaw = NOTIFICATION_NUMBER.value();
+  const config = await getBotConfig();
+  const notificationNumberRaw = config.notificationNumbers || NOTIFICATION_NUMBER.value();
   const agentNums = notificationNumberRaw
-    ? notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean)
+    ? notificationNumberRaw.split(",").map((n: string) => n.trim()).filter(Boolean)
     : [];
   if (agentNums.length === 0) {
-    console.warn("No NOTIFICATION_NUMBER configured; qualified lead summary not sent", event.params.leadId);
+    console.warn("No notification numbers configured; qualified lead summary not sent", event.params.leadId);
     return;
   }
 
@@ -4415,6 +4480,7 @@ export const onLeadWritten = onDocumentWritten({
       console.error(`Error sending notification to ${num}`, error);
     }
   }
+  });
 });
 
 export const onConversationWritten = onDocumentWritten({
@@ -4422,36 +4488,38 @@ export const onConversationWritten = onDocumentWritten({
   database: DATABASE_ID,
   region: REGION,
 }, async (event) => {
-  const before = event.data?.before.data();
-  const after = event.data?.after.data();
+  return requestContext.run({ orgId: event.params.orgId }, async () => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
 
-  let action: AuditAction = "update";
-  if (!before) action = "create";
-  else if (!after) action = "delete";
+    let action: AuditAction = "update";
+    if (!before) action = "create";
+    else if (!after) action = "delete";
 
-  // For conversations, we only care about specific changes like botDisabled or qualification
-  const changes = extractDocChanges(before, after);
+    // For conversations, we only care about specific changes like botDisabled or qualification
+    const changes = extractDocChanges(before, after);
 
-  // Filter changes to only record significant ones to avoid bloat
-  const significantFields = ["botDisabled", "qualificationStatus", "isFinished", "name", "tags"];
-  const significantChanges = changes.filter(c => significantFields.includes(c.field));
+    // Filter changes to only record significant ones to avoid bloat
+    const significantFields = ["botDisabled", "qualificationStatus", "isFinished", "name", "tags"];
+    const significantChanges = changes.filter(c => significantFields.includes(c.field));
 
-  if (significantChanges.length === 0 && action === "update") return;
+    if (significantChanges.length === 0 && action === "update") return;
 
-  // Determine specific action if it's a toggle
-  let finalAction: AuditAction = action;
-  if (action === "update") {
-    if (significantChanges.find(c => c.field === "botDisabled")) finalAction = "bot_toggle";
-    else if (significantChanges.find(c => c.field === "qualificationStatus")) finalAction = "qualification_change";
-  }
+    // Determine specific action if it's a toggle
+    let finalAction: AuditAction = action;
+    if (action === "update") {
+      if (significantChanges.find(c => c.field === "botDisabled")) finalAction = "bot_toggle";
+      else if (significantChanges.find(c => c.field === "qualificationStatus")) finalAction = "qualification_change";
+    }
 
-  await recordConversationChange(
-    event.params.chatId,
-    finalAction,
-    significantChanges,
-    after?.updatedBy,
-    after?.userName
-  );
+    await recordConversationChange(
+      event.params.chatId,
+      finalAction,
+      significantChanges,
+      after?.updatedBy,
+      after?.userName
+    );
+  });
 });
 
 
@@ -4460,23 +4528,25 @@ export const onListingWritten = onDocumentWritten({
   database: DATABASE_ID,
   region: REGION,
 }, async (event) => {
-  const before = event.data?.before.data();
-  const after = event.data?.after.data();
+  return requestContext.run({ orgId: event.params.orgId }, async () => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
 
-  let action: AuditAction = "update";
-  if (!before) action = "create";
-  else if (!after) action = "delete";
+    let action: AuditAction = "update";
+    if (!before) action = "create";
+    else if (!after) action = "delete";
 
-  const changes = extractDocChanges(before, after);
-  if (changes.length === 0 && action === "update") return;
+    const changes = extractDocChanges(before, after);
+    if (changes.length === 0 && action === "update") return;
 
-  await recordListingChange(
-    event.params.listingId,
-    action,
-    changes,
-    after?.updatedBy,
-    after?.userName
-  );
+    await recordListingChange(
+      event.params.listingId,
+      action,
+      changes,
+      after?.updatedBy,
+      after?.userName
+    );
+  });
 });
 
 export const onConfigWritten = onDocumentWritten({
@@ -4484,23 +4554,28 @@ export const onConfigWritten = onDocumentWritten({
   database: DATABASE_ID,
   region: REGION,
 }, async (event) => {
-  const before = event.data?.before.data();
-  const after = event.data?.after.data();
+  return requestContext.run({ orgId: event.params.orgId }, async () => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
 
-  const changes = extractDocChanges(before, after);
-  if (changes.length === 0) return;
+    const changes = extractDocChanges(before, after);
+    if (changes.length === 0) return;
 
-  await recordSystemAction(
-    "system_config",
-    event.params.configId,
-    "update",
-    { changes }
-  );
+    await recordSystemAction(
+      "system_config",
+      event.params.configId,
+      "update",
+      { changes }
+    );
+  });
 });
 
 export const testEmailTemplates = onRequest({ cors: true, region: REGION }, async (req, res) => {
-  const { type, email, name, orgName, balance, amount, inviterName, token } = req.body;
-  
+  const type = typeof req.body?.type === "string" ? req.body.type : "";
+  const testEmail = typeof req.body?.email === "string" && req.body.email.trim()
+    ? req.body.email.trim()
+    : "eddyperez1221@gmail.com";
+
   try {
     if (type === "welcome") {
       await sendWelcomeNotification(testEmail, "User Test", "Proplead Org Test");

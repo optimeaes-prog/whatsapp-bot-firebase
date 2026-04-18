@@ -10,8 +10,8 @@ Esta Política de Privacidad describe cómo **Talmate Limited** (“**Talmate**�
 ## 1. Quiénes somos
 **Talmate Limited** (Companies House nº **16733027**)  
 Domicilio social: **191 King's Cross Road, Flat 2, London, WC1X 9DB, United Kingdom**  
-Contacto privacidad: **[PRIVACY_EMAIL]**  
-Sitio web: **[WEBSITE_DOMAIN]**
+Contacto privacidad: **e.perezreyes@proplead.io**  
+Sitio web: **www.proplead.io**
 
 ## 2. Qué cubre esta política
 Esta política aplica a:
@@ -85,6 +85,5 @@ Conservamos datos solo durante el tiempo necesario para las finalidades descrita
 Aplicamos medidas técnicas y organizativas razonables para proteger datos personales.
 
 ## 11. Tus derechos
-Para ejercer derechos respecto a datos en los que Talmate es Responsable, escríbenos a **[PRIVACY_EMAIL]**.  
+Para ejercer derechos respecto a datos en los que Talmate es Responsable, escríbenos a **e.perezreyes@proplead.io**.  
 Para datos de leads/conversaciones gestionados por un cliente, debes contactar con ese cliente.
-

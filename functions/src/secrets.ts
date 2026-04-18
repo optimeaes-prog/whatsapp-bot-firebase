@@ -13,3 +13,4 @@ export const CALENDLY_PAT = defineSecret("CALENDLY_PAT");
 
 export const ADMIN_TEMPLATE_TOKEN = defineSecret("ADMIN_TEMPLATE_TOKEN");
 export const STRIPE_PRICE_TOPUP_40_CONVS = defineSecret("STRIPE_PRICE_TOPUP_40_CONVS");
+export const SENDGRID_API_KEY = defineSecret("SENDGRID_API_KEY");

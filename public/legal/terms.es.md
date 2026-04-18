@@ -115,7 +115,7 @@ El Cliente indemnizará a Talmate frente a reclamaciones de terceros derivadas d
 Salvo que la normativa aplicable imponga lo contrario, estos Términos se rigen por la **ley de Inglaterra y Gales**, y las partes se someten a los tribunales competentes de **Inglaterra y Gales**.
 
 ## 17. Contacto
-**Email legal / privacidad:** soporte@proplead.io  
-**Sitio web:** www.proplead.io/contacto
+**Email legal / privacidad:** e.perezreyes@proplead.io  
+**Sitio web:** www.proplead.io
 
 

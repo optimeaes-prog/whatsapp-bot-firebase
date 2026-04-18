@@ -285,8 +285,40 @@ export async function findLeadByChatId(chatId: string): Promise<{
 export async function findOrgIdByChatId(chatId: string): Promise<string | null> {
   const variants = getChatIdVariants(chatId);
   const phone = chatId.replace(/@(c\.us|s\.whatsapp\.net)$/, "").replace(/^whatsapp:/, "").replace(/^\+/, "");
-  
-  // Fetch matching leads from all organizations
+
+  // First try active conversations: this is the strongest signal for inbound routing.
+  // If the same phone exists in multiple orgs, the org with an open conversation should win.
+  const activeConversationSnapshot = await getDb()
+    .collectionGroup("conversations")
+    .where("chatId", "in", variants)
+    .get();
+
+  if (!activeConversationSnapshot.empty) {
+    const bestConversation = activeConversationSnapshot.docs
+      .map((doc) => {
+        const data = doc.data();
+        const isFinished = data?.isFinished === true;
+        const lastMessage =
+          data?.lastMessage && typeof data.lastMessage.toMillis === "function"
+            ? data.lastMessage.toMillis()
+            : 0;
+        return {
+          orgId: doc.ref.path.split("/")[1],
+          isFinished,
+          lastMessage,
+        };
+      })
+      .sort((a, b) => {
+        // Prefer open conversations; then newest activity.
+        if (a.isFinished !== b.isFinished) return a.isFinished ? 1 : -1;
+        return b.lastMessage - a.lastMessage;
+      })[0];
+
+    console.log(`Resolved orgId ${bestConversation.orgId} for chatId ${chatId} via active conversation routing`);
+    return bestConversation.orgId;
+  }
+
+  // Fallback: Fetch matching leads from all organizations
   const [variantsSnapshot, phoneSnapshot] = await Promise.all([
     getDb().collectionGroup("leads").where("chatId", "in", variants).get(),
     getDb().collectionGroup("leads").where("phone", "==", phone).get(),
@@ -467,7 +499,8 @@ export async function upsertCallIntent(params: {
   capturedName?: string;
   createdAtMs?: number;
 }): Promise<void> {
-  const docRef = getOrgDb().collection("callIntents").doc(params.callSid);
+  // Moved to organizations/{orgId}/calls to align with multi-tenant structure
+  const docRef = getOrgDb().collection("calls").doc(params.callSid);
   await docRef.set(
     {
       callSid: params.callSid,
@@ -1083,7 +1116,8 @@ export async function getFailedMessageCount(): Promise<number> {
  * Log sync result to Firestore for monitoring
  */
 export async function logSyncResult(result: SyncResult): Promise<void> {
-  await getOrgDb().collection("syncMetrics").add({
+  // syncMetrics stays at root as per user request
+  await getDb().collection("syncMetrics").add({
     ...result,
     timestamp: admin.firestore.FieldValue.serverTimestamp(),
   });
@@ -1163,7 +1197,7 @@ export async function getResponseRateStats(since: Date): Promise<{
 export async function getStaleBuffers(maxAgeMinutes: number): Promise<ConversationState[]> {
   const cutoffMs = Date.now() - (maxAgeMinutes * 60 * 1000);
 
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("conversations")
     .where("bufferExpiresAt", "<", cutoffMs)
     .get();
@@ -1182,7 +1216,7 @@ export async function getStaleBuffers(maxAgeMinutes: number): Promise<Conversati
  * Get all active (non-finished) conversations
  */
 export async function getActiveConversations(): Promise<ConversationState[]> {
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("conversations")
     .where("isFinished", "==", false)
     .get();
@@ -1198,7 +1232,7 @@ export async function getActiveConversations(): Promise<ConversationState[]> {
  * Get conversations updated since a given date
  */
 export async function getConversationsSince(since: Date): Promise<ConversationState[]> {
-  const snapshot = await getDb()
+  const snapshot = await getOrgDb()
     .collection("conversations")
     .where("lastMessage", ">=", since)
     .get();
