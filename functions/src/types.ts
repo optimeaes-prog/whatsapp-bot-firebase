@@ -55,6 +55,8 @@ export type ConversationState = {
   recordings?: string[];
   /** Detailed error information if the pipeline failed */
   errorDetails?: string;
+  /** Set after org credit ledger charges for the first outbound (Idealista / new lead pipeline). */
+  initialOutboundCreditsDeducted?: boolean;
   /** Firestore server timestamp of last update */
   lastMessage?: FirebaseFirestore.Timestamp;
 };

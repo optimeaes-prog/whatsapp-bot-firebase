@@ -2,6 +2,7 @@ import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { getActiveOrgId } from "./requestContext";
 import { UserConversations, ConversationTransaction } from "../types";
+import { normalizeToCanonicalChatId } from "../utils";
 import { createConfirmedOffSessionTopUp, packageIdForConversationAmount } from "./stripeService";
 import { sendLowBalanceNotification } from "./emailService";
 
@@ -146,6 +147,76 @@ export async function getTransactionHistory(
 }
 
 // ==================== ORGANIZATION-LEVEL CREDITS ====================
+
+/** Credits charged once per conversation when the first outbound (Idealista confirm / new-lead template) is sent. */
+export const CREDITS_PER_INITIAL_OUTBOUND = 1;
+
+/**
+ * Idempotent: charges {@link CREDITS_PER_INITIAL_OUTBOUND} once per chatId on the org ledger,
+ * keyed by `initialOutboundCreditsDeducted` on the conversation document.
+ */
+export async function deductOrgConversationForInitialOutboundOnce(
+    orgId: string,
+    chatId: string,
+    description: string = "Initial outbound (new lead)"
+): Promise<"deducted" | "already_charged"> {
+    if (!orgId) {
+        throw new Error("deductOrgConversationForInitialOutboundOnce: orgId is required");
+    }
+    const canonicalChatId = normalizeToCanonicalChatId(chatId);
+    const db = getDb();
+    const orgRef = db.collection("organizations").doc(orgId);
+    const convRef = orgRef.collection("conversations").doc(canonicalChatId);
+    const amount = CREDITS_PER_INITIAL_OUTBOUND;
+
+    const outcome = await db.runTransaction(async (transaction) => {
+        const convSnap = await transaction.get(convRef);
+        if (convSnap.exists && convSnap.data()?.initialOutboundCreditsDeducted === true) {
+            return { kind: "already_charged" as const, newBalance: null as number | null };
+        }
+
+        const orgSnap = await transaction.get(orgRef);
+        const currentBalance = orgSnap.exists ? orgSnap.data()?.creditBalance || 0 : 0;
+        if (currentBalance < amount) {
+            throw new Error(`Créditos insuficientes. Necesarios: ${amount}, Disponibles: ${currentBalance}`);
+        }
+
+        const updatedBalance = currentBalance - amount;
+        transaction.update(orgRef, {
+            creditBalance: updatedBalance,
+            creditBalanceUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        transaction.set(convRef, { initialOutboundCreditsDeducted: true }, { merge: true });
+        return { kind: "deducted" as const, newBalance: updatedBalance };
+    });
+
+    if (outcome.kind === "already_charged") {
+        return "already_charged";
+    }
+
+    await orgRef.collection("creditTransactions").add({
+        type: "deduction",
+        amount: -amount,
+        description,
+        createdAt: admin.firestore.Timestamp.now(),
+    });
+
+    console.log(
+        `[billingService] Initial outbound deduction for org ${orgId} chat ${canonicalChatId}. New balance: ${outcome.newBalance}`
+    );
+
+    if (outcome.newBalance! < 20) {
+        void handleLowBalanceAlert(orgId, outcome.newBalance!).catch((e) =>
+            console.error("[billingService] handleLowBalanceAlert error:", e)
+        );
+    }
+
+    void runOrgAutoRechargeIfNeeded(orgId, outcome.newBalance!).catch((e) =>
+        console.error("[auto-recharge] runOrgAutoRechargeIfNeeded:", e)
+    );
+
+    return "deducted";
+}
 
 /**
  * Get organization conversation balance

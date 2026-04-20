@@ -61,6 +61,8 @@ import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, S
 import {
   addOrgConversations,
   addOrgConversationsForPaymentIntentOnce,
+  CREDITS_PER_INITIAL_OUTBOUND,
+  deductOrgConversationForInitialOutboundOnce,
   getOrgAutoRechargeSettingsForApi,
   getOrgConversationBalance,
   getOrgStripeCustomerId,
@@ -1787,7 +1789,7 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
 
 /**
  * Shared WhatsApp onboarding after a listing is resolved (Idealista webhook / newLead).
- * Same Twilio template / Whapi flow as legacy newLead. No credit deduction (disabled until re-enabled).
+ * Same Twilio template / Whapi flow as legacy newLead. Charges org credits once initial outbound succeeds.
  */
 export async function runNewLeadMessagingPipeline(params: {
   phone: string;
@@ -1797,6 +1799,14 @@ export async function runNewLeadMessagingPipeline(params: {
 }): Promise<
   | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
   | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
+  | {
+      ok: false;
+      kind: "insufficient_credits";
+      chatId: string;
+      details: string;
+      initialHistory: HistoryItem[];
+      featuresText: string;
+    }
 > {
   const { phone, listingCode, listingData, leadTags } = params;
 
@@ -1809,6 +1819,29 @@ export async function runNewLeadMessagingPipeline(params: {
   let chatId: string = normalizeToCanonicalChatId(phone);
   const listingAddress =
     [listingData.street, listingData.address].filter(Boolean).join(", ").trim() || listingData.address;
+
+  const orgIdForCredits = getActiveOrgId();
+  if (!orgIdForCredits) {
+    return {
+      ok: false,
+      kind: "send_failed",
+      chatId,
+      details: "Missing organization context for billing",
+      initialHistory: [],
+      featuresText,
+    };
+  }
+  const balance = await getOrgConversationBalance(orgIdForCredits);
+  if (balance < CREDITS_PER_INITIAL_OUTBOUND) {
+    return {
+      ok: false,
+      kind: "insufficient_credits",
+      chatId,
+      details: `Créditos insuficientes (${balance} disponibles, se requiere ${CREDITS_PER_INITIAL_OUTBOUND}).`,
+      initialHistory: [],
+      featuresText,
+    };
+  }
 
   try {
     await updateLeadChatInfo({
@@ -1932,6 +1965,21 @@ export async function runNewLeadMessagingPipeline(params: {
   conversationStates.set(chatId, { ...state, type: "lead" });
   await upsertConversation(chatId, { ...state, tags: leadTags, type: "lead" });
 
+  try {
+    await deductOrgConversationForInitialOutboundOnce(
+      orgIdForCredits,
+      chatId,
+      "New lead: initial outbound messages"
+    );
+  } catch (deductErr) {
+    console.error("[billing] deduct after new lead pipeline:", deductErr);
+    void sendAlert(
+      "Billing: deduction failed after initial send",
+      `org=${orgIdForCredits} chatId=${chatId}`,
+      { error: deductErr instanceof Error ? deductErr.message : String(deductErr) }
+    );
+  }
+
   return { ok: true, chatId, initialHistory, featuresText };
 }
 
@@ -1945,6 +1993,14 @@ async function runIdealistaConfirmPipeline(params: {
 }): Promise<
   | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
   | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
+  | {
+      ok: false;
+      kind: "insufficient_credits";
+      chatId: string;
+      details: string;
+      initialHistory: HistoryItem[];
+      featuresText: string;
+    }
 > {
   const { phone, listingCode, listingData, leadTags, leadName, language } = params;
   const initialLanguage = language || resolveInitialLanguage(phone);
@@ -1953,6 +2009,29 @@ async function runIdealistaConfirmPipeline(params: {
   let chatId: string = normalizeToCanonicalChatId(phone);
   const listingAddress =
     [listingData.street, listingData.address].filter(Boolean).join(", ").trim() || listingData.address;
+
+  const orgIdForCredits = getActiveOrgId();
+  if (!orgIdForCredits) {
+    return {
+      ok: false,
+      kind: "send_failed",
+      chatId,
+      details: "Missing organization context for billing",
+      initialHistory: [],
+      featuresText,
+    };
+  }
+  const creditBalance = await getOrgConversationBalance(orgIdForCredits);
+  if (creditBalance < CREDITS_PER_INITIAL_OUTBOUND) {
+    return {
+      ok: false,
+      kind: "insufficient_credits",
+      chatId,
+      details: `Créditos insuficientes (${creditBalance} disponibles, se requiere ${CREDITS_PER_INITIAL_OUTBOUND}).`,
+      initialHistory: [],
+      featuresText,
+    };
+  }
 
   try {
     await updateLeadChatInfo({
@@ -2086,6 +2165,21 @@ async function runIdealistaConfirmPipeline(params: {
   conversationStates.set(chatId, { ...state, type: "lead" });
   await upsertConversation(chatId, { ...state, type: "lead", idealistaDescription: listingData.idealistaDescription || "" });
 
+  try {
+    await deductOrgConversationForInitialOutboundOnce(
+      orgIdForCredits,
+      chatId,
+      "Idealista: initial confirmation message"
+    );
+  } catch (deductErr) {
+    console.error("[billing] deduct after Idealista initial send:", deductErr);
+    void sendAlert(
+      "Billing: deduction failed after Idealista initial send",
+      `org=${orgIdForCredits} chatId=${chatId}`,
+      { error: deductErr instanceof Error ? deductErr.message : String(deductErr) }
+    );
+  }
+
   return { ok: true, chatId, initialHistory, featuresText };
 }
 
@@ -2193,6 +2287,14 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
       });
 
       if (!pipeline.ok) {
+        if (pipeline.kind === "insufficient_credits") {
+          res.status(402).json({
+            error: "Créditos insuficientes",
+            details: pipeline.details,
+            chatId: pipeline.chatId,
+          });
+          return;
+        }
         res.status(502).json({
           error: "No se pudieron enviar los mensajes iniciales (pero el lead ha sido guardado)",
           details: pipeline.details,
