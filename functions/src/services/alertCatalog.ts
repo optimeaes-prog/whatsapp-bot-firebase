@@ -2,11 +2,14 @@ import type { AlertSeverity } from "../types";
 
 export type AlertCatalogKey =
   | "whapi_down"
+  | "cloud_api_down"
+  | "cloud_api_template_rejected"
   | "sync_task_error"
   | "sync_error"
   | "sync_failed"
   | "sync_discrepancies"
   | "twilio_maintenance"
+  | "provider_maintenance"
   | "failed_message_permanent"
   | "retry_task_error"
   | "webhook_error"
@@ -40,6 +43,20 @@ export const ALERT_CATALOG: AlertCatalogItem[] = [
     autoTest: { kind: "schedule", every: "cada 30 min" },
   },
   {
+    key: "cloud_api_down",
+    subject: "Cloud API Down",
+    description: "WhatsApp Cloud API no responde o el Access Token es inválido.",
+    defaultSeverity: "warning",
+    autoTest: { kind: "schedule", every: "cada 30 min" },
+  },
+  {
+    key: "cloud_api_template_rejected",
+    subject: "Plantilla Cloud API Rechazada",
+    description: "Meta rechazó una plantilla de Cloud API (revisar categoría o contenido).",
+    defaultSeverity: "warning",
+    autoTest: { kind: "event" },
+  },
+  {
     key: "sync_task_error",
     subject: "Sync Task Error",
     description: "Falló la tarea programada de sincronización.",
@@ -71,6 +88,13 @@ export const ALERT_CATALOG: AlertCatalogItem[] = [
     key: "twilio_maintenance",
     subject: "Mantenimiento de Twilio",
     description: "Mantenimiento cuando Twilio está activo (p. ej. buffers atascados).",
+    defaultSeverity: "warning",
+    autoTest: { kind: "schedule", every: "cada 30 min" },
+  },
+  {
+    key: "provider_maintenance",
+    subject: "Mantenimiento de Proveedor",
+    description: "Mantenimiento cuando un proveedor sin listing de chats está activo (Twilio/Cloud API) — p. ej. buffers atascados.",
     defaultSeverity: "warning",
     autoTest: { kind: "schedule", every: "cada 30 min" },
   },

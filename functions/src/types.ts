@@ -55,8 +55,6 @@ export type ConversationState = {
   recordings?: string[];
   /** Detailed error information if the pipeline failed */
   errorDetails?: string;
-  /** Set after org credit ledger charges for the first outbound (Idealista / new lead pipeline). */
-  initialOutboundCreditsDeducted?: boolean;
   /** Firestore server timestamp of last update */
   lastMessage?: FirebaseFirestore.Timestamp;
 };
@@ -91,6 +89,19 @@ export type LeadRow = {
   paymentMethod?: "Contado" | "Hipoteca";
   notes?: string;
   lastAnalyzedAt?: FirebaseFirestore.Timestamp;
+  /**
+   * Prior-opt-in evidence. WhatsApp Business Messaging Policy requires explicit consent
+   * before any business-initiated (template) message. Server enforces this in
+   * sendInitialTemplateMessage; the UI captures it at lead creation. Auto-populated
+   * with source "inbound_whatsapp" when the lead first writes to us.
+   */
+  consent?: {
+    capturedAt: FirebaseFirestore.Timestamp;
+    source: "idealista_form" | "agency_website" | "phone_call" | "in_person" | "inbound_whatsapp";
+    collectedBy?: string;
+    language?: "es" | "en";
+    proofUrl?: string;
+  };
 };
 
 export type ListingRow = {
@@ -145,12 +156,35 @@ export type BotStyle = {
   promptModifier: string;
 };
 
+export type CloudApiTemplateNames = {
+  agentNotificationEs?: string;
+  agentNotificationEn?: string;
+  idealistaConfirmEs?: string;
+  idealistaConfirmEn?: string;
+  idealistaInitialEs?: string;
+  idealistaInitialEn?: string;
+};
+
+export type CloudApiConfig = {
+  /** Name of the secret in GCP Secret Manager holding the Access Token (value not stored in Firestore). */
+  accessTokenSecretName: string;
+  phoneNumberId: string;
+  wabaId: string;
+  /** Graph API version, e.g. "v23.0" (defaults to v23.0 if omitted). */
+  graphApiVersion?: string;
+  /** Token used for Meta webhook handshake (hub.verify_token). */
+  verifyToken: string;
+  /** Template names created programmatically, keyed by purpose+language. */
+  templates?: CloudApiTemplateNames;
+};
+
 export type BotConfig = {
   activeStyleId: string;
   styles: BotStyle[];
   messagingProvider?: string;
   orgName?: string;
   notificationNumbers?: string;
+  cloudApiConfig?: CloudApiConfig;
 };
 
 export type InboundMessage = {

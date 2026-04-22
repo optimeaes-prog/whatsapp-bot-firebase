@@ -1,4 +1,8 @@
 import * as admin from "firebase-admin";
+import axios from "axios";
+import crypto from "crypto";
+import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import { sendEmailToUser } from "./services/emailService";
 import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
@@ -34,9 +38,10 @@ import {
   getAllLeadsWithChatId,
   updateLeadAnalysis,
   upsertCallIntent,
+  updateCloudApiTemplates,
 } from "./services/firestore";
+import { sendIdealistaOptInSms } from "./services/smsOptIn";
 import { checkWhapiHealth } from "./services/whapiClient";
-import { sendText as whapiSendText } from "./services/whapiClient";
 import {
   sendTextMessage,
   sendInitialTemplateMessage,
@@ -44,6 +49,15 @@ import {
   getActiveProvider as getActiveProviderFn,
 } from "./services/messagingProvider";
 import { createContentTemplate } from "./services/twilioClient";
+import {
+  checkCloudApiHealth,
+  createMessageTemplate as createCloudApiMessageTemplate,
+  getCloudApiConfigForOrg,
+  getCloudApiCredentials,
+  parseCloudApiWebhook,
+  invalidateCloudApiCredentialsCache,
+  type CreateTemplateComponent,
+} from "./services/cloudApiClient";
 import {
   classifyConfirmDeny,
   resolveListingWithAgent,
@@ -53,16 +67,25 @@ import {
   translateTextToBritishEnglish,
   checkLeadPassesFilters,
 } from "./services/openaiClient";
-import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS, REGION } from "./shared";
+import { scheduleBufferTask, BUFFER_DELAY_SECONDS, REGION } from "./shared";
 import { sendAlert, sendHealthReport } from "./services/alertService";
+import { isOptOutMessage, applyOptOut } from "./services/optOut";
 import { ALERT_CATALOG } from "./services/alertCatalog";
 import { syncConversationsWithWhapi, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
-import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY } from "./secrets";
+import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY, META_APP_ID, META_APP_SECRET, META_FB_LOGIN_CONFIG_ID, META_VERIFY_TOKEN } from "./secrets";
+import {
+  exchangeCodeForToken,
+  registerPhoneNumber,
+  subscribeAppToWaba,
+  storeAccessTokenInSecretManager,
+  persistCloudApiConfigForOrg,
+  generateRegistrationPin,
+  generateVerifyToken,
+  fetchDisplayPhoneNumber,
+} from "./services/embeddedSignup";
 import {
   addOrgConversations,
   addOrgConversationsForPaymentIntentOnce,
-  CREDITS_PER_INITIAL_OUTBOUND,
-  deductOrgConversationForInitialOutboundOnce,
   getOrgAutoRechargeSettingsForApi,
   getOrgConversationBalance,
   getOrgStripeCustomerId,
@@ -124,18 +147,21 @@ if (admin.apps.length === 0) {
 // Config params
 const NOTIFICATION_NUMBER = defineString("NOTIFICATION_NUMBER");
 const VOICE_AUDIO_1_URL = defineString("VOICE_AUDIO_1_URL");
-const VOICE_AUDIO_2_URL = defineString("VOICE_AUDIO_2_URL");
-const TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES = defineString("TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES");
-const TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN = defineString("TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN");
+// A6c — idealista confirm template removed; cold Idealista leads now receive an
+// SMS opt-in link (Meta Business Messaging Policy requires prior consent before
+// sending a marketing template).
 const TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION = defineString("TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION");
+const TWILIO_TEMPLATE_SID_CALL_INITIAL_ES = defineString("TWILIO_TEMPLATE_SID_CALL_INITIAL_ES");
+// A6d — template sent only after DTMF 1 consent on voiceWebhook.
+// No body variables. Create in Twilio Content API and paste the resulting ContentSid here.
+const TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT = defineString("TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT");
+// Public URL for the second voice prompt (DTMF 1 opt-in). Served from Firebase Hosting.
+const VOICE_AUDIO_2_OPTIN_URL = defineString("VOICE_AUDIO_2_OPTIN_URL");
 
 const LEAD_QUALIFIED_MARKER = "[LEAD_CUALIFICADO]";
 const LEAD_NOT_INTERESTED_MARKER = "[LEAD_NO_INTERESADO]";
 
 const CALL_PENDING_LISTING_CODE = "__pending__";
-// Keep this aligned with audio durations so WhatsApp is sent right after hangup.
-// Current v10 durations: part1 ~6.9s + pause 3s + part2 ~13.9s => ~24s total.
-const CALL_HANDOFF_DELAY_SECONDS = 24;
 
 const SUBSCRIPTION_BASE_PRICES: Record<string, number> = {
   free: 0,
@@ -1575,14 +1601,339 @@ export const webhook = onRequest(
 export const twilioWebhook = webhook;
 
 /**
- * Twilio Voice webhook for call→WhatsApp handoff.
+ * Dedicated webhook for WhatsApp Cloud API (Meta).
+ *
+ * URL shape (configured in Meta Business Manager per organization):
+ *   https://{region}-{project}.cloudfunctions.net/cloudApiWebhook?orgId={orgId}
+ *
+ * The `orgId` query parameter is the primary routing mechanism — each WABA is associated 1:1 to an org,
+ * so the URL configured in Meta encodes the tenant. We do NOT look up orgs by phone_number_id.
+ *
+ * GET (verification handshake):
+ *   Meta sends ?hub.mode=subscribe&hub.verify_token=X&hub.challenge=Y. We compare X against the verifyToken
+ *   stored in the org's cloudApiConfig, and if it matches, reply with the value of Y as text/plain.
+ *
+ * POST (inbound messages / statuses):
+ *   Body is the Meta webhook JSON. We parse `entry[].changes[].value.messages[]` (text only for now)
+ *   and buffer them for processing via the shared pipeline.
+ */
+export const cloudApiWebhook = onRequest(
+  { cors: true, region: REGION, secrets: [META_APP_SECRET] },
+  async (req, res) => {
+    try {
+      const orgId = typeof req.query.orgId === "string" ? req.query.orgId : "";
+      if (!orgId) {
+        console.warn("cloudApiWebhook received request without orgId query param");
+        res.status(400).send("Missing orgId query parameter");
+        return;
+      }
+
+      // ---- GET: webhook verification handshake ----
+      if (req.method === "GET") {
+        const mode = typeof req.query["hub.mode"] === "string" ? req.query["hub.mode"] : "";
+        const verifyToken =
+          typeof req.query["hub.verify_token"] === "string" ? req.query["hub.verify_token"] : "";
+        const challenge =
+          typeof req.query["hub.challenge"] === "string" ? req.query["hub.challenge"] : "";
+
+        if (mode !== "subscribe") {
+          res.status(400).send("Invalid hub.mode");
+          return;
+        }
+
+        try {
+          const cfg = await getCloudApiConfigForOrg(orgId);
+          if (!cfg.verifyToken || cfg.verifyToken !== verifyToken) {
+            console.warn(`cloudApiWebhook verify token mismatch for org ${orgId}`);
+            res.status(403).send("Forbidden");
+            return;
+          }
+        } catch (error) {
+          console.error(`cloudApiWebhook verification: failed to load config for org ${orgId}`, error);
+          res.status(404).send("Org not configured");
+          return;
+        }
+
+        // Meta expects the challenge value echoed back as plain text.
+        res.set("Content-Type", "text/plain");
+        res.status(200).send(challenge);
+        return;
+      }
+
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+
+      // ---- Verify X-Hub-Signature-256 against META_APP_SECRET ----
+      // Meta signs the raw request body with the app secret (HMAC-SHA256). Reject anything else.
+      const signatureHeader = req.header("x-hub-signature-256") || "";
+      const rawBody: Buffer | undefined = (req as unknown as { rawBody?: Buffer }).rawBody;
+      if (!rawBody || !signatureHeader.startsWith("sha256=")) {
+        console.warn(`cloudApiWebhook missing rawBody or signature for org ${orgId}`);
+        res.status(401).send("Unauthorized");
+        return;
+      }
+      const expected =
+        "sha256=" +
+        crypto.createHmac("sha256", META_APP_SECRET.value()).update(rawBody).digest("hex");
+      const sigBuf = Buffer.from(signatureHeader);
+      const expBuf = Buffer.from(expected);
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        console.warn(`cloudApiWebhook signature mismatch for org ${orgId}`);
+        res.status(401).send("Unauthorized");
+        return;
+      }
+
+      // ---- POST: parse messages and buffer them ----
+      console.log("cloudApiWebhook POST received for org", orgId, JSON.stringify(req.body, null, 2));
+
+      const inboundMessages = parseCloudApiWebhook(
+        req.body,
+        normalizeToCanonicalChatId,
+        ensureTimestampMillis
+      );
+
+      if (inboundMessages.length === 0) {
+        // Meta also posts status updates (delivered/read/etc) — just ack.
+        res.status(200).json({ received: true, buffered: false });
+        return;
+      }
+
+      // Group messages by chatId so multi-message bursts from the same user share a buffer task
+      const messagesByChatId = new Map<string, InboundMessage[]>();
+      for (const msg of inboundMessages) {
+        const existing = messagesByChatId.get(msg.chatId) || [];
+        existing.push({ chatId: msg.chatId, phone: msg.phone, text: msg.text, timestamp: msg.timestamp });
+        messagesByChatId.set(msg.chatId, existing);
+      }
+
+      await requestContext.run({ orgId }, async () => {
+        await Promise.all(
+          Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
+            try {
+              if (await isChatIgnored(chatId)) {
+                console.log(`Chat ${chatId} is ignored in org ${orgId}, skipping.`);
+                return;
+              }
+
+              // A6b — STOP/BAJA opt-out: honor consumer-initiated opt-out before buffering.
+              if (messages.some((m) => isOptOutMessage(m.text))) {
+                await applyOptOut({ orgId, chatId, phone: messages[0].phone });
+                console.log(`Chat ${chatId} opted out in org ${orgId}.`);
+                return;
+              }
+
+              const state = await ensureConversationState(chatId, messages[0].phone);
+              if (!state) {
+                console.warn("Could not reconstruct conversation state", chatId, "in org", orgId);
+                await sendAlert(
+                  "Estado no encontrado",
+                  `No se pudo reconstruir el estado para el chat: ${chatId}.`,
+                  { chatId, phone: messages[0].phone, orgId }
+                );
+                return;
+              }
+
+              if (state.isFinished) {
+                console.log("Conversation already finished, skipping buffer", chatId);
+                return;
+              }
+
+              const canonicalChatId = state.chatId;
+
+              for (const msg of messages) {
+                await addPendingMessage(canonicalChatId, {
+                  text: msg.text,
+                  timestamp: msg.timestamp,
+                });
+              }
+
+              const processUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`;
+              const { taskName, scheduledTime } = await scheduleBufferTask(
+                canonicalChatId,
+                processUrl,
+                state.pendingTaskName,
+                orgId
+              );
+
+              await updateBufferTask(canonicalChatId, taskName, scheduledTime);
+
+              console.log(
+                `[cloud_api] Buffered ${messages.length} message(s) for ${canonicalChatId} (via ${chatId}), ` +
+                  `will process at ${new Date(scheduledTime).toISOString()} (Org: ${orgId})`
+              );
+            } catch (error) {
+              console.error("Error buffering Cloud API messages for", chatId, error);
+              await sendAlert("Webhook Error", `Error al bufferear mensajes Cloud API para ${chatId}`, {
+                error: error instanceof Error ? error.message : String(error),
+                chatId,
+                orgId,
+              });
+            }
+          })
+        );
+      });
+
+      res.status(200).json({
+        received: true,
+        buffered: true,
+        count: inboundMessages.length,
+        bufferDelaySeconds: BUFFER_DELAY_SECONDS,
+      });
+    } catch (error) {
+      console.error("cloudApiWebhook fatal error:", error);
+      await sendAlert("Fatal Webhook Error", "Error crítico en el webhook de Cloud API", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+/**
+ * App-wide WhatsApp Cloud API webhook.
+ *
+ * Single URL Meta subscribes at the app level (not per-org). No query params.
+ * Resolves org by looking up `entry[].id` (= wabaId) in the `wabaIndex` collection,
+ * which is populated during Embedded Signup (see persistCloudApiConfigForOrg).
+ *
+ * GET: verification handshake against the global META_VERIFY_TOKEN secret.
+ * POST: verify X-Hub-Signature-256 (HMAC-SHA256 over rawBody with META_APP_SECRET),
+ *       then fan out each entry to its owning org and buffer messages.
+ */
+export const whatsappWebhook = onRequest(
+  { cors: true, region: REGION, secrets: [META_APP_SECRET, META_VERIFY_TOKEN] },
+  async (req, res) => {
+    try {
+      if (req.method === "GET") {
+        const mode = typeof req.query["hub.mode"] === "string" ? req.query["hub.mode"] : "";
+        const verifyToken =
+          typeof req.query["hub.verify_token"] === "string" ? req.query["hub.verify_token"] : "";
+        const challenge =
+          typeof req.query["hub.challenge"] === "string" ? req.query["hub.challenge"] : "";
+        if (mode !== "subscribe" || verifyToken !== META_VERIFY_TOKEN.value()) {
+          res.status(403).send("Forbidden");
+          return;
+        }
+        res.set("Content-Type", "text/plain");
+        res.status(200).send(challenge);
+        return;
+      }
+
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+
+      const signatureHeader = req.header("x-hub-signature-256") || "";
+      const rawBody: Buffer | undefined = (req as unknown as { rawBody?: Buffer }).rawBody;
+      if (!rawBody || !signatureHeader.startsWith("sha256=")) {
+        res.status(401).send("Unauthorized");
+        return;
+      }
+      const expected =
+        "sha256=" +
+        crypto.createHmac("sha256", META_APP_SECRET.value()).update(rawBody).digest("hex");
+      const sigBuf = Buffer.from(signatureHeader);
+      const expBuf = Buffer.from(expected);
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        console.warn("whatsappWebhook signature mismatch");
+        res.status(401).send("Unauthorized");
+        return;
+      }
+
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+      const body = req.body as { entry?: Array<{ id?: string }> } | undefined;
+      const entries = Array.isArray(body?.entry) ? body!.entry! : [];
+      if (entries.length === 0) {
+        res.status(200).json({ received: true, buffered: false });
+        return;
+      }
+
+      // Resolve orgId per entry via wabaIndex/{wabaId}, then reuse per-org buffering path.
+      await Promise.all(
+        entries.map(async (entry) => {
+          const wabaId = entry?.id;
+          if (!wabaId) return;
+          const idx = await db.doc(`wabaIndex/${wabaId}`).get();
+          const orgId = idx.exists ? (idx.data()?.orgId as string | undefined) : undefined;
+          if (!orgId) {
+            console.warn(`whatsappWebhook: no org mapping for wabaId=${wabaId}`);
+            return;
+          }
+
+          const inboundMessages = parseCloudApiWebhook(
+            { entry: [entry] },
+            normalizeToCanonicalChatId,
+            ensureTimestampMillis
+          );
+          if (inboundMessages.length === 0) return;
+
+          const messagesByChatId = new Map<string, InboundMessage[]>();
+          for (const msg of inboundMessages) {
+            const existing = messagesByChatId.get(msg.chatId) || [];
+            existing.push({ chatId: msg.chatId, phone: msg.phone, text: msg.text, timestamp: msg.timestamp });
+            messagesByChatId.set(msg.chatId, existing);
+          }
+
+          await requestContext.run({ orgId }, async () => {
+            await Promise.all(
+              Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
+                try {
+                  if (await isChatIgnored(chatId)) return;
+                  if (messages.some((m) => isOptOutMessage(m.text))) {
+                    await applyOptOut({ orgId, chatId, phone: messages[0].phone });
+                    return;
+                  }
+                  const state = await ensureConversationState(chatId, messages[0].phone);
+                  if (!state) {
+                    console.warn("whatsappWebhook: could not reconstruct state for", chatId, "org", orgId);
+                    return;
+                  }
+                  if (state.isFinished) return;
+                  const canonicalChatId = state.chatId;
+                  for (const msg of messages) {
+                    await addPendingMessage(canonicalChatId, { text: msg.text, timestamp: msg.timestamp });
+                  }
+                  const processUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`;
+                  const { taskName, scheduledTime } = await scheduleBufferTask(
+                    canonicalChatId,
+                    processUrl,
+                    state.pendingTaskName,
+                    orgId
+                  );
+                  await updateBufferTask(canonicalChatId, taskName, scheduledTime);
+                } catch (err) {
+                  console.error("whatsappWebhook buffering error", chatId, err);
+                }
+              })
+            );
+          });
+        })
+      );
+
+      res.status(200).json({ received: true });
+    } catch (error) {
+      console.error("whatsappWebhook fatal error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+/**
+ * Twilio Voice webhook for call→WhatsApp handoff (A6d — DTMF opt-in gate).
+ *
  * Configure your Twilio phone number "A CALL COMES IN" to point to this function's URL.
  *
  * Flow:
- * - Play audio 1
- * - Play audio 2
- * - Hang up
- * - Create pending lead + send WhatsApp (async) after hangup
+ * - Play audio1 (existing intro)
+ * - <Pause length="3"/>
+ * - Play audio2_optin (new prompt: "…pulse 1 o cuelgue…")
+ * - <Gather numDigits="1" action=voiceGatherCallback>
+ *   - DTMF 1 → consent captured, template sent by voiceGatherCallback
+ *   - timeout / hangup → no consent, no template
  */
 export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req, res) => {
   try {
@@ -1597,52 +1948,35 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
     }
 
     const audio1 = VOICE_AUDIO_1_URL.value();
-    const audio2 = VOICE_AUDIO_2_URL.value();
+    const audio2 = VOICE_AUDIO_2_OPTIN_URL.value();
     if (!audio1 || !audio2) {
-      console.error("VOICE_AUDIO_1_URL / VOICE_AUDIO_2_URL not configured");
+      console.error("VOICE_AUDIO_1_URL / VOICE_AUDIO_2_OPTIN_URL not configured");
       res.set("Content-Type", "text/xml");
       res.status(200).send(buildTwiml(`<Say>Audio not configured.</Say><Hangup/>`));
       return;
     }
 
     const chatId = normalizeToCanonicalChatId(fromPhone);
+    const gatherUrl =
+      `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceGatherCallback` +
+      `?phone=${encodeURIComponent(fromPhone)}&chatId=${encodeURIComponent(chatId)}&callSid=${encodeURIComponent(callSid)}`;
 
-    // CRITICAL: Return TwiML IMMEDIATELY to avoid audio clipping.
-    // Do all I/O (lead creation, task scheduling) AFTER sending response.
     res.set("Content-Type", "text/xml");
     res.status(200).send(
       buildTwiml(
         [
           `<Play>${twimlEscape(audio1)}</Play>`,
           `<Pause length="3"/>`,
-          `<Play>${twimlEscape(audio2)}</Play>`,
+          `<Gather numDigits="1" timeout="6" action="${twimlEscape(gatherUrl)}" method="POST">`,
+          `  <Play>${twimlEscape(audio2)}</Play>`,
+          `</Gather>`,
+          // Fallback: no digit pressed → hang up without sending anything (no consent).
           `<Hangup/>`,
         ].join("\n")
       )
     );
 
-    // Now do all async work without blocking the TwiML response
     setImmediate(async () => {
-      // 1) Always schedule WhatsApp independently based on call start time.
-      // This avoids missing the message if any non-critical write fails.
-      try {
-        await scheduleImmediateHttpTask({
-          url: `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/sendCallHandoffMessage`,
-          payload: {
-            phone: fromPhone,
-            chatId,
-            agentName: "Paco Granados",
-          },
-          taskPrefix: "callhandoff",
-          taskId: callSid || chatId,
-          // Send roughly at the end of call audio from call start.
-          delaySeconds: CALL_HANDOFF_DELAY_SECONDS,
-        });
-      } catch (error) {
-        console.error("voiceWebhook failed scheduling handoff task", error);
-      }
-
-      // 2) Persist optional data independently (should not block messaging).
       try {
         if (callSid) {
           await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
@@ -1650,7 +1984,6 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
       } catch (error) {
         console.error("voiceWebhook failed upserting call intent", error);
       }
-
       try {
         await createPendingCallLead({ phone: fromPhone, chatId });
       } catch (error) {
@@ -1665,10 +1998,138 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
 });
 
 /**
+ * Twilio <Gather> callback: if the caller pressed "1", we record explicit consent
+ * and send the approved Twilio marketing template. Any other input (or timeout)
+ * results in a clean hangup with no message sent.
+ *
+ * Consent record: { source: "phone_call", proofUrl: callSid, capturedAt: now }.
+ */
+export const voiceGatherCallback = onRequest(
+  { cors: true, region: REGION, secrets: [TWILIO_AUTH_TOKEN] },
+  async (req, res) => {
+    try {
+      const body = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : {};
+      const digits = typeof body.Digits === "string" ? body.Digits.trim() : "";
+      const phone =
+        (typeof req.query.phone === "string" && req.query.phone) ||
+        normalizeE164FromTwilio(body.From) ||
+        "";
+      const chatId =
+        (typeof req.query.chatId === "string" && req.query.chatId) ||
+        (phone ? normalizeToCanonicalChatId(phone) : "");
+      const callSid =
+        (typeof req.query.callSid === "string" && req.query.callSid) ||
+        (typeof body.CallSid === "string" ? body.CallSid : "");
+
+      res.set("Content-Type", "text/xml");
+      if (digits !== "1" || !phone || !chatId) {
+        res.status(200).send(buildTwiml(`<Hangup/>`));
+        return;
+      }
+
+      // Respond to Twilio immediately so the caller is not kept hanging.
+      res.status(200).send(
+        buildTwiml(
+          `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
+        )
+      );
+
+      setImmediate(async () => {
+        try {
+          // Resolve org from the pending lead created by voiceWebhook.
+          const orgId = await findOrgIdByPhone(phone);
+          if (!orgId) {
+            console.warn("voiceGatherCallback: no org found for phone", phone);
+            return;
+          }
+          await requestContext.run({ orgId }, async () => {
+            await recordVoiceConsent({ phone, chatId, callSid });
+            const templateSid = TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT.value();
+            if (!templateSid) {
+              console.error("TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT not set; skipping send");
+              return;
+            }
+            await sendInitialTemplateMessage({
+              to: phone,
+              chatId,
+              language: "es",
+              variables: {},
+              templateSid,
+            });
+          });
+        } catch (err) {
+          console.error("voiceGatherCallback async error:", err);
+        }
+      });
+    } catch (error) {
+      console.error("voiceGatherCallback error", error);
+      res.set("Content-Type", "text/xml");
+      res.status(200).send(buildTwiml(`<Hangup/>`));
+    }
+  }
+);
+
+/**
+ * Find the orgId that owns a pending call lead for this phone (set by voiceWebhook
+ * via createPendingCallLead). Scans the pending-call collection across orgs.
+ */
+async function findOrgIdByPhone(phone: string): Promise<string | null> {
+  const DATABASE_ID = "realestate-whatsapp-bot";
+  const db = getFirestore(admin.app(), DATABASE_ID);
+  const phoneDigits = phone.replace(/[^0-9]/g, "");
+  const snap = await db
+    .collectionGroup("leads")
+    .where("phone", "==", phoneDigits)
+    .limit(5)
+    .get();
+  for (const doc of snap.docs) {
+    const path = doc.ref.path; // organizations/{orgId}/leads/{leadId}
+    const parts = path.split("/");
+    if (parts[0] === "organizations" && parts[1]) return parts[1];
+  }
+  return null;
+}
+
+/**
+ * Write consent proof on the lead doc after DTMF 1. Idempotent.
+ */
+async function recordVoiceConsent(params: {
+  phone: string;
+  chatId: string;
+  callSid: string;
+}): Promise<void> {
+  const orgId = getActiveOrgId();
+  if (!orgId) return;
+  const DATABASE_ID = "realestate-whatsapp-bot";
+  const db = getFirestore(admin.app(), DATABASE_ID);
+  const phoneDigits = params.phone.replace(/[^0-9]/g, "");
+  const leadsRef = db.collection(`organizations/${orgId}/leads`);
+  const snap = await leadsRef.where("phone", "==", phoneDigits).limit(1).get();
+  const consent = {
+    capturedAt: new Date(),
+    source: "phone_call" as const,
+    proofUrl: params.callSid || null,
+    language: "es" as const,
+  };
+  if (snap.empty) {
+    // Create a minimal lead row so the consent gate finds it.
+    await leadsRef.add({
+      phone: phoneDigits,
+      chatId: params.chatId,
+      listingCode: "__pending__",
+      operationType: "unknown",
+      consent,
+    });
+    return;
+  }
+  await snap.docs[0].ref.set({ consent }, { merge: true });
+}
+
+/**
  * Cloud Tasks target: sends the post-call WhatsApp message via Whapi (Spanish).
  * Required because voice webhook must respond immediately to avoid awkward pauses/cut audio.
  */
-export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -1683,13 +2144,37 @@ export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION }, 
     return;
   }
 
+  const resolvedChatId = chatId || normalizeToCanonicalChatId(phone);
+
   try {
-    // Whapi expects international number without plus sign; `phone` should already be digits.
-    await whapiSendText({
-      to: phone,
-      chatId: chatId || normalizeToCanonicalChatId(phone),
-      body: buildCallInitialWhatsAppMessageEs(agentName),
+    const orgId = await findOrgIdByChatId(resolvedChatId);
+    if (!orgId) {
+      console.error("sendCallHandoffMessage: could not resolve orgId for", phone);
+      res.status(500).json({ ok: false, error: "org not found" });
+      return;
+    }
+
+    await requestContext.run({ orgId }, async () => {
+      const provider = await getActiveProviderFn();
+      if (provider === "twilio" || provider === "cloud_api") {
+        const templateSid = TWILIO_TEMPLATE_SID_CALL_INITIAL_ES.value();
+        if (!templateSid) throw new Error("TWILIO_TEMPLATE_SID_CALL_INITIAL_ES not configured");
+        await sendInitialTemplateMessage({
+          to: phone,
+          chatId: resolvedChatId,
+          language: "es",
+          variables: { "1": agentName },
+          templateSid,
+        });
+      } else {
+        await sendTextMessage({
+          to: phone,
+          chatId: resolvedChatId,
+          body: buildCallInitialWhatsAppMessageEs(agentName),
+        });
+      }
     });
+
     res.status(200).json({ ok: true });
   } catch (error) {
     console.error("sendCallHandoffMessage failed", error);
@@ -1789,7 +2274,7 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
 
 /**
  * Shared WhatsApp onboarding after a listing is resolved (Idealista webhook / newLead).
- * Same Twilio template / Whapi flow as legacy newLead. Charges org credits once initial outbound succeeds.
+ * Same Twilio template / Whapi flow as legacy newLead. No credit deduction (disabled until re-enabled).
  */
 export async function runNewLeadMessagingPipeline(params: {
   phone: string;
@@ -1799,14 +2284,6 @@ export async function runNewLeadMessagingPipeline(params: {
 }): Promise<
   | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
   | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
-  | {
-      ok: false;
-      kind: "insufficient_credits";
-      chatId: string;
-      details: string;
-      initialHistory: HistoryItem[];
-      featuresText: string;
-    }
 > {
   const { phone, listingCode, listingData, leadTags } = params;
 
@@ -1819,29 +2296,6 @@ export async function runNewLeadMessagingPipeline(params: {
   let chatId: string = normalizeToCanonicalChatId(phone);
   const listingAddress =
     [listingData.street, listingData.address].filter(Boolean).join(", ").trim() || listingData.address;
-
-  const orgIdForCredits = getActiveOrgId();
-  if (!orgIdForCredits) {
-    return {
-      ok: false,
-      kind: "send_failed",
-      chatId,
-      details: "Missing organization context for billing",
-      initialHistory: [],
-      featuresText,
-    };
-  }
-  const balance = await getOrgConversationBalance(orgIdForCredits);
-  if (balance < CREDITS_PER_INITIAL_OUTBOUND) {
-    return {
-      ok: false,
-      kind: "insufficient_credits",
-      chatId,
-      details: `Créditos insuficientes (${balance} disponibles, se requiere ${CREDITS_PER_INITIAL_OUTBOUND}).`,
-      initialHistory: [],
-      featuresText,
-    };
-  }
 
   try {
     await updateLeadChatInfo({
@@ -1859,10 +2313,25 @@ export async function runNewLeadMessagingPipeline(params: {
 
   try {
     const provider = await getActiveProviderFn();
-    if (provider === "twilio") {
+    if (provider === "twilio" || provider === "cloud_api") {
       const agentName = listingData.agentName || "Paco";
       const formattedFeatures = formatFeaturesList(featuresText, initialLanguage);
       const sanitizedFeatures = formattedFeatures.replace(/\n/g, " | ");
+
+      // Resolve cloud_api template name by language (if applicable).
+      let cloudApiTemplateName: string | undefined;
+      if (provider === "cloud_api") {
+        const creds = await getCloudApiCredentials();
+        cloudApiTemplateName =
+          initialLanguage === "en"
+            ? creds.templates?.idealistaInitialEn
+            : creds.templates?.idealistaInitialEs;
+        if (!cloudApiTemplateName) {
+          throw new Error(
+            `Missing Cloud API template name (idealistaInitial${initialLanguage === "en" ? "En" : "Es"}) in botConfig.cloudApiConfig.templates`
+          );
+        }
+      }
 
       const result = await sendInitialTemplateMessage({
         to: phone,
@@ -1874,6 +2343,7 @@ export async function runNewLeadMessagingPipeline(params: {
           "3": sanitizedFeatures,
         },
         mediaUrl: "https://real-estate-idealista-bot.web.app/idealista.jpg",
+        templateName: cloudApiTemplateName,
       });
 
       if (result.chatId && result.chatId !== chatId) {
@@ -1965,21 +2435,6 @@ export async function runNewLeadMessagingPipeline(params: {
   conversationStates.set(chatId, { ...state, type: "lead" });
   await upsertConversation(chatId, { ...state, tags: leadTags, type: "lead" });
 
-  try {
-    await deductOrgConversationForInitialOutboundOnce(
-      orgIdForCredits,
-      chatId,
-      "New lead: initial outbound messages"
-    );
-  } catch (deductErr) {
-    console.error("[billing] deduct after new lead pipeline:", deductErr);
-    void sendAlert(
-      "Billing: deduction failed after initial send",
-      `org=${orgIdForCredits} chatId=${chatId}`,
-      { error: deductErr instanceof Error ? deductErr.message : String(deductErr) }
-    );
-  }
-
   return { ok: true, chatId, initialHistory, featuresText };
 }
 
@@ -1993,46 +2448,20 @@ async function runIdealistaConfirmPipeline(params: {
 }): Promise<
   | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
   | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
-  | {
-      ok: false;
-      kind: "insufficient_credits";
-      chatId: string;
-      details: string;
-      initialHistory: HistoryItem[];
-      featuresText: string;
-    }
 > {
   const { phone, listingCode, listingData, leadTags, leadName, language } = params;
   const initialLanguage = language || resolveInitialLanguage(phone);
   const featuresText = await getFeaturesForLanguage(listingData.features, initialLanguage);
 
-  let chatId: string = normalizeToCanonicalChatId(phone);
+  const chatId: string = normalizeToCanonicalChatId(phone);
   const listingAddress =
     [listingData.street, listingData.address].filter(Boolean).join(", ").trim() || listingData.address;
 
-  const orgIdForCredits = getActiveOrgId();
-  if (!orgIdForCredits) {
-    return {
-      ok: false,
-      kind: "send_failed",
-      chatId,
-      details: "Missing organization context for billing",
-      initialHistory: [],
-      featuresText,
-    };
-  }
-  const creditBalance = await getOrgConversationBalance(orgIdForCredits);
-  if (creditBalance < CREDITS_PER_INITIAL_OUTBOUND) {
-    return {
-      ok: false,
-      kind: "insufficient_credits",
-      chatId,
-      details: `Créditos insuficientes (${creditBalance} disponibles, se requiere ${CREDITS_PER_INITIAL_OUTBOUND}).`,
-      initialHistory: [],
-      featuresText,
-    };
-  }
-
+  // A6c — Idealista leads are cold by definition: no recorded WhatsApp opt-in.
+  // Meta Business Messaging Policy + GDPR require prior consent before sending a
+  // marketing template, regardless of provider (Cloud API or Twilio). So we send
+  // an SMS with a wa.me link; the lead's click → first inbound WhatsApp message
+  // opens the 24h session window (implicit consent).
   try {
     await updateLeadChatInfo({
       phone,
@@ -2047,100 +2476,6 @@ async function runIdealistaConfirmPipeline(params: {
     console.warn("Failed to create preliminary lead record (idealista confirm)", error);
   }
 
-  const initialHistory: HistoryItem[] = [];
-  const agentName = listingData.agentName || "Paco";
-
-  try {
-    const provider = await getActiveProviderFn();
-    if (provider === "twilio") {
-      const confirmTemplateSid =
-        initialLanguage === "en"
-          ? TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN.value()
-          : TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES.value();
-      if (!confirmTemplateSid) {
-        throw new Error(`Missing Twilio confirm template SID for language ${initialLanguage}`);
-      }
-
-      const result = await sendInitialTemplateMessage({
-        to: phone,
-        chatId,
-        language: initialLanguage,
-        templateSid: confirmTemplateSid,
-        variables: {
-          "1": leadName || "Hola",
-          "2": agentName,
-          "3": listingData.link,
-        },
-      });
-
-      if (result.chatId && result.chatId !== chatId) {
-        chatId = result.chatId;
-      }
-
-      const templateText =
-        initialLanguage === "en"
-          ? `Hi ${leadName || ""}${leadName ? "," : ""} I'm Marcos, ${agentName}'s virtual assistant.\n` +
-            `You contacted us on Idealista about this property: ${listingData.link}\n` +
-            `Is that correct? (Reply: Yes / No)`
-          : `Hola ${leadName || ""}${leadName ? "," : ""} soy Marcos, el asistente virtual de ${agentName}, encantado.\n` +
-            `Nos has contactado en idealista por esta vivienda: ${listingData.link}\n` +
-            `¿Es correcto? (Responde: Sí / No)`;
-      initialHistory.push({ role: "assistant", text: templateText, timestamp: Date.now() });
-    } else {
-      const body =
-        initialLanguage === "en"
-          ? `Hi ${leadName || ""}${leadName ? "," : ""} I'm Marcos, ${agentName}'s virtual assistant.\n\n` +
-            `You contacted us on Idealista about this property: ${listingData.link}\n\n` +
-            `Is that correct? (Reply: Yes / No)`
-          : `Hola ${leadName || ""}${leadName ? "," : ""} soy Marcos, el asistente virtual de ${agentName}, encantado.\n\n` +
-            `Nos has contactado en idealista por esta vivienda: ${listingData.link}\n\n` +
-            `¿Es correcto? (Responde: Sí / No)`;
-      const result = await sendTextMessage({ to: phone, body, chatId });
-      if (result.chatId && result.chatId !== chatId) chatId = result.chatId;
-      initialHistory.push({ role: "assistant", text: body, timestamp: Date.now() });
-    }
-  } catch (error) {
-    const details = error instanceof Error ? error.message : String(error);
-    console.error(`runIdealistaConfirmPipeline failed for ${phone}: ${details}`, error);
-    const state: ConversationState = {
-      phone,
-      listingCode,
-      chatId,
-      operationType: listingData.operationType,
-      description: listingData.description,
-      link: listingData.link,
-      address: listingAddress,
-      features: featuresText,
-      profitabilityReportAvailable: listingData.profitabilityReportAvailable,
-      profitabilityReport: listingData.profitabilityReport,
-      history: initialHistory,
-      pendingUserMessages: [],
-      isFinished: false,
-      tags: leadTags,
-      recordings: [],
-      flowStep: "idealista_confirm",
-      botDisabled: false,
-    };
-
-    // Prepare fallback text for retry queue if available
-    const fallbackText = initialHistory.length > 0 ? initialHistory[initialHistory.length - 1].text : "Hola, nos has contactado por un anuncio en Idealista. ¿Es correcto?";
-    
-    try {
-      await queueFailedMessage(chatId, phone, fallbackText, details);
-    } catch (retryError) {
-      console.warn("Failed to queue message for retry", retryError);
-    }
-
-    await upsertConversation(chatId, { 
-      ...state, 
-      type: "lead", 
-      idealistaDescription: listingData.idealistaDescription || "",
-      errorDetails: details // Save error for debugging
-    });
-    conversationStates.set(chatId, state);
-    return { ok: false, kind: "send_failed", chatId, details, initialHistory, featuresText };
-  }
-
   const state: ConversationState = {
     phone,
     listingCode,
@@ -2152,7 +2487,7 @@ async function runIdealistaConfirmPipeline(params: {
     features: featuresText,
     profitabilityReportAvailable: listingData.profitabilityReportAvailable,
     profitabilityReport: listingData.profitabilityReport,
-    history: initialHistory,
+    history: [],
     pendingUserMessages: [],
     isFinished: false,
     tags: leadTags,
@@ -2161,27 +2496,35 @@ async function runIdealistaConfirmPipeline(params: {
     botDisabled: false,
     name: leadName,
   };
-
   conversationStates.set(chatId, { ...state, type: "lead" });
-  await upsertConversation(chatId, { ...state, type: "lead", idealistaDescription: listingData.idealistaDescription || "" });
+  await upsertConversation(chatId, {
+    ...state,
+    type: "lead",
+    idealistaDescription: listingData.idealistaDescription || "",
+  });
 
   try {
-    await deductOrgConversationForInitialOutboundOnce(
-      orgIdForCredits,
-      chatId,
-      "Idealista: initial confirmation message"
-    );
-  } catch (deductErr) {
-    console.error("[billing] deduct after Idealista initial send:", deductErr);
-    void sendAlert(
-      "Billing: deduction failed after Idealista initial send",
-      `org=${orgIdForCredits} chatId=${chatId}`,
-      { error: deductErr instanceof Error ? deductErr.message : String(deductErr) }
-    );
+    const phoneDigits = phone.replace(/[^0-9]/g, "");
+    const phoneE164 = phone.startsWith("+") ? phone : `+${phoneDigits}`;
+    await sendIdealistaOptInSms({
+      phoneE164,
+      name: leadName || "",
+      listingCode,
+      baseDomain: initialLanguage === "en" ? undefined : undefined, // reserved for future i18n
+    });
+    return { ok: true, chatId, initialHistory: [], featuresText };
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    console.error(`runIdealistaConfirmPipeline SMS opt-in failed for ${phone}: ${details}`, error);
+    return { ok: false, kind: "send_failed", chatId, details, initialHistory: [], featuresText };
   }
-
-  return { ok: true, chatId, initialHistory, featuresText };
 }
+
+// Legacy template-based Idealista confirm flow removed. Prior to Meta App Review
+// the bot sent a WhatsApp template directly to cold Idealista leads. This violated
+// the Business Messaging Policy's opt-in requirement. The path above now sends an
+// SMS opt-in link instead; the lead's first inbound WhatsApp message opens the 24h
+// window and implicit consent, after which the conversational flow proceeds normally.
 
 export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
   if (req.method !== "POST") {
@@ -2287,14 +2630,6 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
       });
 
       if (!pipeline.ok) {
-        if (pipeline.kind === "insufficient_credits") {
-          res.status(402).json({
-            error: "Créditos insuficientes",
-            details: pipeline.details,
-            chatId: pipeline.chatId,
-          });
-          return;
-        }
         res.status(502).json({
           error: "No se pudieron enviar los mensajes iniciales (pero el lead ha sido guardado)",
           details: pipeline.details,
@@ -2570,7 +2905,7 @@ export const syncMissedMessages = onRequest({
  *
  * Security: requires `?token=...` matching ADMIN_TEMPLATE_TOKEN.
  */
-export const createTwilioTemplates = onRequest({ cors: true, region: REGION, secrets: [ADMIN_TEMPLATE_TOKEN] }, async (req, res) => {
+export const createTwilioTemplates = onRequest({ cors: true, region: REGION, secrets: [ADMIN_TEMPLATE_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
   if (!token || token !== ADMIN_TEMPLATE_TOKEN.value()) {
     res.status(403).json({ error: "Forbidden" });
@@ -2639,10 +2974,29 @@ export const createTwilioTemplates = onRequest({ cors: true, region: REGION, sec
       },
     });
 
+    const callInitialEs = await createContentTemplate({
+      friendlyName: `call_initial_es_${suffix}`,
+      language: "es",
+      variables: { "1": "Paco Granados" },
+      types: {
+        "twilio/text": {
+          body:
+            "¡Hola! Soy el asistente virtual de {{1}}. Acabamos de hablar por teléfono.\n\n" +
+            "Para localizar el anuncio, ¿me indicas por favor cuál es?\n\n" +
+            "Me puedes pasar:\n\n" +
+            "1) El número de referencia (9 dígitos, empieza por 1)\n\n" +
+            "2) La calle o zona\n\n" +
+            "3) El precio\n\n" +
+            "4) O pegar directamente el enlace al anuncio",
+        },
+      },
+    });
+
     res.status(200).json({
       idealistaConfirm: idealistaConfirm.contentSid,
       idealistaConfirmEn: idealistaConfirmEn.contentSid,
-      note: "Envía estos ContentSid a WhatsApp para aprobación en Twilio y configura TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES / TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_EN.",
+      callInitialEs: callInitialEs.contentSid,
+      note: "Configura TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES / _EN / TWILIO_TEMPLATE_SID_CALL_INITIAL_ES con estos ContentSid tras aprobación de WhatsApp.",
     });
   } catch (error) {
     console.error("createTwilioTemplates error", error);
@@ -2654,6 +3008,645 @@ export const createTwilioTemplates = onRequest({ cors: true, region: REGION, sec
     });
   }
 });
+
+/**
+ * Generate the WhatsApp Cloud API templates for the active organization via Meta's
+ * `/{WABA_ID}/message_templates` endpoint. Authentication is the user's Firebase ID token
+ * (same pattern as other UI-facing endpoints).
+ *
+ * Creates 6 templates (3 use cases × 2 languages):
+ *   - idealistaInitial  (ES/EN) — business-initiated introduction with image header
+ *   - idealistaConfirm  (ES/EN) — quick-reply Yes/No confirmation
+ *   - agentNotification (ES/EN) — simple body template used as the 24h-window fallback
+ *
+ * The resulting names are persisted in `botConfig.cloudApiConfig.templates` so callers
+ * (pipelines, agent notifications) can resolve them by language at send time.
+ */
+export const createCloudApiTemplates = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    try {
+      const authHeader = req.headers.authorization;
+      const orgId = await resolveOrgIdFromToken(authHeader);
+
+      await requestContext.run({ orgId }, async () => {
+        // Meta requires lowercase, alphanumeric + underscores, max 512 chars. Suffix makes names unique
+        // so callers can re-run this helper without colliding with templates already in review.
+        const suffix = Date.now().toString();
+
+        const idealistaInitialEsName = `idealista_initial_es_${suffix}`;
+        const idealistaInitialEnName = `idealista_initial_en_${suffix}`;
+        const idealistaConfirmEsName = `idealista_confirm_es_${suffix}`;
+        const idealistaConfirmEnName = `idealista_confirm_en_${suffix}`;
+        const agentNotificationEsName = `agent_notification_es_${suffix}`;
+        const agentNotificationEnName = `agent_notification_en_${suffix}`;
+
+        // --- idealista_initial (with image header, 3 body variables) ---
+        const idealistaInitialEsComponents: CreateTemplateComponent[] = [
+          {
+            type: "HEADER",
+            format: "IMAGE",
+            example: { header_handle: ["https://real-estate-idealista-bot.web.app/idealista.jpg"] },
+          },
+          {
+            type: "BODY",
+            text:
+              "Hola, soy Marcos, el asistente virtual de {{1}}, un placer atenderte.\n\n" +
+              "Te has interesado en esta vivienda: {{2}}\n\n" +
+              "Por confirmar, ¿has visto las características?\n\n{{3}}",
+            example: { body_text: [["Paco", "https://www.idealista.com/inmueble/110595991", "3 hab. | 85 m² | 2 baños"]] },
+          },
+          { type: "FOOTER", text: "Responde BAJA para dejar de recibir mensajes." },
+        ];
+        const idealistaInitialEnComponents: CreateTemplateComponent[] = [
+          {
+            type: "HEADER",
+            format: "IMAGE",
+            example: { header_handle: ["https://real-estate-idealista-bot.web.app/idealista.jpg"] },
+          },
+          {
+            type: "BODY",
+            text:
+              "Hi, I'm Marcos, the virtual assistant for {{1}}, a pleasure to help you.\n\n" +
+              "You've shown interest in this property: {{2}}\n\n" +
+              "Just to confirm, have you reviewed the property highlights?\n\n{{3}}",
+            example: { body_text: [["Paco", "https://www.idealista.com/inmueble/110595991", "3 bed | 85 m² | 2 bath"]] },
+          },
+          { type: "FOOTER", text: "Reply STOP to unsubscribe from messages." },
+        ];
+
+        // --- idealista_confirm (quick-reply Yes/No, 3 body variables, no header) ---
+        const idealistaConfirmEsComponents: CreateTemplateComponent[] = [
+          {
+            type: "BODY",
+            text:
+              "Hola {{1}}.\n\n" +
+              "Soy Marcos, el asistente virtual de {{2}}.\n\n" +
+              "Nos has contactado en Idealista por esta vivienda:\n{{3}}\n\n" +
+              "¿Es correcto?",
+            example: { body_text: [["Carlos", "Paco Granados", "https://www.idealista.com/inmueble/110595991"]] },
+          },
+          { type: "FOOTER", text: "Responde BAJA para dejar de recibir mensajes." },
+          {
+            type: "BUTTONS",
+            buttons: [
+              { type: "QUICK_REPLY", text: "Sí" },
+              { type: "QUICK_REPLY", text: "No" },
+            ],
+          },
+        ];
+        const idealistaConfirmEnComponents: CreateTemplateComponent[] = [
+          {
+            type: "BODY",
+            text:
+              "Hi {{1}}.\n\n" +
+              "I'm Marcos, the virtual assistant for {{2}}.\n\n" +
+              "You contacted us on Idealista about this property:\n{{3}}\n\n" +
+              "Is that correct?",
+            example: { body_text: [["John", "Paco Granados", "https://www.idealista.com/inmueble/110595991"]] },
+          },
+          { type: "FOOTER", text: "Reply STOP to unsubscribe from messages." },
+          {
+            type: "BUTTONS",
+            buttons: [
+              { type: "QUICK_REPLY", text: "Yes" },
+              { type: "QUICK_REPLY", text: "No" },
+            ],
+          },
+        ];
+
+        // --- agent_notification (1 body variable — fallback for outside-24h agent alerts) ---
+        const agentNotificationEsComponents: CreateTemplateComponent[] = [
+          {
+            type: "BODY",
+            text: "{{1}}",
+            example: { body_text: [["Tienes un nuevo lead cualificado."]] },
+          },
+        ];
+        const agentNotificationEnComponents: CreateTemplateComponent[] = [
+          {
+            type: "BODY",
+            text: "{{1}}",
+            example: { body_text: [["You have a new qualified lead."]] },
+          },
+        ];
+
+        const createdIds: Record<string, string> = {};
+        const created: Record<string, string> = {};
+
+        async function create(
+          name: string,
+          language: string,
+          category: "UTILITY" | "MARKETING",
+          components: CreateTemplateComponent[]
+        ) {
+          const result = await createCloudApiMessageTemplate({ name, category, language, components });
+          createdIds[name] = result.id;
+          created[name] = result.status;
+        }
+
+        await create(idealistaInitialEsName, "es", "MARKETING", idealistaInitialEsComponents);
+        await create(idealistaInitialEnName, "en", "MARKETING", idealistaInitialEnComponents);
+        await create(idealistaConfirmEsName, "es", "UTILITY", idealistaConfirmEsComponents);
+        await create(idealistaConfirmEnName, "en", "UTILITY", idealistaConfirmEnComponents);
+        await create(agentNotificationEsName, "es", "UTILITY", agentNotificationEsComponents);
+        await create(agentNotificationEnName, "en", "UTILITY", agentNotificationEnComponents);
+
+        await updateCloudApiTemplates({
+          idealistaInitialEs: idealistaInitialEsName,
+          idealistaInitialEn: idealistaInitialEnName,
+          idealistaConfirmEs: idealistaConfirmEsName,
+          idealistaConfirmEn: idealistaConfirmEnName,
+          agentNotificationEs: agentNotificationEsName,
+          agentNotificationEn: agentNotificationEnName,
+        });
+
+        res.status(200).json({
+          ok: true,
+          templates: {
+            idealistaInitialEs: idealistaInitialEsName,
+            idealistaInitialEn: idealistaInitialEnName,
+            idealistaConfirmEs: idealistaConfirmEsName,
+            idealistaConfirmEn: idealistaConfirmEnName,
+            agentNotificationEs: agentNotificationEsName,
+            agentNotificationEn: agentNotificationEnName,
+          },
+          ids: createdIds,
+          statuses: created,
+          note: "Las plantillas se han creado en estado PENDING. Meta tarda típicamente de minutos a 24h en aprobarlas.",
+        });
+      });
+    } catch (error) {
+      console.error("createCloudApiTemplates error", error);
+      const errAny = error as unknown as { message?: string; response?: { data?: unknown; status?: number } };
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+        metaStatus: errAny.response?.status,
+        metaData: errAny.response?.data,
+      });
+    }
+  }
+);
+
+/**
+ * Health/connectivity check for a single org's Cloud API credentials. Used by the UI
+ * "Test connection" button. Authentication via the user's Firebase ID token.
+ */
+export const cloudApiHealthCheck = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const orgId = await resolveOrgIdFromToken(authHeader);
+      await requestContext.run({ orgId }, async () => {
+        const result = await checkCloudApiHealth(orgId);
+        res.status(result.status === "ok" ? 200 : 502).json(result);
+      });
+    } catch (error) {
+      console.error("cloudApiHealthCheck error", error);
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      res.status(500).json({
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+);
+
+/**
+ * Embedded Signup: exchange the short-lived `code` from the FB JS SDK for a
+ * long-lived business_integration_system_user_access_token, register the
+ * phone number on Cloud API, subscribe our app to the WABA's webhooks, and
+ * persist everything so sendText / sendTemplate work immediately after.
+ *
+ * Returns public config for the UI (phone number id, waba id, graph version)
+ * but never leaks the access token to the client.
+ */
+export const exchangeEmbeddedSignupCode = onRequest(
+  {
+    cors: true,
+    region: REGION,
+    secrets: [META_APP_ID, META_APP_SECRET],
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const authHeader = req.headers.authorization;
+      const orgId = await resolveOrgIdFromToken(authHeader);
+
+      const body = (req.body || {}) as {
+        code?: string;
+        phoneNumberId?: string;
+        wabaId?: string;
+      };
+      const code = typeof body.code === "string" ? body.code.trim() : "";
+      const phoneNumberId = typeof body.phoneNumberId === "string" ? body.phoneNumberId.trim() : "";
+      const wabaId = typeof body.wabaId === "string" ? body.wabaId.trim() : "";
+      if (!code || !phoneNumberId || !wabaId) {
+        res.status(400).json({ error: "code, phoneNumberId and wabaId are required" });
+        return;
+      }
+
+      const appId = META_APP_ID.value();
+      const appSecret = META_APP_SECRET.value();
+      if (!appId || !appSecret) {
+        res.status(500).json({ error: "Meta app credentials are not configured on the server" });
+        return;
+      }
+
+      const accessToken = await exchangeCodeForToken({ code, appId, appSecret });
+
+      const accessTokenSecretName = await storeAccessTokenInSecretManager({
+        orgId,
+        accessToken,
+      });
+
+      const pin = generateRegistrationPin();
+      try {
+        await registerPhoneNumber({ phoneNumberId, accessToken, pin });
+      } catch (error) {
+        // Already-registered numbers raise an error; don't block onboarding if
+        // the root cause is a prior registration. Surface other failures.
+        const message =
+          axios.isAxiosError(error)
+            ? error.response?.data?.error?.message || error.message
+            : error instanceof Error
+            ? error.message
+            : String(error);
+        const alreadyRegistered =
+          /already\s*(been)?\s*registered/i.test(message) ||
+          /pin\s*mismatch/i.test(message);
+        if (!alreadyRegistered) {
+          console.error("[embeddedSignup] Phone registration failed", message);
+          res.status(502).json({ error: `Phone registration failed: ${message}` });
+          return;
+        }
+        console.warn("[embeddedSignup] Phone already registered; continuing.", message);
+      }
+
+      try {
+        await subscribeAppToWaba({ wabaId, accessToken });
+      } catch (error) {
+        const message =
+          axios.isAxiosError(error)
+            ? error.response?.data?.error?.message || error.message
+            : error instanceof Error
+            ? error.message
+            : String(error);
+        console.error("[embeddedSignup] subscribed_apps failed", message);
+        res.status(502).json({ error: `WABA subscription failed: ${message}` });
+        return;
+      }
+
+      const verifyToken = generateVerifyToken();
+      const displayPhoneNumber = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken });
+      await persistCloudApiConfigForOrg({
+        orgId,
+        phoneNumberId,
+        wabaId,
+        accessTokenSecretName,
+        verifyToken,
+        displayPhoneNumber,
+      });
+
+      invalidateCloudApiCredentialsCache(orgId);
+
+      res.status(200).json({
+        ok: true,
+        phoneNumberId,
+        wabaId,
+        graphApiVersion: "v23.0",
+      });
+    } catch (error) {
+      console.error("exchangeEmbeddedSignupCode error", error);
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+);
+
+/**
+ * Expose the FB Login for Business config_id (and app_id) to the frontend so
+ * the Embedded Signup popup can be launched without baking these into the
+ * bundle at build time. Requires an authenticated user.
+ */
+export const getEmbeddedSignupConfig = onRequest(
+  { cors: true, region: REGION, secrets: [META_APP_ID, META_FB_LOGIN_CONFIG_ID] },
+  async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      await resolveOrgIdFromToken(authHeader);
+      res.status(200).json({
+        appId: META_APP_ID.value(),
+        configId: META_FB_LOGIN_CONFIG_ID.value(),
+        graphApiVersion: "v23.0",
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Meta Data Deletion Callback (required in App Basic Settings).
+ *
+ * Meta posts `signed_request` (base64url(sig).base64url(payload)) signed with the app secret.
+ * We verify the signature, record a request row keyed by a random confirmation code, and
+ * return `{url, confirmation_code}` so the user can track status at /legal/deletion-status.
+ *
+ * Proplead does not currently persist Facebook-scoped user IDs (we only see WhatsApp phone
+ * numbers via Cloud API), so there is no lead data keyed by `user_id` to delete. The row is
+ * still recorded for audit + the status page.
+ */
+export const metaDataDeletion = onRequest(
+  { cors: true, region: REGION, secrets: [META_APP_SECRET] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const signedRequest =
+        (req.body && typeof req.body.signed_request === "string" && req.body.signed_request) ||
+        (typeof req.query.signed_request === "string" ? req.query.signed_request : "");
+      if (!signedRequest || !signedRequest.includes(".")) {
+        res.status(400).json({ error: "Missing signed_request" });
+        return;
+      }
+      const [encodedSig, encodedPayload] = signedRequest.split(".", 2);
+      const b64urlToBuf = (s: string): Buffer =>
+        Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+      const sig = b64urlToBuf(encodedSig);
+      const expected = crypto
+        .createHmac("sha256", META_APP_SECRET.value())
+        .update(encodedPayload)
+        .digest();
+      if (sig.length !== expected.length || !crypto.timingSafeEqual(sig, expected)) {
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+      const payload = JSON.parse(b64urlToBuf(encodedPayload).toString("utf8")) as {
+        user_id?: string;
+        algorithm?: string;
+      };
+      const userId = payload.user_id || "unknown";
+
+      const confirmationCode = crypto.randomBytes(16).toString("hex");
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+      await db.doc(`dataDeletionRequests/${confirmationCode}`).set({
+        code: confirmationCode,
+        fbUserId: userId,
+        status: "completed",
+        requestedAt: new Date(),
+        note: "No Proplead data is keyed by Facebook user_id; nothing to erase.",
+      });
+
+      res.status(200).json({
+        url: `https://proplead.io/legal/deletion-status?code=${confirmationCode}`,
+        confirmation_code: confirmationCode,
+      });
+    } catch (error) {
+      console.error("metaDataDeletion error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+/**
+ * A5 — Customer-facing account deletion.
+ *
+ * Soft-deletes the org (`deletedAt` set), revokes Meta webhook subscription for the
+ * connected WABA, and destroys the per-org access token stored in Secret Manager.
+ * A daily scheduled job (`purgeDeletedOrganizations`) hard-deletes after 30 days.
+ */
+export const deleteMyOrganization = onRequest(
+  { cors: true, region: REGION, secrets: [META_APP_SECRET] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const orgId = await resolveOrgIdFromToken(req.headers.authorization);
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+
+      // Best-effort: revoke subscribed_apps + delete secret. Never block deletion.
+      try {
+        const creds = await getCloudApiCredentials(orgId);
+        await axios
+          .delete(`https://graph.facebook.com/${creds.graphApiVersion}/${creds.wabaId}/subscribed_apps`, {
+            headers: { Authorization: `Bearer ${creds.accessToken}` },
+            timeout: 10000,
+          })
+          .catch((err) => console.warn("subscribed_apps revoke failed:", err?.message || err));
+        // Delete the wabaIndex mapping.
+        await db.doc(`wabaIndex/${creds.wabaId}`).delete().catch(() => undefined);
+        // Delete the Secret Manager secret for this org.
+        try {
+          const sm = new SecretManagerServiceClient();
+          const projectId =
+            process.env.GCLOUD_PROJECT ||
+            process.env.GCP_PROJECT ||
+            process.env.GOOGLE_CLOUD_PROJECT ||
+            admin.app().options.projectId;
+          const secretName = `projects/${projectId}/secrets/whatsapp_org_${orgId}_token`;
+          await sm.deleteSecret({ name: secretName });
+        } catch (err) {
+          console.warn("secret delete failed:", (err as Error)?.message || err);
+        }
+      } catch (err) {
+        console.warn("Cloud API creds unavailable during org deletion:", (err as Error)?.message || err);
+      }
+
+      await db.doc(`organizations/${orgId}`).set(
+        { deletedAt: new Date(), deletedBy: "self_service" },
+        { merge: true }
+      );
+
+      res.status(200).json({ ok: true, scheduledHardDeleteInDays: 30 });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("deleteMyOrganization error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+/**
+ * A5 — Customer-facing data export (GDPR Art. 20 / DSAR).
+ *
+ * Gathers the org's Firestore footprint, writes a JSON snapshot to the default
+ * Storage bucket, generates a 7-day v4 signed URL, and emails it to the
+ * requester via SendGrid.
+ */
+export const exportMyData = onRequest(
+  { cors: true, region: REGION, secrets: [SENDGRID_API_KEY] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const orgId = await resolveOrgIdFromToken(req.headers.authorization);
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+
+      const orgDoc = await db.doc(`organizations/${orgId}`).get();
+      const subcollections = ["leads", "conversations", "listings", "auditLogs", "botConfig", "system_config"];
+      const data: Record<string, unknown> = {
+        orgId,
+        exportedAt: new Date().toISOString(),
+        organization: orgDoc.data() || null,
+      };
+      for (const name of subcollections) {
+        const snap = await db.collection(`organizations/${orgId}/${name}`).limit(5000).get();
+        data[name] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      }
+
+      const bucket = admin.storage().bucket();
+      const filePath = `dsar/${orgId}/${Date.now()}.json`;
+      const file = bucket.file(filePath);
+      await file.save(Buffer.from(JSON.stringify(data, null, 2), "utf8"), {
+        contentType: "application/json",
+        resumable: false,
+      });
+      const [url] = await file.getSignedUrl({
+        version: "v4",
+        action: "read",
+        expires: Date.now() + 7 * 24 * 3600 * 1000,
+      });
+
+      // Email the signed URL to the requester.
+      const user = await admin
+        .auth()
+        .getUser((await admin.auth().verifyIdToken((req.headers.authorization || "").replace(/^Bearer /, ""))).uid);
+      if (user.email) {
+        await sendEmailToUser({
+          to: user.email,
+          subject: "Tu exportación de datos de Proplead",
+          html: `<p>Hola,</p><p>Hemos preparado la exportación de los datos de tu organización. Podrás descargarla durante los próximos 7 días desde el siguiente enlace:</p><p><a href="${url}">Descargar exportación</a></p><p>Si no solicitaste esta exportación, ignora este correo o escribe a dpo@proplead.io.</p>`,
+        });
+      }
+
+      res.status(200).json({ ok: true, url, expiresInDays: 7 });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("exportMyData error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+/**
+ * Daily sweeper: hard-delete organizations soft-deleted >= 30 days ago.
+ * Recursive delete removes all subcollections (leads, conversations, etc.).
+ */
+export const purgeDeletedOrganizations = onSchedule(
+  { schedule: "0 3 * * *", region: REGION, timeZone: "Europe/Madrid" },
+  async () => {
+    const DATABASE_ID = "realestate-whatsapp-bot";
+    const db = getFirestore(admin.app(), DATABASE_ID);
+    const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const snap = await db
+      .collection("organizations")
+      .where("deletedAt", "<=", cutoff)
+      .limit(50)
+      .get();
+    for (const doc of snap.docs) {
+      try {
+        await db.recursiveDelete(doc.ref);
+        console.log(`purgeDeletedOrganizations: hard-deleted org ${doc.id}`);
+      } catch (err) {
+        console.error(`purgeDeletedOrganizations failed for ${doc.id}:`, err);
+      }
+    }
+  }
+);
+
+/**
+ * A6c — /w/{listingCode} short-link.
+ *
+ * Resolves the org that owns the listing, reads its `cloudApiConfig.displayPhoneNumber`,
+ * and 302-redirects to a pre-filled wa.me deep link. The consumer's click does not
+ * create consent by itself — consent is recorded when they actually send the message
+ * (inbound webhook sees the matching pattern and stamps the lead).
+ */
+export const waRedirect = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    try {
+      // path: /waRedirect/{listingCode}  OR  ?code={listingCode}
+      const pathParts = (req.path || "").split("/").filter(Boolean);
+      const listingCode =
+        (typeof req.query.code === "string" && req.query.code) ||
+        pathParts[pathParts.length - 1] ||
+        "";
+      if (!listingCode || !/^[a-zA-Z0-9_-]{3,20}$/.test(listingCode)) {
+        res.status(400).send("Invalid listing code");
+        return;
+      }
+
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+      // Listings live at organizations/{orgId}/listings/{listingCode}. Use collectionGroup.
+      const snap = await db
+        .collectionGroup("listings")
+        .where("listingCode", "==", listingCode)
+        .limit(1)
+        .get();
+      if (snap.empty) {
+        res.status(404).send("Listing not found");
+        return;
+      }
+      const orgId = snap.docs[0].ref.path.split("/")[1];
+      const cfgDoc = await db.doc(`organizations/${orgId}/botConfig/config`).get();
+      const displayPhone = (cfgDoc.data()?.cloudApiConfig?.displayPhoneNumber as string | undefined) || "";
+      if (!displayPhone) {
+        res.status(503).send("Phone number not configured for this organization");
+        return;
+      }
+
+      const text = `Hola, me interesa la vivienda ${listingCode}`;
+      const waUrl = `https://wa.me/${displayPhone}?text=${encodeURIComponent(text)}`;
+      res.redirect(302, waUrl);
+    } catch (error) {
+      console.error("waRedirect error:", error);
+      res.status(500).send("Internal server error");
+    }
+  }
+);
 
 export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {

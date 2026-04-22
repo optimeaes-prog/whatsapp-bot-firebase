@@ -7,16 +7,11 @@ if (!admin.apps.length) {
 }
 
 const db = admin.firestore();
-const DATABASE_ID = "realestate-whatsapp-bot";
-const orgDb = db.recursiveResource ? db : (db as any).doc ? db : db; // Just safety
 
 async function check() {
   const email = "ejperezreyes@gmail.com";
   console.log("Checking user:", email);
-  
-  // Real database ID handling if needed
-  const realDb = (admin.firestore() as any).request ? admin.firestore() : admin.firestore();
-  
+
   const usersSnap = await db.collection("users").where("email", "==", email).get();
   if (usersSnap.empty) {
     console.log("User not found by email");

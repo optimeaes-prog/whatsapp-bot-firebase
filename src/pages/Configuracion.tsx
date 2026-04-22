@@ -7,6 +7,21 @@ import { useAuth } from "../contexts/AuthContext";
 import { Bell } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button, PageHeader, PageLoading } from "../components/ui";
+import { auth } from "../lib/firebase";
+
+const FUNCTIONS_BASE_URL =
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL ||
+  "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
+
+async function callAuthed(path: string): Promise<Response> {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No autenticado");
+  const token = await user.getIdToken();
+  return fetch(`${FUNCTIONS_BASE_URL}/${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
 
 export function Configuracion() {
   const { organizationId, role } = useAuth();
@@ -19,6 +34,38 @@ export function Configuracion() {
   const [savingOrg, setSavingOrg] = useState(false);
   const [notificationNumbers, setNotificationNumbers] = useState("");
   const [savingNotifications, setSavingNotifications] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleExportData() {
+    setExporting(true);
+    try {
+      const res = await callAuthed("exportMyData");
+      if (!res.ok) throw new Error(`Error ${res.status}`);
+      toast.success("Exportación enviada a tu correo. Revisa tu bandeja de entrada.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo exportar los datos");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleDeleteOrganization() {
+    const confirmed = window.confirm(
+      "¿Seguro que quieres eliminar tu organización? Se desconectará WhatsApp y tus datos se borrarán de forma definitiva en 30 días."
+    );
+    if (!confirmed) return;
+    setDeleting(true);
+    try {
+      const res = await callAuthed("deleteMyOrganization");
+      if (!res.ok) throw new Error(`Error ${res.status}`);
+      toast.success("Tu organización se ha marcado para eliminación. Se borrará definitivamente en 30 días.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo eliminar la organización");
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   useEffect(() => {
     if (organizationId) {
@@ -366,6 +413,24 @@ export function Configuracion() {
           </div>
         </div>
       </div>
+
+      {role === "owner" && (
+        <div className="mt-8 bg-white rounded-xl border border-gray-200 p-6">
+          <h3 className="text-lg font-bold text-gray-900 mb-1 font-heading">Privacidad y datos</h3>
+          <p className="text-sm text-gray-600 mb-4">
+            Descarga una copia de los datos de tu organización o solicita su eliminación. Puedes consultar nuestra{" "}
+            <a href="/privacy" className="underline">Política de Privacidad</a>.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Button onClick={handleExportData} disabled={exporting} variant="secondary">
+              {exporting ? "Preparando exportación..." : "Exportar mis datos"}
+            </Button>
+            <Button onClick={handleDeleteOrganization} disabled={deleting} variant="secondary">
+              {deleting ? "Procesando..." : "Eliminar mi organización"}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

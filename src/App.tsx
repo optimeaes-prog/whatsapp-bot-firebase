@@ -19,6 +19,8 @@ import { MarketingLandingV2 } from "./pages/MarketingLandingV2";
 import { Users } from "./pages/Users";
 import { Subscription } from "./pages/Subscription";
 import { Onboarding } from "./pages/Onboarding";
+import { ConnectWhatsApp } from "./pages/ConnectWhatsApp";
+import { DeletionStatus } from "./pages/DeletionStatus";
 import { AdminOnboards } from "./pages/AdminOnboards";
 import { AdminTools } from "./pages/AdminTools";
 import { LegalDoc } from "./pages/LegalDoc";
@@ -100,6 +102,7 @@ function App() {
             <Route path="/privacy" element={<LegalDoc title="Política de Privacidad" path="/legal/privacy.es.md" />} />
             <Route path="/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
             <Route path="/aviso-legal" element={<LegalDoc title="Aviso Legal" path="/legal/aviso.es.md" />} />
+            <Route path="/legal/deletion-status" element={<DeletionStatus />} />
             <Route
               path="/_internal/whatsapp-leads-animation"
               element={
@@ -132,6 +135,16 @@ function App() {
                 <ProtectedRoute>
                   <Layout>
                     <Onboarding />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/connect-whatsapp"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ConnectWhatsApp />
                   </Layout>
                 </ProtectedRoute>
               }

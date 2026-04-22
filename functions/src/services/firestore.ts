@@ -1,6 +1,6 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-import { ListingRow, ListingForResolution, BotConfig, BotStyle, ConversationState, QualificationStatus, HistoryItem, OperationType } from "../types";
+import { ListingRow, ListingForResolution, BotConfig, BotStyle, ConversationState, QualificationStatus, HistoryItem, OperationType, CloudApiConfig, CloudApiTemplateNames } from "../types";
 import { getChatIdVariants, normalizeToCanonicalChatId } from "../utils";
 import { normalizeForSearch } from "../utils/addressNormalize";
 
@@ -811,6 +811,29 @@ export async function getActiveStyle(): Promise<BotStyle> {
   const config = await getBotConfig();
   const activeStyle = config.styles.find((s) => s.id === config.activeStyleId);
   return activeStyle || DEFAULT_STYLES[0];
+}
+
+/**
+ * Merge-update the Cloud API configuration on the org's botConfig document.
+ * Accepts a partial CloudApiConfig; fields that aren't included are left untouched.
+ */
+export async function updateCloudApiConfig(patch: Partial<CloudApiConfig>): Promise<void> {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    cleaned[key] = value;
+  }
+  if (Object.keys(cleaned).length === 0) return;
+  const docRef = getOrgDb().collection("botConfig").doc("config");
+  await docRef.set({ cloudApiConfig: cleaned }, { merge: true });
+}
+
+/**
+ * Persist the template names generated via `createCloudApiTemplates`.
+ */
+export async function updateCloudApiTemplates(templates: CloudApiTemplateNames): Promise<void> {
+  const docRef = getOrgDb().collection("botConfig").doc("config");
+  await docRef.set({ cloudApiConfig: { templates } }, { merge: true });
 }
 
 // Update lead status when qualified or rejected

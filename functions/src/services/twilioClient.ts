@@ -4,6 +4,9 @@ import { TWILIO_AUTH_TOKEN } from "../secrets";
 
 const TWILIO_ACCOUNT_SID = defineString("TWILIO_ACCOUNT_SID");
 const TWILIO_WHATSAPP_NUMBER = defineString("TWILIO_WHATSAPP_NUMBER");
+// A6c — alphanumeric sender ID (e.g. "Marcos") used for opt-in SMS to cold Idealista leads.
+// Alphanumeric IDs don't accept replies; that's intentional — replies go via the wa.me link.
+const TWILIO_SMS_SENDER_ID = defineString("TWILIO_SMS_SENDER_ID");
 
 // Content Template SIDs for initial contact (business-initiated messages)
 const TEMPLATE_SID_ES = "HX24e33398987966c0716def76e02d8a04";
@@ -83,6 +86,29 @@ export async function sendText(params: SendTextParams): Promise<SendTextResult> 
     chatId: params.chatId || params.to,
     messageId: data.sid,
   };
+}
+
+/**
+ * A6c — Send a plain SMS (not WhatsApp) via Twilio. Uses the alphanumeric sender ID
+ * configured in TWILIO_SMS_SENDER_ID. Spain supports alphanumeric without pre-registration.
+ */
+export async function sendSms(params: { to: string; body: string }): Promise<{ messageId: string }> {
+  const accountSid = TWILIO_ACCOUNT_SID.value();
+  const authToken = TWILIO_AUTH_TOKEN.value();
+  const senderId = TWILIO_SMS_SENDER_ID.value();
+  if (!accountSid || !authToken || !senderId) {
+    throw new Error("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN or TWILIO_SMS_SENDER_ID not configured");
+  }
+  const to = params.to.startsWith("+") ? params.to : `+${params.to.replace(/^\+?/, "")}`;
+  const response = await axios.post(
+    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+    new URLSearchParams({ From: senderId, To: to, Body: params.body }).toString(),
+    {
+      auth: { username: accountSid, password: authToken },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    }
+  );
+  return { messageId: response.data.sid };
 }
 
 function twilioErrorCode(error: unknown): number | undefined {

@@ -29,6 +29,10 @@
     ],
     "rewrites": [
       {
+        "source": "/w/**",
+        "function": "waRedirect"
+      },
+      {
         "source": "/landingv2/**",
         "destination": "/index.html"
       },

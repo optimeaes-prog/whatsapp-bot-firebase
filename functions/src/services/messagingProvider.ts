@@ -5,8 +5,14 @@ import {
   sendTemplate as twilioSendTemplate,
   sendTextWithTemplateFallback as twilioSendTextWithTemplateFallback,
 } from "./twilioClient";
+import {
+  sendText as cloudApiSendText,
+  sendTemplate as cloudApiSendTemplate,
+  sendTextWithTemplateFallback as cloudApiSendTextWithTemplateFallback,
+  getCloudApiCredentials,
+} from "./cloudApiClient";
 
-type MessagingProvider = "whapi" | "twilio";
+type MessagingProvider = "whapi" | "twilio" | "cloud_api";
 
 type SendTextParams = {
   to: string;
@@ -25,7 +31,10 @@ type SendTemplateParams = {
   language: "es" | "en";
   variables: Record<string, string>;
   mediaUrl?: string;
+  /** Twilio ContentSid (ignored by Cloud API / Whapi). */
   templateSid?: string;
+  /** Cloud API template name (ignored by Twilio / Whapi). */
+  templateName?: string;
 };
 
 import { getFirestore } from "firebase-admin/firestore";
@@ -68,8 +77,59 @@ export async function getActiveProvider(): Promise<MessagingProvider> {
 }
 
 /**
- * Send a WhatsApp message using the configured provider (Whapi or Twilio)
- * For messages within the 24h customer service window or via Whapi
+ * A6a/b gate — throws if the lead has not opted in or has opted out.
+ *
+ * Rules (Cloud API / template-sending path):
+ *  1. Opt-out wins: if the chat is in ignoredChats, reject immediately.
+ *  2. Opt-in required: the lead must either have a `consent` record OR a prior
+ *     inbound message (which auto-creates implicit consent via source
+ *     "inbound_whatsapp"). We approximate "prior inbound" by the existence of a
+ *     conversation state or chatId on the lead.
+ *
+ * Error messages are surfaced to the UI so users know to capture consent first.
+ */
+async function assertTemplateSendAllowed(params: { to: string; chatId?: string }): Promise<void> {
+  const orgId = getActiveOrgId();
+  if (!orgId) return; // no org context → skip (scripts/tests)
+  const db = getFirestore(admin.app(), DATABASE_ID);
+
+  // 1) Opt-out check
+  const chatIdCandidates = [
+    params.chatId,
+    `${params.to.replace(/[^0-9]/g, "")}@s.whatsapp.net`,
+    params.to.replace(/[^0-9]/g, ""),
+  ].filter(Boolean) as string[];
+  for (const cid of chatIdCandidates) {
+    const ig = await db.doc(`organizations/${orgId}/ignoredChats/${cid}`).get();
+    if (ig.exists) {
+      throw new Error(
+        "No se puede enviar: el usuario ha solicitado dejar de recibir mensajes (opt-out)."
+      );
+    }
+  }
+
+  // 2) Opt-in check — find lead by phone
+  const phoneDigits = params.to.replace(/[^0-9]/g, "");
+  const leadsRef = db.collection(`organizations/${orgId}/leads`);
+  const snap = await leadsRef.where("phone", "==", phoneDigits).limit(1).get();
+  const lead = snap.docs[0]?.data() as { consent?: unknown; hasResponse?: boolean } | undefined;
+  if (!lead) {
+    throw new Error(
+      "No se puede enviar: no hay un lead con consentimiento registrado para este número."
+    );
+  }
+  const hasConsent = Boolean(lead.consent);
+  const hasInbound = Boolean(lead.hasResponse);
+  if (!hasConsent && !hasInbound) {
+    throw new Error(
+      "No se puede enviar: el lead no tiene prueba de consentimiento (opt-in). Registra el consentimiento antes de enviar plantillas."
+    );
+  }
+}
+
+/**
+ * Send a WhatsApp message using the configured provider (Whapi, Twilio or Cloud API).
+ * For messages within the 24h customer service window or via Whapi (which has no window).
  */
 export async function sendTextMessage(params: SendTextParams): Promise<SendTextResult> {
   const provider = await getActiveProvider();
@@ -79,28 +139,52 @@ export async function sendTextMessage(params: SendTextParams): Promise<SendTextR
   if (provider === "twilio") {
     return twilioSendText(params);
   }
-
+  if (provider === "cloud_api") {
+    return cloudApiSendText(params);
+  }
   return whapiSendText(params);
 }
 
 /**
- * Send initial contact message using a template (Twilio) or plain text (Whapi)
- * Twilio requires approved templates for business-initiated messages (outside 24h window)
- * Returns the full message text that was sent (for history tracking)
+ * Send initial contact message using a template (Twilio / Cloud API) or plain text (Whapi).
+ * Twilio and Cloud API require approved templates for business-initiated messages outside the 24h window.
+ * Returns the full message text that was sent (for history tracking).
  */
 export async function sendInitialTemplateMessage(params: SendTemplateParams): Promise<SendTextResult> {
   const provider = await getActiveProvider();
 
   console.log(`Sending initial template message via ${provider} to ${params.to}`);
 
+  // A6a/b — enforce opt-in + opt-out for Cloud API business-initiated messages.
+  // Twilio / Whapi paths are legacy and will be deprecated; gates are applied only to cloud_api.
+  if (provider === "cloud_api") {
+    await assertTemplateSendAllowed({ to: params.to, chatId: params.chatId });
+  }
+
   if (provider === "twilio") {
     return twilioSendTemplate(params);
   }
 
+  if (provider === "cloud_api") {
+    if (!params.templateName) {
+      throw new Error(
+        "sendInitialTemplateMessage: cloud_api requires `templateName` (resolve from botConfig.cloudApiConfig.templates)"
+      );
+    }
+    return cloudApiSendTemplate({
+      to: params.to,
+      chatId: params.chatId,
+      language: params.language,
+      variables: params.variables,
+      templateName: params.templateName,
+      mediaUrl: params.mediaUrl,
+    });
+  }
+
   // For Whapi, we just send the composed text as before (no template needed)
   // The caller should handle this by sending regular messages via sendTextMessage
-  // This function is only needed for Twilio template flow
-  throw new Error("sendInitialTemplateMessage should only be called when Twilio is active");
+  // This function is only needed for Twilio / Cloud API template flow
+  throw new Error("sendInitialTemplateMessage should only be called when Twilio or Cloud API is active");
 }
 
 export async function sendAgentNotificationMessage(params: {
@@ -108,6 +192,10 @@ export async function sendAgentNotificationMessage(params: {
   body: string;
   chatId?: string;
   templateSid?: string;
+  /** Cloud API-only: template name used for the 24h-window fallback. */
+  cloudApiTemplateName?: string;
+  /** Cloud API-only: language for the fallback template. Defaults to "es". */
+  cloudApiTemplateLanguage?: "es" | "en";
   context?: string;
 }): Promise<SendTextResult> {
   const provider = await getActiveProvider();
@@ -123,6 +211,36 @@ export async function sendAgentNotificationMessage(params: {
     });
     if (result.usedTemplateFallback) {
       console.log(`Agent notification sent via Twilio template fallback to ${params.to}`);
+    }
+    return { chatId: result.chatId, messageId: result.messageId };
+  }
+
+  if (provider === "cloud_api") {
+    // If no explicit template name was passed, try to resolve the default agent-notification
+    // template from the org's cloudApiConfig.templates (keyed by language).
+    let templateName = params.cloudApiTemplateName;
+    const language = params.cloudApiTemplateLanguage || "es";
+    if (!templateName) {
+      try {
+        const creds = await getCloudApiCredentials();
+        templateName =
+          language === "en"
+            ? creds.templates?.agentNotificationEn
+            : creds.templates?.agentNotificationEs;
+      } catch (error) {
+        console.warn("[cloud_api] Could not load templates for agent notification fallback", error);
+      }
+    }
+    const result = await cloudApiSendTextWithTemplateFallback({
+      to: params.to,
+      body: params.body,
+      chatId: params.chatId,
+      templateName,
+      templateLanguage: language,
+      context: params.context,
+    });
+    if (result.usedTemplateFallback) {
+      console.log(`Agent notification sent via Cloud API template fallback to ${params.to}`);
     }
     return { chatId: result.chatId, messageId: result.messageId };
   }

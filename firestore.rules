@@ -2,7 +2,14 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
+    // Public status page for Meta Data Deletion Requests. Readable by anyone who
+    // knows the opaque confirmation code (the doc ID); writes are server-only.
+    match /dataDeletionRequests/{code} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     function isAuthenticated() {
       return request.auth != null;
     }

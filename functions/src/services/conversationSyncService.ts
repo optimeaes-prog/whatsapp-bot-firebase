@@ -43,13 +43,14 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
         
         const discrepancies: SyncDiscrepancy[] = [];
 
-        if (activeProvider === "twilio") {
-            console.log("Twilio is active - skipping Whapi chat sync (Twilio does not support listing chats)");
-            
+        if (activeProvider === "twilio" || activeProvider === "cloud_api") {
+            const providerLabel = activeProvider === "twilio" ? "Twilio" : "Cloud API";
+            console.log(`${providerLabel} is active - skipping chat listing sync (provider does not support listing chats)`);
+
             // Still perform essential maintenance tasks
             const failedStats = await retryFailedMessages();
             result.failedMessagesRetried = failedStats.retried;
-            
+
             // Check stale buffers
             const staleBuffers = await getStaleBuffers(STALE_BUFFER_THRESHOLD_MINUTES);
             for (const conv of staleBuffers) {
@@ -60,15 +61,15 @@ export async function syncConversationsWithWhapi(options: { silent?: boolean } =
                     firestoreTimestamp: conv.bufferExpiresAt,
                 });
             }
-            
+
             result.discrepanciesFound = discrepancies.length;
 
             // Handle discrepancies (alerts)
             if (discrepancies.length > 0 && !silent) {
                 await sendAlert(
-                    "Mantenimiento de Twilio",
+                    `Mantenimiento de ${providerLabel}`,
                     `Se detectaron ${discrepancies.length} temas pendientes (buffers atascados)`,
-                    { examples: discrepancies.slice(0, 5) },
+                    { examples: discrepancies.slice(0, 5), provider: activeProvider },
                     "warning"
                 );
             }
