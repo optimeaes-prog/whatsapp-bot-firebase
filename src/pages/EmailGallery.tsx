@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Mail, CheckCircle2, AlertTriangle, XCircle, CreditCard, Sparkles, Zap, ShieldCheck, Heart, ArrowRight, Megaphone } from "lucide-react";
+import { Mail, CheckCircle2, AlertTriangle, XCircle, CreditCard, Sparkles, Zap, ShieldCheck, ArrowRight } from "lucide-react";
 import { cn } from "../lib/utils";
 
 type EmailType = "welcome" | "low_balance" | "payment_failed";

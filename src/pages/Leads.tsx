@@ -146,8 +146,6 @@ export function Leads() {
   const [isMassMessageModalOpen, setIsMassMessageModalOpen] = useState(false);
   const [massMessageText, setMassMessageText] = useState("");
   const [sendingMassMessage, setSendingMassMessage] = useState(false);
-  const { user } = useAuth();
-
   const [isBulkActionsOpen, setIsBulkActionsOpen] = useState(false);
   const [activeBulkModal, setActiveBulkModal] = useState<null | "delete" | "status" | "addTags" | "removeTag" | "listing">(null);
 

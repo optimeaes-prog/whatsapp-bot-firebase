@@ -11,8 +11,6 @@ import {
 import { db } from "../lib/firebase";
 import type { SystemAlert } from "../types";
 
-import { getOrganizationBasePath } from "../lib/organization";
-
 function getAlertsCollection() {
     return "system_alerts";
 }

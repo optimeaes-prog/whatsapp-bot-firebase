@@ -52,14 +52,13 @@ const adminNavItems: NavItem[] = [
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { user, signOut, role } = useAuth();
+  const { user, signOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCurrentlyInAdminRoute = adminNavItems.some(item => location.pathname === item.href);
   const [adminExpanded, setAdminExpanded] = useState(isCurrentlyInAdminRoute);
   const isAdmin = user?.email === "ejperezreyes@gmail.com";
-  const isOwnerOrAdmin = role === 'owner' || role === 'admin';
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(true);
 
   useEffect(() => {

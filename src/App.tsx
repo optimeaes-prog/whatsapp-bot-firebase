@@ -29,7 +29,6 @@ import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 import FontGallery from "./pages/FontGallery";
 import EmailGallery from "./pages/EmailGallery";
 import { TeamManagement } from "./pages/TeamManagement";
-import { useAuth } from "./contexts/AuthContext";
 
 import { useEffect } from "react";
 import { usePageTracking } from "./hooks/usePageTracking";

@@ -3,28 +3,38 @@ import { toast } from "sonner";
 import { 
   Rocket, 
   Search, 
-  X, 
   CheckCircle, 
   AlertCircle, 
   Building2, 
   RefreshCw,
-  Info
+  Info,
+  KeyRound
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { getLeads } from "../services/leads";
 import { retryMissingLeads } from "../services/conversations";
 import { getAllOrganizations } from "../services/organization";
 import { Button, PageHeader, PageContainer, PageLoading } from "../components/ui";
-import { cn } from "../lib/utils";
 import { setOrganizationId } from "../lib/organization";
 import type { Lead } from "../types";
+import { auth } from "../lib/firebase";
 
 interface LeadWithMessages extends Lead {
   messageCount?: number;
 }
 
 export function AdminTools() {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
+  const adminEmails = (
+    (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_ADMIN_EMAILS ||
+    "ejperezreyes@gmail.com"
+  )
+    .split(",")
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean);
+  const canUseManualCloudApiFallback = Boolean(
+    role === "owner" && user?.email && adminEmails.includes(user.email.toLowerCase())
+  );
   const [organizations, setOrganizations] = useState<{ id: string; agencyName?: string }[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState("");
   const [loadingOrgs, setLoadingOrgs] = useState(true);
@@ -33,6 +43,14 @@ export function AdminTools() {
   const [stuckLeads, setStuckLeads] = useState<LeadWithMessages[]>([]);
   const [selectedStuckIds, setSelectedStuckIds] = useState<Set<string>>(new Set());
   const [retrying, setRetrying] = useState(false);
+  const [manualToken, setManualToken] = useState("");
+  const [manualPhoneNumberId, setManualPhoneNumberId] = useState("");
+  const [manualWabaId, setManualWabaId] = useState("");
+  const [savingManual, setSavingManual] = useState(false);
+
+  const FUNCTIONS_BASE_URL =
+    (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL ||
+    "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
 
   useEffect(() => {
     loadOrgs();
@@ -64,7 +82,7 @@ export function AdminTools() {
     try {
       // Temporarily set the organization ID to scan its leads
       setOrganizationId(selectedOrgId);
-      const leads = await getLeads();
+      const leads = (await getLeads()) as LeadWithMessages[];
       
       // Filter leads with 0 messages (stuck)
       const stuck = leads.filter(l => (l.messageCount || 0) === 0 && l.qualificationStatus !== "rejected");
@@ -114,6 +132,43 @@ export function AdminTools() {
     }
   }
 
+  async function handleSaveManualCloudApiConfig() {
+    if (!canUseManualCloudApiFallback) return;
+    if (!manualToken.trim() || !manualPhoneNumberId.trim() || !manualWabaId.trim()) {
+      toast.error("Completa access token, phone_number_id y waba_id.");
+      return;
+    }
+    try {
+      setSavingManual(true);
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error("No autenticado");
+      const idToken = await currentUser.getIdToken();
+      const response = await fetch(`${FUNCTIONS_BASE_URL}/setManualCloudApiConfig`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          accessToken: manualToken.trim(),
+          phoneNumberId: manualPhoneNumberId.trim(),
+          wabaId: manualWabaId.trim(),
+        }),
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Error ${response.status}`);
+      }
+      toast.success("Cloud API configurado manualmente para esta organización.");
+      setManualToken("");
+    } catch (error) {
+      console.error("Error saving manual Cloud API config:", error);
+      toast.error(error instanceof Error ? error.message : "No se pudo guardar la configuración manual");
+    } finally {
+      setSavingManual(false);
+    }
+  }
+
   const formatPhone = (phone?: string) => {
     if (!phone) return "—";
     return phone.startsWith("+") ? phone : `+${phone}`;
@@ -124,7 +179,7 @@ export function AdminTools() {
   }
 
   return (
-    <PageContainer maxWidth="5xl">
+    <PageContainer maxWidth="6xl">
       <PageHeader
         title="Herramientas de Administración"
         subtitle="Utilidades avanzadas para mantenimiento del sistema y recuperación de datos."
@@ -295,6 +350,61 @@ export function AdminTools() {
             <p className="text-sm text-gray-400">Próximamente: Gestión centralizada de credenciales de usuario.</p>
           </div>
         </div>
+
+        {canUseManualCloudApiFallback && (
+          <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex items-center gap-3">
+              <div className="p-2 bg-amber-100 rounded-lg text-amber-700">
+                <KeyRound size={20} />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 font-heading">Cloud API Fallback (Admins internos)</h2>
+                <p className="text-sm text-gray-500">
+                  Ruta de respaldo para configurar token manualmente solo en soporte interno.
+                </p>
+              </div>
+            </div>
+            <div className="p-6 grid grid-cols-1 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Access Token</label>
+                <input
+                  type="password"
+                  value={manualToken}
+                  onChange={(e) => setManualToken(e.target.value)}
+                  className="w-full rounded-xl border border-gray-300 px-3 py-2"
+                  placeholder="EAA..."
+                />
+              </div>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number ID</label>
+                  <input
+                    type="text"
+                    value={manualPhoneNumberId}
+                    onChange={(e) => setManualPhoneNumberId(e.target.value)}
+                    className="w-full rounded-xl border border-gray-300 px-3 py-2"
+                    placeholder="123456789012345"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">WABA ID</label>
+                  <input
+                    type="text"
+                    value={manualWabaId}
+                    onChange={(e) => setManualWabaId(e.target.value)}
+                    className="w-full rounded-xl border border-gray-300 px-3 py-2"
+                    placeholder="109876543210987"
+                  />
+                </div>
+              </div>
+              <div>
+                <Button onClick={handleSaveManualCloudApiConfig} loading={savingManual}>
+                  Guardar configuración manual
+                </Button>
+              </div>
+            </div>
+          </section>
+        )}
       </div>
     </PageContainer>
   );

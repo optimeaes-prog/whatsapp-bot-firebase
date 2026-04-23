@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Users as UsersIcon, Search, Mail, Calendar, UserPlus, ShieldCheck, Shield, Trash2, X, Plus, LogIn } from "lucide-react";
+import { Users as UsersIcon, Search, Calendar, UserPlus, ShieldCheck, Shield, Trash2, X, Plus } from "lucide-react";
 import { getOrgMembers, getOrgInvitations, sendInvitation, deleteInvitation, removeUserFromOrg, type SystemUser, type Invitation } from "../services/users";
 import { formatDate } from "../lib/utils";
 import { PageHeader, FilterCard, PageLoading, Button } from "../components/ui";
@@ -199,7 +199,7 @@ export function TeamManagement() {
                       <td className="px-6 py-5">
                         <div className="flex items-center gap-2 text-xs text-gray-500 font-body">
                           <Calendar size={14} className="text-gray-400" />
-                          {formatDate(new Date(member.createdAt))}
+                          {member.createdAt ? formatDate(new Date(member.createdAt)) : "N/A"}
                         </div>
                       </td>
                       <td className="px-6 py-5 text-right">

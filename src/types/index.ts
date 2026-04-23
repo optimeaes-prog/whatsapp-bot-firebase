@@ -115,6 +115,7 @@ export type BotConfig = {
   styles: BotStyle[];
   messagingProvider?: MessagingProvider;
   orgName?: string;                       // Nombre de la inmobiliaria
+  notificationNumbers?: string;
 };
 
 export type MessagingProvider = "whapi" | "twilio";

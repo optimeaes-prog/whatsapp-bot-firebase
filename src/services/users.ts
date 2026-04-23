@@ -6,10 +6,13 @@ const FUNCTIONS_BASE_URL = "https://europe-west1-real-estate-idealista-bot.cloud
 export type SystemUser = {
   uid: string;
   email: string;
-  name: string;
+  name?: string;
+  displayName?: string;
   role: string;
   orgId: string;
-  createdAt: string;
+  createdAt?: string;
+  creationTime?: string;
+  lastSignInTime?: string;
 };
 
 export type Invitation = {
