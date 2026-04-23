@@ -39,8 +39,10 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />;
   }
 
-  // Force onboarding if not completed and we are not already on the onboarding or billing routes
-  if (onboardingCompleted === false && !location.pathname.startsWith("/onboarding")) {
+  // Force onboarding if not completed, but allow onboarding-adjacent setup routes.
+  const isAllowedDuringOnboarding =
+    location.pathname.startsWith("/onboarding") || location.pathname.startsWith("/connect-whatsapp");
+  if (onboardingCompleted === false && !isAllowedDuringOnboarding) {
     return <Navigate to="/onboarding" replace />;
   }
 

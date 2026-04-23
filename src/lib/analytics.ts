@@ -6,6 +6,28 @@ declare global {
   }
 }
 
+let isAnalyticsInitialized = false;
+
+export function initializeAnalytics() {
+  if (typeof window === "undefined" || isAnalyticsInitialized) return;
+
+  const id = import.meta.env.VITE_GA_MEASUREMENT_ID as string | undefined;
+  if (!id) return;
+
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = window.gtag || ((...args: unknown[]) => window.dataLayer.push(args));
+  window.gtag("js", new Date());
+  // send_page_view: false — SPA page views are fired manually via usePageTracking
+  window.gtag("config", id, { send_page_view: false });
+
+  const script = document.createElement("script");
+  script.async = true;
+  script.src = `https://www.googletagmanager.com/gtag/js?id=${id}`;
+  document.head.appendChild(script);
+
+  isAnalyticsInitialized = true;
+}
+
 function trackEvent(name: string, params?: Record<string, unknown>) {
   if (typeof window === "undefined" || typeof window.gtag !== "function") return;
   window.gtag("event", name, params);

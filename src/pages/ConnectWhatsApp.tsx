@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { MessageCircle, CheckCircle, Loader2, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button, PageContainer, PageHeader } from "../components/ui";
 import { runEmbeddedSignup } from "../services/embeddedSignup";
+import { getBotConfig } from "../services/botConfig";
+import { getOrganizationSettings, updateOrganizationSettings } from "../services/organization";
 
 type ConnectedState = {
   phoneNumberId: string;
@@ -14,11 +16,24 @@ export function ConnectWhatsApp() {
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState<ConnectedState | null>(null);
 
+  async function advanceOnboardingAfterConnect() {
+    try {
+      const settings = await getOrganizationSettings();
+      const currentStep = settings.onboardingStep || 1;
+      if (currentStep <= 2) {
+        await updateOrganizationSettings({ onboardingStep: 3 });
+      }
+    } catch (error) {
+      console.error("Could not update onboarding step after connection:", error);
+    }
+  }
+
   async function handleConnect() {
     setLoading(true);
     try {
       const result = await runEmbeddedSignup();
       setConnected({ phoneNumberId: result.phoneNumberId, wabaId: result.wabaId });
+      await advanceOnboardingAfterConnect();
       toast.success("WhatsApp Business conectado correctamente");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Error al conectar con Meta";
@@ -27,6 +42,20 @@ export function ConnectWhatsApp() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const cfg = await getBotConfig();
+        const cloudApiCfg = (cfg as unknown as { cloudApiConfig?: { phoneNumberId?: string; wabaId?: string } }).cloudApiConfig;
+        if (cloudApiCfg?.phoneNumberId && cloudApiCfg?.wabaId) {
+          setConnected({ phoneNumberId: cloudApiCfg.phoneNumberId, wabaId: cloudApiCfg.wabaId });
+        }
+      } catch (error) {
+        console.error("Failed loading existing Cloud API config:", error);
+      }
+    })();
+  }, []);
 
   return (
     <PageContainer>
@@ -50,8 +79,8 @@ export function ConnectWhatsApp() {
               <div><dt className="inline font-bold">WABA ID:</dt> <dd className="inline">{connected.wabaId}</dd></div>
             </dl>
             <div className="mt-5">
-              <Link to="/dashboard">
-                <Button variant="primary">Ir al dashboard</Button>
+              <Link to="/onboarding">
+                <Button variant="primary">Volver al onboarding</Button>
               </Link>
             </div>
           </div>

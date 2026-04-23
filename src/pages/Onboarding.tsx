@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { CheckCircle, Lock, ArrowRight, Calendar, Mail, Clock, Coins, ChevronDown, CheckSquare, Square } from "lucide-react";
+import { CheckCircle, Lock, ArrowRight, Mail, Clock, Coins, ChevronDown, CheckSquare, Square, MessageCircle } from "lucide-react";
 import { getOrganizationSettings, updateOrganizationSettings } from "../services/organization";
 import type { OrganizationSettings } from "../services/organization";
-import { PopupModal, useCalendlyEventListener } from "react-calendly";
 import { Link, useSearchParams } from "react-router-dom";
 import { getAvailableConversations, getConversationPackages, createCheckoutSession, formatPrice } from "../services/subscription";
 import { analytics } from "../lib/analytics";
@@ -11,12 +10,14 @@ import type { ConversationPackage } from "../types";
 import { CreditCard, AlertCircle } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button, PageLoading } from "../components/ui";
+import { getBotConfig } from "../services/botConfig";
 
 export function Onboarding() {
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<OrganizationSettings | null>(null);
   const [saving, setSaving] = useState(false);
-  const [showCalendlyModal, setShowCalendlyModal] = useState(false);
+  const [checkingConnection, setCheckingConnection] = useState(true);
+  const [whatsAppConnected, setWhatsAppConnected] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
   const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({
     1: true,
@@ -42,23 +43,6 @@ export function Onboarding() {
   const [conversationsLoading, setConversationsLoading] = useState(true);
 
   const currentStep = settings?.onboardingStep || 1;
-
-  useCalendlyEventListener({
-    onEventScheduled: async () => {
-      analytics.trackCalendlyScheduled();
-      setShowCalendlyModal(false);
-      // Update step to 3 if we were on step 2
-      if (currentStep === 2) {
-        setSaving(true);
-        await updateOrganizationSettings({ 
-          onboardingStep: 3,
-          onboardingCallScheduled: true 
-        });
-        await loadSettings();
-        setSaving(false);
-      }
-    }
-  });
 
   const loadSettings = async () => {
     try {
@@ -100,6 +84,25 @@ export function Onboarding() {
     }
   }
 
+  async function refreshWhatsAppConnection() {
+    try {
+      setCheckingConnection(true);
+      const cfg = await getBotConfig();
+      const cloudApiCfg = (cfg as unknown as { cloudApiConfig?: { phoneNumberId?: string; wabaId?: string } }).cloudApiConfig;
+      const connected = Boolean(cloudApiCfg?.phoneNumberId && cloudApiCfg?.wabaId);
+      setWhatsAppConnected(connected);
+      if (connected && currentStep === 2) {
+        await updateOrganizationSettings({ onboardingStep: 3 });
+        await loadSettings();
+      }
+    } catch (error) {
+      console.error("Failed to check WhatsApp connection:", error);
+      setWhatsAppConnected(false);
+    } finally {
+      setCheckingConnection(false);
+    }
+  }
+
   useEffect(() => {
     loadSettings();
     loadConversationsData();
@@ -115,6 +118,10 @@ export function Onboarding() {
       analytics.trackPaymentCancelled("onboarding");
       setTimeout(() => setSearchParams({}), 3000);
     }
+  }, []);
+
+  useEffect(() => {
+    refreshWhatsAppConnection();
   }, []);
 
   useEffect(() => {
@@ -378,7 +385,7 @@ export function Onboarding() {
                 )}>
                   {currentStep > 2 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 2 ? <span className="font-bold">2</span> : <Lock size={14} />}
                 </div>
-                <h2 className="text-lg sm:text-xl font-bold font-heading">Llamada de Onboarding</h2>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Conectar WhatsApp Business</h2>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[2] ? "rotate-180" : "")} />
@@ -386,27 +393,38 @@ export function Onboarding() {
             </button>
             
             <div className={cn(isDesktop && !expandedSteps[2] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
-            <p className="text-gray-600 mb-6">Agenda una llamada corta de 15 minutos para conectar el asistente a tu WhatsApp y ultimar detalles técnicos.</p>
+            <p className="text-gray-600 mb-6">
+              Conecta tu cuenta de WhatsApp Business con Meta Embedded Signup para activar la mensajería oficial en Proplead.
+            </p>
             
             {currentStep === 2 && (
-              <Button
-                onClick={() => setShowCalendlyModal(true)}
-                className="w-full sm:w-auto flex items-center justify-center gap-2"
-              >
-                <Calendar size={18} />
-                Agendar Llamada
-              </Button>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Link to="/connect-whatsapp" className="w-full sm:w-auto">
+                  <Button className="w-full sm:w-auto flex items-center justify-center gap-2">
+                    <MessageCircle size={18} />
+                    Conectar con Facebook
+                  </Button>
+                </Link>
+                <Button
+                  variant="outline"
+                  onClick={refreshWhatsAppConnection}
+                  loading={checkingConnection}
+                  className="w-full sm:w-auto"
+                >
+                  Verificar conexión
+                </Button>
+              </div>
             )}
 
-            {currentStep > 2 && (
+            {(currentStep > 2 || whatsAppConnected) && (
               <div className="bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
                 <CheckCircle size={20} className="text-emerald-600" />
-                <span className="font-medium">Llamada agendada correctamente.</span>
+                <span className="font-medium">WhatsApp Business conectado correctamente.</span>
               </div>
             )}
             {currentStep < 2 && (
               <div className="text-sm text-gray-500 mt-2 bg-gray-50 p-3 rounded border border-gray-100">
-                Completa el paso anterior para desbloquear la agenda.
+                Completa el paso anterior para desbloquear la conexión.
               </div>
             )}
             </div>
@@ -450,7 +468,7 @@ export function Onboarding() {
                 )}>
                   {currentStep > 3 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 3 ? <span className="font-bold">3</span> : <Lock size={14} />}
                 </div>
-                <h2 className="text-lg sm:text-xl font-bold font-heading">Conectar con Idealista</h2>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Configurar email de leads</h2>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[3] ? "rotate-180" : "")} />
@@ -769,14 +787,6 @@ export function Onboarding() {
         </div>
       )}
 
-      {showCalendlyModal && typeof window !== 'undefined' && (
-        <PopupModal
-          url="https://calendly.com/optimea-es"
-          onModalClose={() => setShowCalendlyModal(false)}
-          open={showCalendlyModal}
-          rootElement={document.getElementById("root")!}
-        />
-      )}
     </div>
   );
 }

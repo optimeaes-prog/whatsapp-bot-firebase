@@ -205,6 +205,28 @@ async function resolveOrgIdFromToken(authHeader?: string): Promise<string> {
   return orgId;
 }
 
+async function resolveUserContextFromToken(authHeader?: string): Promise<{
+  uid: string;
+  orgId: string;
+  role: string;
+  email: string;
+}> {
+  if (!authHeader?.startsWith("Bearer ")) {
+    throw new Error("Unauthorized");
+  }
+  const token = authHeader.split("Bearer ")[1];
+  const decoded = await admin.auth().verifyIdToken(token);
+  const uid = decoded.uid;
+  const email = typeof decoded.email === "string" ? decoded.email.toLowerCase() : "";
+  const DATABASE_ID = "realestate-whatsapp-bot";
+  const userDoc = await getFirestore(admin.app(), DATABASE_ID).collection("users").doc(uid).get();
+  const data = userDoc.data() || {};
+  const orgId = typeof data.orgId === "string" ? data.orgId : "";
+  const role = typeof data.role === "string" ? data.role : "";
+  if (!orgId) throw new Error("Organization not found for user");
+  return { uid, orgId, role, email };
+}
+
 function twimlEscape(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -3366,6 +3388,71 @@ export const getEmbeddedSignupConfig = onRequest(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Admin-only fallback for internal operators to manually set Cloud API credentials.
+ * This path is intentionally restricted to owner users in ADMIN_EMAILS.
+ */
+export const setManualCloudApiConfig = onRequest(
+  { cors: true, region: REGION, secrets: [META_VERIFY_TOKEN] },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { orgId, role, email } = await resolveUserContextFromToken(req.headers.authorization);
+      const adminEmails = (process.env.ADMIN_EMAILS || "ejperezreyes@gmail.com")
+        .split(",")
+        .map((v) => v.trim().toLowerCase())
+        .filter(Boolean);
+      const isAllowed = role === "owner" && adminEmails.includes(email);
+      if (!isAllowed) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+
+      const body = (req.body || {}) as {
+        accessToken?: string;
+        phoneNumberId?: string;
+        wabaId?: string;
+      };
+      const accessToken = typeof body.accessToken === "string" ? body.accessToken.trim() : "";
+      const phoneNumberId = typeof body.phoneNumberId === "string" ? body.phoneNumberId.trim() : "";
+      const wabaId = typeof body.wabaId === "string" ? body.wabaId.trim() : "";
+      if (!accessToken || !phoneNumberId || !wabaId) {
+        res.status(400).json({ error: "accessToken, phoneNumberId and wabaId are required" });
+        return;
+      }
+
+      const accessTokenSecretName = await storeAccessTokenInSecretManager({ orgId, accessToken });
+      const displayPhoneNumber = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken });
+      await persistCloudApiConfigForOrg({
+        orgId,
+        phoneNumberId,
+        wabaId,
+        accessTokenSecretName,
+        verifyToken: META_VERIFY_TOKEN.value() || generateVerifyToken(),
+        displayPhoneNumber,
+      });
+      invalidateCloudApiCredentialsCache(orgId);
+
+      res.status(200).json({
+        ok: true,
+        phoneNumberId,
+        wabaId,
+        graphApiVersion: "v23.0",
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("setManualCloudApiConfig error:", error);
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   }

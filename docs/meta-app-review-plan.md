@@ -378,3 +378,288 @@ Meta rejections cite a specific permission and usually a specific clip timestamp
 - *"Data deletion instructions unclear"* → ensure `/legal/data-deletion` has a numbered step-by-step and a direct email contact (dpo@proplead.io).
 
 Expect 3–5 business days per review cycle. Do not resubmit within 24h of rejection without concrete changes; reviewers flag spammy resubmits.
+
+---
+
+## Part J — Implementation Status Audit (as of 2026-04-22)
+
+This section tracks what has been implemented in the codebase versus what remains outstanding for first-try App Review approval.
+
+Legend:
+- ✅ Done — implemented and wired in code.
+- 🟡 Partial — implemented in part, but missing required pieces from this plan.
+- ❌ Not done — not implemented yet.
+- 🔍 Not code-verifiable — likely dashboard/ops/manual, not confirmable from repository only.
+
+### J1. Part A — Code & Compliance Fixes
+
+#### A1. Embedded Signup (critical)
+Status: 🟡 Partial
+
+Implemented:
+- ✅ Frontend Meta Embedded Signup service exists in `src/services/embeddedSignup.ts`:
+  - SDK load from `https://connect.facebook.net/en_US/sdk.js`
+  - `FB.login` with `config_id`, `response_type: "code"`, `override_default_response_type: true`, and `extras.sessionInfoVersion = "3"`.
+  - `window.postMessage` listener for `WA_EMBEDDED_SIGNUP` and extraction of `phone_number_id` + `waba_id`.
+- ✅ Backend exchange endpoint exists in `functions/src/index.ts` as `exchangeEmbeddedSignupCode`:
+  - Exchanges code for token.
+  - Stores token in Secret Manager as `whatsapp_org_{orgId}_token`.
+  - Calls `/{phone_number_id}/register`.
+  - Calls `/{waba_id}/subscribed_apps`.
+  - Persists Cloud API config in Firestore.
+- ✅ Secret parameters exist in `functions/src/secrets.ts`:
+  - `META_APP_ID`, `META_APP_SECRET`, `META_FB_LOGIN_CONFIG_ID`, `META_VERIFY_TOKEN`.
+- ✅ Dedicated page exists: `src/pages/ConnectWhatsApp.tsx`.
+
+Missing / divergent:
+- ❌ Plan-required onboarding insertion in `src/pages/Onboarding.tsx` (step between agency info and email) is not implemented; onboarding still follows legacy step model.
+- ❌ Manual-token admin fallback flow in `src/pages/AdminTools.tsx` gated by `role === 'owner' && email in ADMIN_EMAILS` is not implemented in current file.
+- 🟡 `exchangeEmbeddedSignupCode` currently persists a generated per-org verify token, while plan standardizes global `META_VERIFY_TOKEN` for handshake simplicity.
+
+Action to close:
+- Add Connect WhatsApp as a mandatory onboarding step tied to `organizationSettings.onboardingStep`.
+- Implement admin-only manual token fallback UI + strict gating.
+- Align verify-token behavior to global `META_VERIFY_TOKEN` only for app webhook.
+
+#### A2. Webhook signature verification
+Status: ✅ Done
+
+Implemented:
+- ✅ Signature verification is present in `functions/src/index.ts` for:
+  - `cloudApiWebhook`
+  - `whatsappWebhook`
+- ✅ Uses raw body + HMAC SHA256 + timing-safe compare.
+- ✅ Reads app secret from `META_APP_SECRET` secret parameter.
+
+Notes:
+- This is reviewer-critical and currently covered.
+
+#### A3. Single app-wide webhook URL
+Status: ✅ Done (with legacy overlap)
+
+Implemented:
+- ✅ `whatsappWebhook` exists as app-wide endpoint in `functions/src/index.ts`.
+- ✅ No query-param org routing needed for this endpoint; resolves org by WABA ID via `wabaIndex/{wabaId}`.
+- ✅ `wabaIndex` is written during Embedded Signup persistence in `functions/src/services/embeddedSignup.ts`.
+
+Caveat:
+- 🟡 Legacy `cloudApiWebhook?orgId=...` still exists in code. This can confuse reviewer setup if documented incorrectly.
+
+Action to close:
+- Keep legacy for backwards compatibility if needed, but ensure review docs and dashboard use only `whatsappWebhook`.
+
+#### A4. Data Deletion Callback
+Status: ✅ Done
+
+Implemented:
+- ✅ `metaDataDeletion` endpoint exists in `functions/src/index.ts`.
+- ✅ Verifies `signed_request` signature with `META_APP_SECRET`.
+- ✅ Stores request in `dataDeletionRequests`.
+- ✅ Returns `{ url, confirmation_code }`.
+- ✅ Public status page exists in `src/pages/DeletionStatus.tsx`.
+- ✅ Route exists in `src/App.tsx`: `/legal/deletion-status`.
+- ✅ Firestore rules allow public read and deny client writes to `dataDeletionRequests`.
+
+#### A5. Account deletion + DSAR endpoints
+Status: 🟡 Partial
+
+Implemented:
+- ✅ `deleteMyOrganization` endpoint exists:
+  - Soft delete marker on org.
+  - Best-effort `DELETE /{waba-id}/subscribed_apps`.
+  - Deletes org token secret.
+  - 30-day hard-delete scheduled sweep (`purgeDeletedOrganizations`).
+- ✅ `exportMyData` endpoint exists:
+  - Collects org Firestore data.
+  - Writes export file to Storage.
+  - Generates signed URL.
+  - Emails requester via SendGrid.
+- ✅ UI buttons exist in `src/pages/Configuracion.tsx` for export/delete actions.
+
+Missing / divergent:
+- 🟡 Plan calls for zip export; current implementation exports JSON (not zipped).
+- 🟡 Privacy policy linking exists but route/URL conventions are still legacy (`/privacy`, `/terms`) rather than plan’s `/legal/*`.
+
+Action to close:
+- Change export artifact to ZIP (or update plan if JSON is accepted).
+- Ensure legal pages and links match required public URLs exactly.
+
+#### A6a. Opt-in capture + audit trail
+Status: 🟡 Partial
+
+Implemented:
+- ✅ `LeadRow` type includes `consent` shape in `functions/src/types.ts`.
+- ✅ `sendInitialTemplateMessage` enforces opt-in/opt-out gate for Cloud API path in `functions/src/services/messagingProvider.ts`.
+
+Missing:
+- ❌ Consent capture modal in `src/pages/Leads.tsx` not implemented.
+- ❌ No upload/proof workflow in Leads UI for consent evidence.
+- ❌ No explicit server-side auto-creation of `consent.source = 'inbound_whatsapp'` found in inbound path.
+- ❌ No explicit audit log linkage for "consent created" and "template sent with consent id" found.
+
+Action to close:
+- Build consent modal and storage flow.
+- Auto-stamp inbound consent with bounded policy semantics.
+- Add consent/audit event logging and traceability.
+
+#### A6c. Cold-lead SMS opt-in bridge (Idealista)
+Status: ✅ Done
+
+Implemented:
+- ✅ New service `functions/src/services/smsOptIn.ts` with expected SMS message pattern.
+- ✅ `sendSms` added in `functions/src/services/twilioClient.ts` using `TWILIO_SMS_SENDER_ID`.
+- ✅ `newLead` path switched to SMS opt-in pipeline (`runIdealistaConfirmPipeline`) in `functions/src/index.ts`.
+- ✅ `waRedirect` function exists and hosting rewrite `/w/** -> waRedirect` configured in `firebase.json`.
+- ✅ Display phone number support exists (`fetchDisplayPhoneNumber` + persistence in cloudApiConfig).
+
+#### A6d. Voice-call DTMF opt-in
+Status: ✅ Done
+
+Implemented:
+- ✅ `voiceWebhook` updated to include gather flow.
+- ✅ `voiceGatherCallback` implemented.
+- ✅ `recordVoiceConsent` writes consent record with call SID proof.
+- ✅ Post-consent template send path exists.
+- ✅ Config knobs present for audio/template IDs in code via param definitions.
+
+#### A6b. STOP / opt-out handling
+Status: 🟡 Partial
+
+Implemented:
+- ✅ Opt-out detection exists in `functions/src/services/optOut.ts`.
+- ✅ Inbound webhook checks opt-out before buffering in `functions/src/index.ts`.
+- ✅ Opted-out chats are written to `ignoredChats` and receive confirmation reply.
+- ✅ Template-send gate blocks if chat is ignored in `functions/src/services/messagingProvider.ts`.
+
+Missing / divergent:
+- 🟡 Plan asks to set `conversations/{convId}.optedOut = true`; current implementation uses `ignoredChats` store and does not set `conversation.optedOut` field.
+- 🟡 Regex intentionally excludes `cancelar`; plan includes it. Current implementation documents this exclusion as a business tradeoff.
+
+Action to close:
+- Either implement `conversation.optedOut` as additional state mirror, or update plan/reviewer text to describe canonical ignoredChats approach.
+- Revisit keyword set for policy/UX balance.
+
+#### A7. Lead privacy notice on first contact template
+Status: ✅ Done
+
+Implemented:
+- ✅ `createCloudApiTemplates` in `functions/src/index.ts` includes template footer text on initial templates and agent-notification templates.
+- ✅ STOP/BAJA style compliance footer is included.
+
+#### A8. Public legal URLs (privacy/terms/data-deletion)
+Status: ❌ Not done
+
+Implemented:
+- ✅ Existing legal pages/routes are present but under legacy paths (`/privacy`, `/terms`) and markdown-backed route component.
+
+Missing:
+- ❌ Required URLs from plan are not present as specified:
+  - `https://proplead.io/legal/privacy-policy`
+  - `https://proplead.io/legal/terms`
+  - `https://proplead.io/legal/data-deletion`
+- ❌ No dedicated `/legal/data-deletion` page found.
+- ❌ Current legal markdown still includes placeholders (e.g., `[PRIVACY_EMAIL]`, `[WEBSITE_DOMAIN]`) indicating incomplete publication readiness.
+
+Action to close:
+- Add exact `/legal/*` routes and pages.
+- Finalize bilingual legal copy with no placeholders.
+
+#### A9. App Secret Proof on Graph calls
+Status: ❌ Not done
+
+Findings:
+- ❌ No `appsecret_proof` parameter found in `functions/src/services/cloudApiClient.ts`.
+
+Action to close:
+- Add `appsecret_proof = HMAC_SHA256(access_token, app_secret)` on Graph API calls where applicable.
+
+#### A10. Remove/gate Whapi and Twilio from default customer path
+Status: ❌ Not done
+
+Findings:
+- ❌ Default provider remains `whapi` in `src/services/botConfig.ts`.
+- ❌ Provider selector still exposes Whapi/Twilio in `src/pages/Configuracion.tsx` for regular users.
+
+Action to close:
+- Default new org provider to `cloud_api`.
+- Hide non-Cloud provider toggles from non-admin UI paths.
+- Keep legacy backend provider support for existing tenants only.
+
+---
+
+### J2. Part B — Meta Dashboard Setup
+
+Status: 🔍 Not code-verifiable
+
+Notes:
+- Items B1–B7 are mostly Meta console/business configuration tasks (domain verification, live mode, webhook setup in app dashboard, app review form submission, reviewer test users).
+- These cannot be reliably confirmed from repository source alone.
+
+Operational checklist to confirm manually:
+- Business verified and domain verified.
+- App in Live mode at submission time.
+- WhatsApp webhook in Meta dashboard points to `.../whatsappWebhook`.
+- Verify token configured as `META_VERIFY_TOKEN`.
+- Embedded Signup FB Login configuration created and config ID set.
+- Test users/roles configured and validated.
+
+---
+
+### J3. Part C — Permission Justification Text
+
+Status: 🟡 Partial (ready text exists, but must align with actual behavior)
+
+Notes:
+- Draft text in this plan is usable, but before submission ensure all claims are strictly true in production behavior.
+- Current code gaps affecting claim fidelity:
+  - Missing full consent capture UX/audit trail (A6a).
+  - `appsecret_proof` missing (A9).
+  - Customer path still exposes legacy providers (A10).
+
+---
+
+### J4. Part D — Screencasts
+
+Status: 🔍 Not code-verifiable / not done in repo
+
+Notes:
+- No screencast artifacts are tracked in codebase.
+- Once A1/A6/A10/A8 are fully aligned, record D1 + D2 exactly per storyboard.
+
+---
+
+### J5. Part E — Reviewer Instructions Block
+
+Status: 🔍 Not code-verifiable
+
+Notes:
+- Submission form content is manual.
+- Ensure instructions reflect actual routes shown in product (especially Connect WhatsApp and legal URLs).
+
+---
+
+### J6. Part F — Pre-submission checklist
+
+Status: 🟡 Mixed
+
+Likely pass from code:
+- ✅ Signature verification behavior exists.
+- ✅ Data deletion callback endpoint exists.
+- ✅ App-wide webhook endpoint exists.
+
+Likely fail/open:
+- ❌ Legal URL exact path requirements.
+- ❌ Cloud-only customer path requirement.
+- ❌ Full consent UI/evidence flow.
+- ❌ `appsecret_proof`.
+- 🔍 Live mode / review uploads / real reviewer account and WABA state are manual and unverified.
+
+---
+
+### J7. Priority Order to Reach Submission-Ready State
+
+1. **Close policy-critical gaps first**: A6a (full consent capture + audit), A9 (`appsecret_proof`), A10 (cloud-only customer path), A8 (public legal URLs).
+2. **Finalize onboarding compliance**: embed Connect WhatsApp as required step and add admin fallback gating.
+3. **Harden reviewer experience**: remove reviewer confusion from legacy provider toggles and legacy webhook docs.
+4. **Validate manual Meta setup**: B1–B7 in dashboard, then produce D1/D2 screencasts.
+5. **Run full checklist** in Part F with real end-to-end smoke tests before submit.
