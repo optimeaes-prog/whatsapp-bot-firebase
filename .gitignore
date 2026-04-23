@@ -41,3 +41,6 @@ functions/lib/
 # Temporary files
 *.temp
 *.tmp
+
+# Local Claude worktrees
+.claude/worktrees/
