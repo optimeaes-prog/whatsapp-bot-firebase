@@ -14,6 +14,7 @@ import { db } from "../lib/firebase";
 import type { Lead, LeadFormData } from "../types";
 import { deleteConversationByChatId } from "./conversations";
 import { updateConversation } from "./conversations";
+import { auth } from "../lib/firebase";
 
 import { getOrganizationBasePath } from "../lib/organization";
 
@@ -130,11 +131,41 @@ export async function updateLeadQualificationStatus(
 
 export async function updateLead(
   id: string,
-  data: Partial<Pick<Lead, "notes" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus">>
+  data: Partial<Pick<Lead, "notes" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus" | "consent" | "pets" | "income" | "paymentMethod">>
 ): Promise<void> {
   const docRef = doc(db, getLeadsCollection(), id);
-  const payload = data.tags ? { ...data, tags: normalizeLeadTags(data.tags) } : data;
+  const normalized = data.tags ? { ...data, tags: normalizeLeadTags(data.tags) } : data;
+  const payload = Object.fromEntries(
+    Object.entries(normalized).filter(([, value]) => value !== undefined)
+  );
   await updateDoc(docRef, payload);
+}
+
+const FUNCTIONS_BASE_URL = "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
+
+export async function setLeadConsent(params: {
+  leadId: string;
+  source: "idealista_form" | "agency_website" | "phone_call" | "in_person" | "inbound_whatsapp";
+  language: "es" | "en";
+  proofUrl?: string;
+  capturedAtMs?: number;
+}): Promise<void> {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) {
+    throw new Error("Unauthorized");
+  }
+  const response = await fetch(`${FUNCTIONS_BASE_URL}/setLeadConsent`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
+    body: JSON.stringify(params),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || "Error setting consent");
+  }
 }
 
 export async function deleteLead(id: string): Promise<void> {

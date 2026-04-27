@@ -3,6 +3,7 @@
     {
       "source": "functions",
       "codebase": "default",
+      "runtime": "nodejs24",
       "ignore": [
         "node_modules",
         ".git",
@@ -29,8 +30,18 @@
     ],
     "rewrites": [
       {
+        "source": "/meta-data-deletion",
+        "function": {
+          "functionId": "metaDataDeletion",
+          "region": "europe-west1"
+        }
+      },
+      {
         "source": "/w/**",
-        "function": "waRedirect"
+        "function": {
+          "functionId": "waRedirect",
+          "region": "europe-west1"
+        }
       },
       {
         "source": "/landingv2/**",

@@ -56,13 +56,15 @@ export async function registerPhoneNumber(params: {
   phoneNumberId: string;
   accessToken: string;
   pin: string;
+  appSecretProof?: string;
 }): Promise<void> {
-  const { phoneNumberId, accessToken, pin } = params;
+  const { phoneNumberId, accessToken, pin, appSecretProof } = params;
   await axios.post(
     `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/register`,
     { messaging_product: "whatsapp", pin },
     {
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      params: appSecretProof ? { appsecret_proof: appSecretProof } : undefined,
       timeout: 10000,
     }
   );
@@ -72,13 +74,37 @@ export async function registerPhoneNumber(params: {
 export async function subscribeAppToWaba(params: {
   wabaId: string;
   accessToken: string;
+  appSecretProof?: string;
 }): Promise<void> {
-  const { wabaId, accessToken } = params;
+  const { wabaId, accessToken, appSecretProof } = params;
   await axios.post(
     `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}/subscribed_apps`,
     {},
     {
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      params: appSecretProof ? { appsecret_proof: appSecretProof } : undefined,
+      timeout: 10000,
+    }
+  );
+}
+
+/** Update WABA profile picture for the connected phone number. */
+export async function setWhatsAppProfilePhoto(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  profilePictureUrl: string;
+  appSecretProof?: string;
+}): Promise<void> {
+  const { phoneNumberId, accessToken, profilePictureUrl, appSecretProof } = params;
+  await axios.post(
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/whatsapp_business_profile`,
+    {
+      messaging_product: "whatsapp",
+      profile_picture_url: profilePictureUrl,
+    },
+    {
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      params: appSecretProof ? { appsecret_proof: appSecretProof } : undefined,
       timeout: 10000,
     }
   );
@@ -132,8 +158,21 @@ export async function persistCloudApiConfigForOrg(params: {
   accessTokenSecretName: string;
   verifyToken: string;
   displayPhoneNumber?: string | null;
+  assistantAvatarId?: string;
+  assistantAvatarName?: string;
+  assistantAvatarUrl?: string;
 }): Promise<void> {
-  const { orgId, phoneNumberId, wabaId, accessTokenSecretName, verifyToken, displayPhoneNumber } = params;
+  const {
+    orgId,
+    phoneNumberId,
+    wabaId,
+    accessTokenSecretName,
+    verifyToken,
+    displayPhoneNumber,
+    assistantAvatarId,
+    assistantAvatarName,
+    assistantAvatarUrl,
+  } = params;
   const db = getFirestore(admin.app(), DATABASE_ID);
   const ref = db.doc(`organizations/${orgId}/botConfig/config`);
   const cloudApiConfig: Record<string, unknown> = {
@@ -144,6 +183,9 @@ export async function persistCloudApiConfigForOrg(params: {
     verifyToken,
   };
   if (displayPhoneNumber) cloudApiConfig.displayPhoneNumber = displayPhoneNumber;
+  if (assistantAvatarId) cloudApiConfig.assistantAvatarId = assistantAvatarId;
+  if (assistantAvatarName) cloudApiConfig.assistantAvatarName = assistantAvatarName;
+  if (assistantAvatarUrl) cloudApiConfig.assistantAvatarUrl = assistantAvatarUrl;
   await ref.set({ messagingProvider: "cloud_api", cloudApiConfig }, { merge: true });
   // Reverse-lookup index so the app-wide webhook can resolve org from entry[].id (= wabaId)
   // with a single doc read, no collectionGroup query needed.
@@ -160,12 +202,15 @@ export async function persistCloudApiConfigForOrg(params: {
 export async function fetchDisplayPhoneNumber(params: {
   phoneNumberId: string;
   accessToken: string;
+  appSecretProof?: string;
 }): Promise<string | null> {
   try {
     const res = await axios.get(
       `https://graph.facebook.com/${GRAPH_API_VERSION}/${params.phoneNumberId}`,
       {
-        params: { fields: "display_phone_number,verified_name" },
+        params: params.appSecretProof
+          ? { fields: "display_phone_number,verified_name", appsecret_proof: params.appSecretProof }
+          : { fields: "display_phone_number,verified_name" },
         headers: { Authorization: `Bearer ${params.accessToken}` },
         timeout: 10000,
       }

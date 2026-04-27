@@ -31,14 +31,16 @@ export type ConversationState = {
   profitabilityReport?: string;
   /** Simple workflow step for deterministic parts (e.g., Idealista Si/No confirmation) */
   flowStep?:
-    | "idealista_confirm"
     | "call_listing_collect"
     | "call_listing_pick"
     | "call_listing_confirm"
     | "qualification"
     | "closed";
-  pendingListingCandidate?: { listingCode: string; link?: string; description?: string; address?: string; price?: number | string };
-  pendingListingCandidates?: Array<{ listingCode: string; link?: string; description?: string; address?: string; price?: number | string }>;
+  pendingListingCandidate?: { listingCode: string; orgId?: string; link?: string; description?: string; address?: string; price?: number | string; confidence?: number };
+  pendingListingCandidates?: Array<{ listingCode: string; orgId?: string; link?: string; description?: string; address?: string; price?: number | string; confidence?: number }>;
+  pendingListingQueue?: Array<{ listingCode: string; orgId?: string; link?: string; description?: string; address?: string; price?: number | string; confidence: number }>;
+  pendingListingQueueIndex?: number;
+  rejectedListingCodes?: string[];
   listingResolveAttempts?: number;
   history: HistoryItem[];
   pendingUserMessages: PendingItem[];
@@ -57,6 +59,46 @@ export type ConversationState = {
   errorDetails?: string;
   /** Firestore server timestamp of last update */
   lastMessage?: FirebaseFirestore.Timestamp;
+  /** A6b mirror field for UI visibility. Enforcement uses ignoredChats. */
+  optedOut?: boolean;
+  /**
+   * Cross-org call handoff tracking (global intake WABA -> org WABA).
+   */
+  handoff?: {
+    correlationId: string;
+    sourceOrgId: string;
+    targetOrgId?: string;
+    matchedListingCode?: string;
+    language?: "es" | "en";
+    phone?: string;
+    status: "pending" | "transferred" | "failed";
+    reason?: string;
+    transferredAt?: FirebaseFirestore.Timestamp;
+  };
+  outboundCallConsent?: {
+    attemptCount?: number;
+    noAnswerRetryCount?: number;
+    wrongKeyRetryCount?: number;
+    hangupRetryCount?: number;
+    firstAttemptAt?: number;
+    firstAttemptAtHourMadrid?: number;
+    firstAttemptAtMinuteMadrid?: number;
+    consentCaptured?: boolean;
+    lastOutcome?: string;
+    nextAttemptAt?: number;
+    finishedReason?: string;
+    lastCallSid?: string;
+  };
+  outboundCallAudio?: {
+    provider: "elevenlabs";
+    voiceId: string;
+    status: "ready" | "failed_after_retries";
+    audioUrl?: string;
+    generatedAt?: number;
+    sourceText?: string;
+    failureReason?: string;
+    retryAttempts?: number;
+  };
 };
 
 export type LeadSummary = {
@@ -101,6 +143,9 @@ export type LeadRow = {
     collectedBy?: string;
     language?: "es" | "en";
     proofUrl?: string;
+    proofType?: "twilio_call_sid" | "twilio_recording_sid" | "wa_inbound";
+    consentScriptVersion?: string;
+    dtmfDigit?: "1";
   };
 };
 
@@ -144,10 +189,16 @@ export type ListingForResolution = {
   link?: string;
 };
 
+export type AgentListingCandidate = {
+  listingCode: string;
+  confidence: number;
+  reason?: string;
+};
+
 export type AgentListingResolutionDecision =
-  | { kind: "match"; listingCode: string; confidence: number; reason: string }
-  | { kind: "ambiguous"; listingCodes: string[]; confidence: number; reason: string }
-  | { kind: "none"; confidence: number; reason: string };
+  | { kind: "match"; listingCode: string; confidence: number; reason: string; candidates: AgentListingCandidate[] }
+  | { kind: "ambiguous"; confidence: number; reason: string; candidates: AgentListingCandidate[] }
+  | { kind: "none"; confidence: number; reason: string; candidates: AgentListingCandidate[] };
 
 export type BotStyle = {
   id: string;
@@ -156,13 +207,52 @@ export type BotStyle = {
   promptModifier: string;
 };
 
+export type MessagingProvider = "cloud_api" | "whapi" | "twilio";
+
 export type CloudApiTemplateNames = {
+  /** Preferred single key for agent notifications (always ES strategy). */
+  agentNotification?: string;
   agentNotificationEs?: string;
   agentNotificationEn?: string;
   idealistaConfirmEs?: string;
   idealistaConfirmEn?: string;
+  /** Legacy name used by non-call initial lead flows. */
+  idealistaInitialEs?: string;
+  /** Legacy name used by non-call initial lead flows. */
+  idealistaInitialEn?: string;
+  /** Preferred ES template key for call handoff flow. */
+  callHandoffOrgEs?: string;
+  /** Preferred EN template key for call handoff flow. */
+  callHandoffOrgEn?: string;
+};
+
+export type TwilioTemplateNames = {
+  agentNotification?: string;
+  callHandoffOrgEs?: string;
+  callHandoffOrgEn?: string;
+  voiceOptInConsent?: string;
   idealistaInitialEs?: string;
   idealistaInitialEn?: string;
+};
+
+export type TwilioTransportConfig = {
+  accountSid?: string;
+  whatsappNumber?: string;
+  smsSenderId?: string;
+  authTokenSecretName?: string;
+};
+
+export type GlobalMessagingPolicy = {
+  defaultProvider: MessagingProvider;
+  cloudApi?: {
+    templates?: CloudApiTemplateNames;
+  };
+  twilio?: {
+    templates?: TwilioTemplateNames;
+  };
+  version?: number;
+  updatedAt?: FirebaseFirestore.Timestamp;
+  updatedBy?: string;
 };
 
 export type CloudApiConfig = {
@@ -174,6 +264,12 @@ export type CloudApiConfig = {
   graphApiVersion?: string;
   /** Token used for Meta webhook handshake (hub.verify_token). */
   verifyToken: string;
+  /** Display number normalized to digits only (optional). */
+  displayPhoneNumber?: string;
+  /** Optional assistant persona metadata selected during onboarding. */
+  assistantAvatarId?: string;
+  assistantAvatarName?: string;
+  assistantAvatarUrl?: string;
   /** Template names created programmatically, keyed by purpose+language. */
   templates?: CloudApiTemplateNames;
 };
@@ -181,10 +277,19 @@ export type CloudApiConfig = {
 export type BotConfig = {
   activeStyleId: string;
   styles: BotStyle[];
-  messagingProvider?: string;
+  messagingProvider?: MessagingProvider;
   orgName?: string;
   notificationNumbers?: string;
   cloudApiConfig?: CloudApiConfig;
+  /** Twilio ContentSid mappings owned by this org (no global fallback). */
+  twilioTemplates?: TwilioTemplateNames;
+  /** Twilio transport credentials owned by this org. */
+  twilioConfig?: TwilioTransportConfig;
+  templateEligibility?: {
+    outboundTemplatesBlocked?: boolean;
+    missingRequiredKeys?: string[];
+    checkedAt?: FirebaseFirestore.Timestamp;
+  };
 };
 
 export type InboundMessage = {
@@ -300,7 +405,11 @@ export type AuditAction =
   | "status_change"
   | "bot_toggle"
   | "message_sent"
-  | "qualification_change";
+  | "qualification_change"
+  | "consent_captured"
+  | "consent_auto_captured"
+  | "opt_out_captured"
+  | "template_send_blocked";
 
 export type AuditEntityType =
   | "lead"

@@ -7,6 +7,8 @@ export const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 export const WHAPI_TOKEN = defineSecret("WHAPI_TOKEN");
 export const TWILIO_AUTH_TOKEN = defineSecret("TWILIO_AUTH_TOKEN");
 export const VAPI_API_KEY = defineSecret("VAPI_API_KEY");
+export const ELEVENLABS_KEY = defineSecret("11LABS_KEY");
+export const MAKE_WEBHOOK_SHARED_SECRET = defineSecret("MAKE_WEBHOOK_SHARED_SECRET");
 
 export const CALENDLY_WEBHOOK_SIGNING_KEY = defineSecret("CALENDLY_WEBHOOK_SIGNING_KEY");
 export const CALENDLY_PAT = defineSecret("CALENDLY_PAT");

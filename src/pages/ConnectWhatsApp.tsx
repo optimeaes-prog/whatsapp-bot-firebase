@@ -31,7 +31,11 @@ export function ConnectWhatsApp() {
   async function handleConnect() {
     setLoading(true);
     try {
-      const result = await runEmbeddedSignup();
+      const settings = await getOrganizationSettings();
+      const result = await runEmbeddedSignup({
+        assistantAvatarId: settings.assistantAvatarId,
+        assistantAvatarUrl: settings.assistantAvatarUrl,
+      });
       setConnected({ phoneNumberId: result.phoneNumberId, wabaId: result.wabaId });
       await advanceOnboardingAfterConnect();
       toast.success("WhatsApp Business conectado correctamente");

@@ -1,5 +1,5 @@
 import { listInboundMessages, TwilioMessage } from "./twilioClient";
-import { findOrgIdByChatId, getConversationByChatId, addPendingMessage, updateBufferTask } from "./firestore";
+import { getConversationByChatId, addPendingMessage, updateBufferTask } from "./firestore";
 import { requestContext } from "./requestContext";
 import { ensureConversationState } from "../index";
 import { REGION, scheduleBufferTask } from "../shared";
@@ -17,7 +17,7 @@ export type OrphanedMessage = {
 /**
  * Identifies messages from Twilio that are not present in Firestore
  */
-export async function getOrphanedMessages(hours: number): Promise<OrphanedMessage[]> {
+export async function getOrphanedMessages(hours: number, orgId: string): Promise<OrphanedMessage[]> {
   console.log(`Searching for orphaned messages in the last ${hours} hours...`);
   const inbound = await listInboundMessages({ lookbackHours: hours });
   console.log(`Fetched ${inbound.length} inbound messages from Twilio.`);
@@ -33,13 +33,6 @@ export async function getOrphanedMessages(hours: number): Promise<OrphanedMessag
   }
 
   for (const [chatId, messages] of messagesByChat.entries()) {
-    // 1. Resolve Org
-    const orgId = await findOrgIdByChatId(chatId);
-    if (!orgId) {
-      console.log(`Could not resolve organization for ${chatId}, skipping.`);
-      continue;
-    }
-
     await requestContext.run({ orgId }, async () => {
       // 2. Fetch conversation state
       const state = await getConversationByChatId(chatId);

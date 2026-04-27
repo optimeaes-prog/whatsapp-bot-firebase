@@ -33,6 +33,7 @@ export function Conversations() {
   const [filterAssistantStatus, setFilterAssistantStatus] = useState<"all" | "active" | "disabled">("all");
   const [filterDate, setFilterDate] = useState("all");
   const [filterType, setFilterType] = useState<"leads" | "unidentified">("leads");
+  const [filterOptOut, setFilterOptOut] = useState<"all" | "opted_out" | "not_opted_out">("all");
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -134,6 +135,10 @@ export function Conversations() {
   async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedConversation || !newMessage.trim() || sending) return;
+    if (selectedConversation.optedOut) {
+      toast.error("Este chat esta dado de baja (opt-out). No se puede enviar.");
+      return;
+    }
 
     setSending(true);
     try {
@@ -160,7 +165,14 @@ export function Conversations() {
       setTimeout(() => loadConversations(), 1000);
     } catch (error) {
       console.error("Error sending message:", error);
-      toast.error("Error al enviar el mensaje");
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.toLowerCase().includes("opt-out") || msg.toLowerCase().includes("dejar de recibir")) {
+        toast.error("No se puede enviar: este chat esta dado de baja (opt-out).");
+      } else if (msg.toLowerCase().includes("consent")) {
+        toast.error("No se puede enviar: falta consentimiento del lead.");
+      } else {
+        toast.error("Error al enviar el mensaje");
+      }
     } finally {
       setSending(false);
     }
@@ -261,6 +273,10 @@ export function Conversations() {
 
       const isUnidentified = conv.tags?.includes("non-lead");
       const matchesType = filterType === "leads" ? !isUnidentified : isUnidentified;
+      const matchesOptOut =
+        filterOptOut === "all" ||
+        (filterOptOut === "opted_out" && conv.optedOut === true) ||
+        (filterOptOut === "not_opted_out" && conv.optedOut !== true);
 
       return (
         matchesSearch &&
@@ -270,7 +286,8 @@ export function Conversations() {
         matchesQualified &&
         matchesListingStatus &&
         matchesAssistantStatus &&
-        matchesDate
+        matchesDate &&
+        matchesOptOut
       );
     });
   }, [
@@ -283,6 +300,7 @@ export function Conversations() {
     filterAssistantStatus,
     filterDate,
     filterType,
+    filterOptOut,
     listingMap,
   ]);
 
@@ -335,6 +353,35 @@ export function Conversations() {
               )}
             >
               No identificados
+            </button>
+          </div>
+          <div className="flex bg-gray-100 p-1 rounded-lg w-full">
+            <button
+              onClick={() => setFilterOptOut("all")}
+              className={cn(
+                "flex-1 py-1.5 px-2 text-[10px] font-bold rounded-md transition-all font-heading uppercase tracking-wider",
+                filterOptOut === "all" ? "bg-white text-primary-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              Todos
+            </button>
+            <button
+              onClick={() => setFilterOptOut("opted_out")}
+              className={cn(
+                "flex-1 py-1.5 px-2 text-[10px] font-bold rounded-md transition-all font-heading uppercase tracking-wider",
+                filterOptOut === "opted_out" ? "bg-white text-rose-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              Opt-out
+            </button>
+            <button
+              onClick={() => setFilterOptOut("not_opted_out")}
+              className={cn(
+                "flex-1 py-1.5 px-2 text-[10px] font-bold rounded-md transition-all font-heading uppercase tracking-wider",
+                filterOptOut === "not_opted_out" ? "bg-white text-primary-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              Activos
             </button>
           </div>
 
@@ -673,6 +720,14 @@ export function Conversations() {
                         <MessageSquare size={11} className={cn(conv.messageCount ? metricTheme.messages.listIcon : metricTheme.messages.listMuted)} />
                         {conv.messageCount || 0}
                       </span>
+                      {conv.optedOut && (
+                        <>
+                          <span className="text-gray-300">•</span>
+                          <span className="px-1 py-0.5 text-[10px] font-semibold rounded bg-rose-100 text-rose-700">
+                            Opt-out
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 ml-2">
@@ -816,6 +871,11 @@ export function Conversations() {
                   </span>
                 );
               })()}
+              {selectedConversation.optedOut && (
+                <span className="px-2 py-1 text-[10px] font-semibold rounded bg-rose-100 text-rose-700">
+                  Opt-out (dado de baja)
+                </span>
+              )}
             </div>
           </div>
 
@@ -876,11 +936,11 @@ export function Conversations() {
                     onChange={(e) => setNewMessage(e.target.value)}
                     placeholder="Escribe un mensaje manual..."
                     className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-btn focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                    disabled={sending}
+                    disabled={sending || selectedConversation.optedOut}
                   />
                   <Button
                     type="submit"
-                    disabled={!newMessage.trim() || sending}
+                    disabled={!newMessage.trim() || sending || selectedConversation.optedOut}
                     loading={sending}
                     size="icon"
                     className="shrink-0"

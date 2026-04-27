@@ -8,6 +8,7 @@ import {
   BotStyle,
   OperationType,
   ListingForResolution,
+  AgentListingCandidate,
   AgentListingResolutionDecision,
 } from "../types";
 const OPENAI_MODEL = defineString("OPENAI_MODEL");
@@ -594,7 +595,29 @@ function parseConfidence(raw: string | undefined, fallback = 0.5): number {
   return clampConfidence(Number.isFinite(parsed) ? parsed : fallback);
 }
 
-function parseAgentListingResolution(
+function parseRankedCandidatesSegment(raw: string | undefined, validListingCodes: Set<string>): AgentListingCandidate[] {
+  if (!raw) return [];
+  const entries = raw
+    .split(",")
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .slice(0, 40);
+  const candidates: AgentListingCandidate[] = [];
+  const seenCodes = new Set<string>();
+  for (const entry of entries) {
+    const [rawCode, rawConfidence, ...reasonParts] = entry.split("|").map((part) => part.trim());
+    if (!rawCode || !validListingCodes.has(rawCode) || seenCodes.has(rawCode)) continue;
+    const confidence = parseConfidence(rawConfidence, 0.5);
+    const reason = reasonParts.join("|").trim() || undefined;
+    candidates.push({ listingCode: rawCode, confidence, reason });
+    seenCodes.add(rawCode);
+  }
+  return candidates
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 25);
+}
+
+export function parseAgentListingResolution(
   rawOutput: string,
   validListingCodes: Set<string>
 ): AgentListingResolutionDecision {
@@ -602,6 +625,7 @@ function parseAgentListingResolution(
     kind: "none",
     confidence: 0,
     reason: "No parseable decision from model output.",
+    candidates: [],
   };
   const raw = (rawOutput || "").trim();
   if (!raw) return fallback;
@@ -616,27 +640,25 @@ function parseAgentListingResolution(
     if (!listingCode || !validListingCodes.has(listingCode)) return fallback;
     const confidence = parseConfidence(segments[2], 0.8);
     const reason = segments.slice(3).join(":").trim() || "Matched by strongest combined evidence.";
-    return { kind: "match", listingCode, confidence, reason };
+    const rankedCandidates = parseRankedCandidatesSegment(segments[4], validListingCodes);
+    const candidates = rankedCandidates.length > 0
+      ? rankedCandidates
+      : [{ listingCode, confidence, reason }];
+    return { kind: "match", listingCode, confidence, reason, candidates };
   }
 
   if (kind === "ambiguous") {
-    const candidatesRaw = (segments[1] || "").trim();
-    const listingCodes = Array.from(new Set(
-      candidatesRaw
-        .split(",")
-        .map((code) => code.trim())
-        .filter((code) => !!code && validListingCodes.has(code))
-    )).slice(0, 5);
-    if (listingCodes.length < 2) return fallback;
+    const rankedCandidates = parseRankedCandidatesSegment(segments[1], validListingCodes);
+    if (rankedCandidates.length < 2) return fallback;
     const confidence = parseConfidence(segments[2], 0.55);
     const reason = segments.slice(3).join(":").trim() || "Several listings fit similarly.";
-    return { kind: "ambiguous", listingCodes, confidence, reason };
+    return { kind: "ambiguous", confidence, reason, candidates: rankedCandidates };
   }
 
   if (kind === "none") {
     const confidence = parseConfidence(segments[1], 0.4);
     const reason = segments.slice(2).join(":").trim() || "Insufficient evidence to match safely.";
-    return { kind: "none", confidence, reason };
+    return { kind: "none", confidence, reason, candidates: [] };
   }
 
   return fallback;
@@ -652,6 +674,7 @@ export async function resolveListingWithAgent(params: {
       kind: "none",
       confidence: 0,
       reason: "No active listings available.",
+      candidates: [],
     };
   }
 
@@ -672,9 +695,14 @@ export async function resolveListingWithAgent(params: {
 Eres un agente de matching inmobiliario. Tu tarea es identificar qué anuncio del catálogo activo corresponde al mensaje del cliente.
 
 Debes responder EXCLUSIVAMENTE en UNA línea con este formato:
-- match:<listingCode>:<confidence_0_1>:<reason_short>
-- ambiguous:<listingCode1>,<listingCode2>,...:<confidence_0_1>:<reason_short>
+- match:<listingCode>:<confidence_0_1>:<reason_short>:<ranked_candidates>
+- ambiguous:<ranked_candidates>:<confidence_0_1>:<reason_short>
 - none:<confidence_0_1>:<reason_short>
+
+Formato de ranked_candidates:
+- code|confidence|reason,code|confidence|reason,...
+- Máximo 25 candidatos ordenados de mayor a menor confianza.
+- confidence siempre entre 0 y 1.
 
 Reglas obligatorias:
 1) Prioriza coincidencias explícitas de referencia o enlace.
@@ -682,9 +710,11 @@ Reglas obligatorias:
    - ejemplos: "2200", "2200€/mes", "2.2k", "400mil", "0.4M".
 3) En venta/alquiler permite aproximación razonable de precio (no exactitud rígida), pero evita falsos positivos.
 4) Usa también dirección parcial, zona, ciudad y variantes ortográficas.
-5) Si hay duda real entre varios anuncios, devuelve ambiguous con 2-5 códigos.
+5) Si hay duda real entre varios anuncios, devuelve ambiguous con 2-25 códigos.
 6) Si no hay evidencia suficiente, devuelve none.
 7) No inventes códigos; usa solo códigos del catálogo proporcionado.
+8) En match, incluye ranked_candidates con al menos el código elegido en primera posición.
+9) En ambiguous, ranked_candidates debe contener 2-25 opciones.
   `.trim();
 
   const input = [

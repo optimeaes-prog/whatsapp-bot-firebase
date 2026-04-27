@@ -1125,8 +1125,8 @@ export function MarketingLanding() {
                   <a href="#faq" className="hover:opacity-60 transition-opacity">Faq</a>
                 </div>
                 <div className="flex flex-wrap justify-center md:justify-end gap-8 text-sm font-bold text-slate-950/70 font-heading">
-                  <Link to="/terms" className="hover:text-slate-950 transition-colors">Términos</Link>
-                  <Link to="/privacy" className="hover:text-slate-950 transition-colors">Privacidad</Link>
+                  <Link to="/legal/terms" className="hover:text-slate-950 transition-colors">Términos</Link>
+                  <Link to="/legal/privacy-policy" className="hover:text-slate-950 transition-colors">Privacidad</Link>
                   <a href="mailto:hola@proplead.com" className="hover:text-slate-950 transition-colors">Soporte</a>
                 </div>
                 <p className="text-[10px] font-black tracking-[0.2em] text-slate-950/40 font-heading">

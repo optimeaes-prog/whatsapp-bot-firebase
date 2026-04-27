@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Settings, Check, MessageSquare, Loader2, Phone, Home } from "lucide-react";
-import type { BotConfig, BotStyle, MessagingProvider } from "../types";
-import { getBotConfig, updateActiveStyle, updateMessagingProvider, updateOrgName, updateNotificationNumbers, DEFAULT_STYLES } from "../services/botConfig";
+import { Settings, Check, MessageSquare, Home } from "lucide-react";
+import type { BotConfig, BotStyle } from "../types";
+import { getBotConfig, updateActiveStyle, updateOrgName, updateNotificationNumbers, DEFAULT_STYLES } from "../services/botConfig";
 import { useAuth } from "../contexts/AuthContext";
 import { Bell } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -28,7 +28,6 @@ export function Configuracion() {
   const [config, setConfig] = useState<BotConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [savingProvider, setSavingProvider] = useState(false);
   const [previewStyle, setPreviewStyle] = useState<BotStyle | null>(null);
   const [orgName, setOrgName] = useState("");
   const [savingOrg, setSavingOrg] = useState(false);
@@ -104,22 +103,6 @@ export function Configuracion() {
       toast.error("Error al actualizar el estilo");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handleSelectProvider(provider: MessagingProvider) {
-    if (!config || config.messagingProvider === provider) return;
-    setSavingProvider(true);
-
-    try {
-      await updateMessagingProvider(provider);
-      setConfig({ ...config, messagingProvider: provider });
-      toast.success(`Proveedor cambiado a ${provider} correctamente`);
-    } catch (error) {
-      console.error("Error updating provider:", error);
-      toast.error("Error al actualizar el proveedor");
-    } finally {
-      setSavingProvider(false);
     }
   }
 
@@ -236,85 +219,6 @@ export function Configuracion() {
         </div>
       </div>
 
-      {/* Messaging Provider Section */}
-      <div className="border-t pt-8 mb-8">
-        <div className="flex items-center gap-2 mb-4">
-          <Phone className="text-emerald-600" size={24} />
-          <h2 className="text-lg font-bold text-gray-900 font-heading">Proveedor de Mensajería</h2>
-        </div>
-
-        <p className="text-gray-600 mb-4">
-          Selecciona el servicio que se utilizará para enviar mensajes de WhatsApp.
-        </p>
-
-        <div className="grid sm:grid-cols-2 gap-4">
-          {/* Whapi Option */}
-          <button
-            onClick={() => handleSelectProvider("whapi")}
-            disabled={role === "member" || savingProvider}
-            className={cn(
-              "w-full text-left p-5 rounded-btn border-2 transition-all",
-              config?.messagingProvider === "whapi" || !config?.messagingProvider
-                ? "border-emerald-500 bg-emerald-50"
-                : "border-gray-200 hover:border-gray-300 bg-white"
-            )}
-          >
-            <div className="flex items-start justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-bold text-gray-900 font-heading">Whapi</h3>
-                  {(config?.messagingProvider === "whapi" || !config?.messagingProvider) && (
-                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full font-heading uppercase tracking-wider">
-                      Activo
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm text-gray-600">Envía mensajes a través de la API de Whapi Cloud.</p>
-              </div>
-              {(config?.messagingProvider === "whapi" || !config?.messagingProvider) && (
-                <Check className="text-emerald-600 ml-2 flex-shrink-0" size={20} />
-              )}
-            </div>
-          </button>
-
-          {/* Twilio Option */}
-          <button
-            onClick={() => handleSelectProvider("twilio")}
-            disabled={role === "member" || savingProvider}
-            className={cn(
-              "w-full text-left p-5 rounded-btn border-2 transition-all",
-              config?.messagingProvider === "twilio"
-                ? "border-emerald-500 bg-emerald-50"
-                : "border-gray-200 hover:border-gray-300 bg-white"
-            )}
-          >
-            <div className="flex items-start justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-bold text-gray-900 font-heading">Twilio</h3>
-                  {config?.messagingProvider === "twilio" && (
-                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full font-heading uppercase tracking-wider">
-                      Activo
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm text-gray-600">Envía mensajes a través de la API de Twilio WhatsApp.</p>
-              </div>
-              {config?.messagingProvider === "twilio" && (
-                <Check className="text-emerald-600 ml-2 flex-shrink-0" size={20} />
-              )}
-            </div>
-          </button>
-        </div>
-
-        {savingProvider && (
-          <div className="flex items-center gap-2 mt-3 text-sm text-gray-500">
-            <Loader2 className="animate-spin" size={14} />
-            Guardando...
-          </div>
-        )}
-      </div>
-
       {/* Asistente Style Section */}
       <div className="border-t pt-8">
         <div className="flex items-center gap-2 mb-4">
@@ -419,7 +323,8 @@ export function Configuracion() {
           <h3 className="text-lg font-bold text-gray-900 mb-1 font-heading">Privacidad y datos</h3>
           <p className="text-sm text-gray-600 mb-4">
             Descarga una copia de los datos de tu organización o solicita su eliminación. Puedes consultar nuestra{" "}
-            <a href="/privacy" className="underline">Política de Privacidad</a>.
+            <a href="/legal/privacy-policy" className="underline">Política de Privacidad</a> y el proceso de{" "}
+            <a href="/legal/data-deletion" className="underline">eliminación de datos</a>.
           </p>
           <div className="flex flex-col sm:flex-row gap-3">
             <Button onClick={handleExportData} disabled={exporting} variant="secondary">

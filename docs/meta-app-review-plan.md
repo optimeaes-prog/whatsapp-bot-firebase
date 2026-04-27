@@ -19,10 +19,10 @@ These map to gaps the Explore pass found in the current codebase. Ordered by rev
 
 ### A1. Implement Embedded Signup (critical) — prototype now, production after approval
 
-**Timing clarification (important):** Meta explicitly allows — and actually *requires* — you to build the Embedded Signup prototype **before** App Review, while the app is in Development mode. In that phase:
+**Timing clarification (important):** Meta explicitly allows — and actually *requires* — you to build the Embedded Signup prototype **before** App Review, while the app is still in pre-publish state (often shown as **Publish = Unpublished**). In that phase:
 - Only Meta users you've manually added as **App Testers / Roles** can complete the flow.
 - You're subject to "Tech Provider onboarding limits" (a small cap on connected WABAs), which is fine for prototype + screencast.
-- **You cannot onboard real paying customers until App Review approval** — that approval is precisely what lifts Embedded Signup out of dev mode.
+- **You cannot onboard real paying customers until App Review approval** — approval + publish is what unlocks the production path.
 
 So the sequence is: build A1 → add yourself + 1 tester (see B6) → record the screencast exercising Embedded Signup end-to-end against a test WABA → submit → approval flips production on. This is *the* expected path, and submitting **without** a working Embedded Signup prototype in the screencast is the most common first-try rejection reason for Tech Provider applications.
 
@@ -45,7 +45,7 @@ So the sequence is: build A1 → add yourself + 1 tester (see B6) → record the
 
 ### A2. Webhook signature verification (critical — reviewers test this)
 
-[functions/src/index.ts](functions/src/index.ts) `cloudApiWebhook` handler currently skips `X-Hub-Signature-256` validation. Add:
+[functions/src/index.ts](functions/src/index.ts) `whatsappWebhook` must enforce `X-Hub-Signature-256` validation on every POST. Implementation:
 
 ```ts
 const raw = req.rawBody; // firebase-functions gives Buffer
@@ -58,7 +58,7 @@ Pull `META_APP_SECRET` from Secret Manager (not env). This is the same secret us
 
 ### A3. Switch webhook endpoint to a single app-wide URL
 
-Currently `/cloudApiWebhook?orgId={orgId}` requires reviewers to know an orgId. Meta subscribes the **app** (not per-org). Change to:
+Use only an app-wide endpoint for Meta webhook subscription (no per-org callback URLs):
 - Single URL: `https://.../whatsappWebhook` (no query param).
 - Resolve org by looking up the incoming `entry[].id` (that's the WABA ID) in Firestore (`organizations` where `botConfig.cloudApiConfig.wabaId == entry.id`). Add a Firestore index.
 - Subscribe `messages`, `message_template_status_update`, `account_update`, `phone_number_name_update`, `message_echoes` (last is optional but reviewer-positive).
@@ -106,6 +106,18 @@ WhatsApp Business Messaging Policy requires **prior, explicit opt-in** per lead 
 4. Lead taps "Send" in WhatsApp → inbound message arrives → 24h session window opens → **implicit opt-in**. Proplead creates consent record `{source: 'inbound_whatsapp', capturedAt: <inbound ts>, proofUrl: <inbound message sid>}`.
 5. All subsequent replies during that window are free-form (no template needed).
 
+**Immediately after inbound ("Hola, me interesa la vivienda XXXX") — required handling:**
+1. Persist/refresh lead context from `listingCode` + inbound phone (`chatId`): lead name, assigned agent, listing highlights.
+2. Generate a **session message** (not a template) as the first assistant response inside the 24h window.
+3. Reply with this baseline structure (Spanish default):
+   - `Hola, {leadName}. Gracias por tu interes en esta vivienda. Soy el asistente virtual de {agentName}, encantado de ayudarte.`
+   - `Has visto las caracteristicas de la vivienda?`
+   - `{CARACTERISTICAS_RESUMEN}`
+   - `Si deseas darte de baja de estas conversaciones, responde BAJA.`
+4. If `leadName` or `agentName` is missing, fall back gracefully (`Hola`, `nuestro equipo`) and keep the same compliance footer.
+
+**Why this matters for review:** reviewers need to see that after user-initiated inbound contact, Proplead answers with contextual property information via a session message and always exposes a clear opt-out keyword (`BAJA`).
+
 **Why this is compliant:** the lead's *outbound* WhatsApp message to us is what Meta treats as consent. We never send a marketing template to a number that hasn't first messaged us.
 
 **Files / plumbing:**
@@ -118,9 +130,9 @@ WhatsApp Business Messaging Policy requires **prior, explicit opt-in** per lead 
 
 **Reviewer-visible evidence:** mention in C1 that cold leads receive an SMS bridge and only enter WhatsApp after they initiate; demo in D1 by showing the SMS, the redirect, and the inbound-triggered conversation.
 
-### A6d. Voice-call DTMF opt-in (phone-call leads)
+### A6d. Voice-call DTMF opt-in (global Proplead number)
 
-**Problem:** Some leads arrive via a voice call to the agency's Twilio number. Currently the voice webhook plays a greeting and then sends a WhatsApp template unconditionally — same Meta policy violation.
+**Problem:** Leads call a single global Proplead Twilio number (not per-agency numbers). We cannot infer tenant/org from the dialed number, so org resolution must happen after listing identification inside WhatsApp. Consent still must be explicit before the first outbound WhatsApp template.
 
 **Flow:**
 1. Inbound voice call hits Twilio → `voiceWebhook` returns TwiML:
@@ -136,7 +148,7 @@ WhatsApp Business Messaging Policy requires **prior, explicit opt-in** per lead 
 **Why this is compliant:** DTMF-1 is a verifiable, recorded affirmative action tied to the call SID (Twilio retains the recording / CDR). The template we send after is a MARKETING template dedicated to this opt-in path, text approved by Meta.
 
 **Files / plumbing:**
-- `functions/src/index.ts` — rewrite `voiceWebhook`; add `voiceGatherCallback`; helpers `findOrgIdByPhone`, `recordVoiceConsent`.
+- `functions/src/index.ts` — rewrite `voiceWebhook`; add `voiceGatherCallback`; global intake org routing + listing-driven handoff to target org WABA; helper `recordVoiceConsent`.
 - Audio hosted at `https://proplead.io/audio/voice-optin-es.mp3` (added to `public/audio/`).
 - Config: `VOICE_AUDIO_2_OPTIN_URL`, `TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT`.
 - New Twilio Content template (no variables): *"¡Hola! Soy el asistente virtual… [body as supplied by operator]."*
@@ -176,76 +188,137 @@ Reviewers see multiple providers and get confused about whether this is really a
 
 ## Part B — Meta Dashboard Setup (in order)
 
-### B1. Confirm Meta Business portfolio state
-- business.facebook.com → Business Settings → Business Info: verification = **Verified** ✓.
-- Add `proplead.io` as a verified domain under Brand Safety → Domains.
+### B1. Business and app ownership prerequisites
 
-### B2. App configuration (developers.facebook.com → your app)
+**Required**
+- `business.facebook.com` → `Business Settings` → `Business Info`: verification = **Verified**.
+- App is connected to the same verified business portfolio.
+- Domain `proplead.io` is verified under Brand Safety → Domains.
 
-**Settings → Basic:**
-- App Icon: 1024×1024, Proplead logo.
+**Recommended**
+- Confirm business restrictions are clear (no active account restrictions in Business Manager).
+
+### B2. App settings (Basic)
+
+`developers.facebook.com` → your app → `App settings` → `Basic`
+
+**Required**
+- App Icon: 1024x1024 Proplead logo.
 - Category: **Business and Pages**.
+  - Rationale: app is reviewed as WhatsApp Cloud API + Business Login (not Messenger Platform product UX).
 - Privacy Policy URL: `https://proplead.io/legal/privacy-policy`.
 - Terms of Service URL: `https://proplead.io/legal/terms`.
-- User Data Deletion: **Data Deletion Callback URL** = `https://<cf-region>-<project>.cloudfunctions.net/metaDataDeletion` (from A4).
-- Contact email: a monitored address (not a personal one).
-- Business Use: select the verified Talmate business.
-- Business Verification: should show **Verified**.
+- User Data Deletion Callback URL: `https://api.proplead.io/meta-data-deletion`.
+- Contact email: monitored operational mailbox.
+- Business Use: select verified Talmate business.
+- Business Verification shows **Verified**.
 
-**App Mode:** flip from **Development → Live** once A1–A9 are deployed. (Live mode is required before submission.)
+**Temporary fallback**
+- If `api.proplead.io` DNS/SSL is still propagating, temporarily use:
+  - `https://europe-west1-real-estate-idealista-bot.cloudfunctions.net/metaDataDeletion`
+- Replace with `https://api.proplead.io/meta-data-deletion` once custom domain is connected and SSL is provisioned.
 
-### B3. WhatsApp product configuration
-- Products → WhatsApp → **API Setup**: confirm a test phone number exists for the screencast demo.
-- Configuration → **Webhook**:
-  - Callback URL: `https://<cf-region>-<project>.cloudfunctions.net/whatsappWebhook`.
-  - Verify Token: value of `META_VERIFY_TOKEN`.
-  - Subscribe fields: `messages`, `message_template_status_update`, `account_update`, `phone_number_name_update`.
-- Configuration → **Permissions**: confirm `whatsapp_business_messaging` + `whatsapp_business_management` appear (they do by default once WhatsApp product is added).
+**One-time custom domain setup (Firebase)**
+1. Firebase Console → Hosting → Add custom domain `api.proplead.io`.
+2. Add DNS verification/routing records exactly as Firebase provides.
+3. Wait for status: Connected + SSL Provisioned.
+4. Deploy: `firebase deploy --only hosting,functions:metaDataDeletion`.
+5. Verify endpoint responds on `https://api.proplead.io/meta-data-deletion`.
 
-### B4. Facebook Login for Business — Tech Provider config
-- Products → Facebook Login for Business → **Create configuration**.
-- Type: **Business Login for WhatsApp**.
-- Permissions: `whatsapp_business_management`, `whatsapp_business_messaging`, `business_management`.
+### B3. WhatsApp product + webhook setup
+
+`developers.facebook.com` → app → `Use cases` (WhatsApp) / `Products` (WhatsApp)
+
+**Required**
+- API Setup includes a test phone number for screencast/testing.
+- Webhook callback URL points to:
+  - `https://europe-west1-real-estate-idealista-bot.cloudfunctions.net/whatsappWebhook`
+- Verify Token equals `META_VERIFY_TOKEN`.
+- Subscribed webhook fields:
+  - `messages`
+  - `message_template_status_update`
+  - `account_update`
+  - `phone_number_name_update`
+
+**Recommended**
+- Re-run webhook verify handshake after any callback URL/token change.
+- Confirm events are received in logs before submission.
+
+### B4. Facebook Login for Business configuration (Tech Provider path)
+
+`developers.facebook.com` → app → `Facebook Login for Business` → Create configuration
+
+**Required**
+- Configuration type: **Business Login for WhatsApp**.
+- Include required permissions for Embedded Signup flow:
+  - `whatsapp_business_management`
+  - `whatsapp_business_messaging`
+  - `business_management` (only in Login configuration, not as Advanced Access request unless truly needed).
 - Assets: WhatsApp Business Account (read/write), Business Portfolio.
-- Save → copy `config_id` into `META_FB_LOGIN_CONFIG_ID` secret (used in A1).
+- Save and copy `config_id` into secret `META_FB_LOGIN_CONFIG_ID`.
 
-### B5. System User (for background jobs, not the customer flow)
-- Business Settings → Users → System Users → Add → **Admin** type → name "Proplead Backend".
-- Generate token: scopes `whatsapp_business_management`, `whatsapp_business_messaging`, `business_management`. Never-expires.
-- Store in Secret Manager as `proplead_system_user_token`. Used only for admin-level operations (e.g., template catalog management for Proplead's own demo WABA).
+### B5. Test access model before publish
 
-### B6. Add test users so Embedded Signup works pre-review
+This is required because Publish is gated and reviewers/testers need access while app is still `Unpublished`.
 
-You need two kinds of "user" on Meta's side — don't confuse them:
+**Required**
+1. `App Roles` → `Roles`: add all human testers (Admin/Developer/Tester) and ensure invites are accepted.
+2. In Business Settings, grant WABA access to the same testers so Embedded Signup can complete against a real test WABA.
 
-**(a) App Roles** — grants a real Facebook person permission to use the app while it's in Development mode. This is what lets *you* (and any teammate) complete Embedded Signup against the app before it's Live.
-1. developers.facebook.com → your app → **App Roles → Roles**.
-2. Add yourself as **Administrator** (probably already there as the app creator).
-3. Add any teammate who needs to test as **Developer** or **Tester**. They must accept the invite from their Facebook notifications before it takes effect.
-4. Optionally add `meta-reviewer@proplead.io`'s underlying Facebook account as **Tester** so reviewers can log in with normal FB credentials during review — but reviewers usually use the app test credentials (Part E), so this is optional.
+**Fallback (Meta platform limitation)**
+- If Meta shows `The ability to create test users is disabled temporarily`, do not block B5.
+- Proceed with `App Roles` + real human tester accounts only.
+- `Test Users` are optional for screencast privacy; they are not required to complete Tech Provider onboarding.
 
-**(b) Facebook Test Users** — synthetic, sandboxed FB accounts that aren't real people. Useful for the screencast so you don't expose a personal FB profile.
-1. **App Roles → Test Users → Add Test Users**.
-2. Create 1–2 with "has installed this app" = yes and grant them `whatsapp_business_management`, `whatsapp_business_messaging`.
-3. Log into facebook.com in an incognito window with the test user's generated credentials; use it to complete Embedded Signup in the screencast.
+**Optional**
+- `App Roles` → `Test Users`: create 1-2 synthetic users for screencast privacy if Meta enables this feature again.
 
-**For WABA-side access** (so the test account actually has a WhatsApp Business Account to connect):
-1. business.facebook.com → Business Settings → **WhatsApp Accounts** → confirm the test WABA you got when you added the WhatsApp product is visible.
-2. Business Settings → **Users → People** → add your own FB account and any tester with access to that WABA.
-3. If you want a second "client" business for the multi-tenant demo in the screencast, create a second Meta Business Portfolio with a different personal/test FB account and connect it via Embedded Signup as a *different customer*.
+**Recommended**
+- Keep one dedicated reviewer-ready account (`meta-reviewer@proplead.io`) with stable credentials for the full review window.
 
-### B7. App Review submission
+### B6. Submit App Review (new checklist flow)
 
-Under **App Review → Permissions and Features**:
+Current flow is checklist-driven under `Review` and may show cards like `Allowed usage`, `Data handling`, and `Reviewer instructions`.
 
-For **each** of `whatsapp_business_messaging` and `whatsapp_business_management`:
-1. Click **Request Advanced Access** → **Complete Form**.
-2. Fill fields per templates in Part C.
-3. Attach one screencast per permission (Part D).
-4. Provide reviewer instructions + test credentials (Part E).
-5. Submit.
+**Required**
+1. Request Advanced Access only for:
+   - `whatsapp_business_messaging`
+   - `whatsapp_business_management`
+2. Complete permission forms with project-specific text from Part C.
+3. Upload separate screencast per permission (Part D).
+4. Add reviewer instructions and test credentials (Part E).
+5. Ensure submission is **submitted**, not draft.
 
-Do **not** request `business_management` as Advanced Access unless you're pre-filling WABA creation server-side — it's not required for standard Tech Provider flow and requesting unused permissions is the #1 rejection cause.
+**Required constraints**
+- One video per permission (do not combine both into one clip).
+- One written justification per permission (no copy-paste generic text).
+- Do not request extra permissions unless a concrete product flow requires them.
+
+### B7. Operate during `In review` / `Needs your review`
+
+**Required**
+- Monitor both:
+  - `Alert Inbox`
+  - `Review` → requests/checklist status
+- If status shows `Needs your review`, open the flagged card, apply requested fixes, and resubmit.
+
+**Recommended**
+- When reviewer asks for clarification, update both the screencast and written description so they match exactly.
+- Avoid rapid no-change resubmits.
+
+### B8. Publish transition (new UI behavior)
+
+**Expected UI behavior**
+- Left navigation may show `Publish` with status `Unpublished`.
+- Old Development/Live toggle may not be visible.
+
+**Required**
+1. Finish Tech Provider onboarding + App Review checklist items.
+2. Resolve all outstanding review actions (`Needs your review` / pending checklist cards).
+3. Return to `Publish` page and publish once unblocked.
+
+**Rule**
+- Treat `Publish` as the final step after review readiness/approval, not as a prerequisite to start App Review.
 
 ---
 
@@ -330,12 +403,14 @@ Run this **end-to-end** before hitting Submit. Each item must pass.
 - [ ] Embedded Signup completes end-to-end on a **second Meta business account** (not Talmate) — confirms multi-tenant works.
 - [ ] Template messages are all in `APPROVED` state on the demo WABA. Reviewer must see them working, not pending.
 - [ ] STOP/BAJA flow tested with a real WhatsApp send.
-- [ ] App mode is **Live**.
+- [ ] In Meta dashboard, App Review cards are complete (no unresolved `Needs your review` item).
+- [ ] App Review request is actually submitted (not draft).
 - [ ] Business Verification = Verified in Business Settings.
 - [ ] Only `whatsapp_business_messaging` and `whatsapp_business_management` are requested in App Review — no extra permissions.
 - [ ] Both screencasts uploaded (MP4, under 100MB each), one per permission.
 - [ ] Reviewer test credentials work from a fresh browser session.
 - [ ] Whapi/Twilio toggles hidden from the customer UI path that reviewers will see.
+- [ ] Publish page is rechecked after App Review updates; if still `Unpublished`, confirm no pending action in `Alert Inbox`.
 
 ---
 
@@ -349,7 +424,7 @@ New:
 - `legal/data-deletion.en.md` + `.es.md` — user-facing DSR instructions.
 
 Modified:
-- [functions/src/index.ts](functions/src/index.ts) — rename/reroute `cloudApiWebhook`, add signature verification (A2, A3), add `exchangeEmbeddedSignupCode`, `deleteMyOrganization`, `exportMyData`.
+- [functions/src/index.ts](functions/src/index.ts) — implement `whatsappWebhook` (single app-wide endpoint) with signature verification and WABA-based org routing; add `exchangeEmbeddedSignupCode`, `deleteMyOrganization`, `exportMyData`.
 - [functions/src/services/cloudApiClient.ts](functions/src/services/cloudApiClient.ts) — add `appsecret_proof` (A9); switch org resolution to `wabaId`.
 - [functions/src/services/messagingProvider.ts](functions/src/services/messagingProvider.ts) — gate sends on `optedOut`.
 - [src/pages/Onboarding.tsx](src/pages/Onboarding.tsx) — insert Connect WhatsApp step; hide provider switcher for non-admins (A10).
@@ -367,7 +442,7 @@ Modified:
 3. Run `curl -X POST https://.../metaDataDeletion -d 'signed_request=<signed>'` — assert response shape `{url, confirmation_code}`.
 4. Send `BAJA` from a real WhatsApp to the test number — assert `conversations/{id}.optedOut === true` and next template send is blocked.
 5. Record both screencasts against the **staging** environment first, watch them yourself at 1x speed, confirm no sensitive info leaks and every narration claim is visibly demonstrated.
-6. Promote to prod, flip app to Live, submit.
+6. Promote to prod, submit App Review, track status in Alert Inbox/Requests, then publish from the Publish page when unlocked.
 
 ## Part I — If rejected
 
@@ -381,7 +456,7 @@ Expect 3–5 business days per review cycle. Do not resubmit within 24h of rejec
 
 ---
 
-## Part J — Implementation Status Audit (as of 2026-04-22)
+## Part J — Implementation Status Audit (as of 2026-04-23)
 
 This section tracks what has been implemented in the codebase versus what remains outstanding for first-try App Review approval.
 
@@ -394,7 +469,7 @@ Legend:
 ### J1. Part A — Code & Compliance Fixes
 
 #### A1. Embedded Signup (critical)
-Status: 🟡 Partial
+Status: ✅ Done
 
 Implemented:
 - ✅ Frontend Meta Embedded Signup service exists in `src/services/embeddedSignup.ts`:
@@ -410,23 +485,17 @@ Implemented:
 - ✅ Secret parameters exist in `functions/src/secrets.ts`:
   - `META_APP_ID`, `META_APP_SECRET`, `META_FB_LOGIN_CONFIG_ID`, `META_VERIFY_TOKEN`.
 - ✅ Dedicated page exists: `src/pages/ConnectWhatsApp.tsx`.
+- ✅ Plan-required onboarding insertion is implemented in `src/pages/Onboarding.tsx` (Connect WhatsApp step tied to onboarding progression).
+- ✅ Manual-token admin fallback is implemented and gated in `src/pages/AdminTools.tsx`, with backend role/email enforcement in `functions/src/index.ts` (`setManualCloudApiConfig`).
 
-Missing / divergent:
-- ❌ Plan-required onboarding insertion in `src/pages/Onboarding.tsx` (step between agency info and email) is not implemented; onboarding still follows legacy step model.
-- ❌ Manual-token admin fallback flow in `src/pages/AdminTools.tsx` gated by `role === 'owner' && email in ADMIN_EMAILS` is not implemented in current file.
-- 🟡 `exchangeEmbeddedSignupCode` currently persists a generated per-org verify token, while plan standardizes global `META_VERIFY_TOKEN` for handshake simplicity.
-
-Action to close:
-- Add Connect WhatsApp as a mandatory onboarding step tied to `organizationSettings.onboardingStep`.
-- Implement admin-only manual token fallback UI + strict gating.
-- Align verify-token behavior to global `META_VERIFY_TOKEN` only for app webhook.
+Notes:
+- ✅ `exchangeEmbeddedSignupCode` and `setManualCloudApiConfig` both persist the global `META_VERIFY_TOKEN` (no per-org random fallback).
 
 #### A2. Webhook signature verification
 Status: ✅ Done
 
 Implemented:
 - ✅ Signature verification is present in `functions/src/index.ts` for:
-  - `cloudApiWebhook`
   - `whatsappWebhook`
 - ✅ Uses raw body + HMAC SHA256 + timing-safe compare.
 - ✅ Reads app secret from `META_APP_SECRET` secret parameter.
@@ -435,18 +504,13 @@ Notes:
 - This is reviewer-critical and currently covered.
 
 #### A3. Single app-wide webhook URL
-Status: ✅ Done (with legacy overlap)
+Status: ✅ Done
 
 Implemented:
-- ✅ `whatsappWebhook` exists as app-wide endpoint in `functions/src/index.ts`.
-- ✅ No query-param org routing needed for this endpoint; resolves org by WABA ID via `wabaIndex/{wabaId}`.
+- ✅ `whatsappWebhook` is the single app-wide endpoint in `functions/src/index.ts`.
+- ✅ No query-param org routing is used; org is resolved by WABA ID via `wabaIndex/{wabaId}`.
 - ✅ `wabaIndex` is written during Embedded Signup persistence in `functions/src/services/embeddedSignup.ts`.
-
-Caveat:
-- 🟡 Legacy `cloudApiWebhook?orgId=...` still exists in code. This can confuse reviewer setup if documented incorrectly.
-
-Action to close:
-- Keep legacy for backwards compatibility if needed, but ensure review docs and dashboard use only `whatsappWebhook`.
+- ✅ Legacy `cloudApiWebhook` endpoint has been removed from the backend.
 
 #### A4. Data Deletion Callback
 Status: ✅ Done
@@ -461,7 +525,7 @@ Implemented:
 - ✅ Firestore rules allow public read and deny client writes to `dataDeletionRequests`.
 
 #### A5. Account deletion + DSAR endpoints
-Status: 🟡 Partial
+Status: ✅ Done
 
 Implemented:
 - ✅ `deleteMyOrganization` endpoint exists:
@@ -471,36 +535,26 @@ Implemented:
   - 30-day hard-delete scheduled sweep (`purgeDeletedOrganizations`).
 - ✅ `exportMyData` endpoint exists:
   - Collects org Firestore data.
-  - Writes export file to Storage.
+  - Writes ZIP export file to Storage.
   - Generates signed URL.
   - Emails requester via SendGrid.
 - ✅ UI buttons exist in `src/pages/Configuracion.tsx` for export/delete actions.
-
-Missing / divergent:
-- 🟡 Plan calls for zip export; current implementation exports JSON (not zipped).
-- 🟡 Privacy policy linking exists but route/URL conventions are still legacy (`/privacy`, `/terms`) rather than plan’s `/legal/*`.
-
-Action to close:
-- Change export artifact to ZIP (or update plan if JSON is accepted).
-- Ensure legal pages and links match required public URLs exactly.
+- ✅ Legal links and canonical public URLs are aligned under `/legal/*`:
+  - `/legal/privacy-policy`
+  - `/legal/terms`
+  - `/legal/data-deletion`
 
 #### A6a. Opt-in capture + audit trail
-Status: 🟡 Partial
+Status: ✅ Done
 
 Implemented:
 - ✅ `LeadRow` type includes `consent` shape in `functions/src/types.ts`.
-- ✅ `sendInitialTemplateMessage` enforces opt-in/opt-out gate for Cloud API path in `functions/src/services/messagingProvider.ts`.
-
-Missing:
-- ❌ Consent capture modal in `src/pages/Leads.tsx` not implemented.
-- ❌ No upload/proof workflow in Leads UI for consent evidence.
-- ❌ No explicit server-side auto-creation of `consent.source = 'inbound_whatsapp'` found in inbound path.
-- ❌ No explicit audit log linkage for "consent created" and "template sent with consent id" found.
-
-Action to close:
-- Build consent modal and storage flow.
-- Auto-stamp inbound consent with bounded policy semantics.
-- Add consent/audit event logging and traceability.
+- ✅ `sendInitialTemplateMessage` enforces opt-in/opt-out gate for template sends in `functions/src/services/messagingProvider.ts`.
+- ✅ Consent capture UI is available via `src/components/ConsentModal.tsx`, wired in `src/pages/Leads.tsx`.
+- ✅ Optional consent proof upload is implemented in `src/services/storage.ts` (Firebase Storage) and linked to consent save.
+- ✅ Server-side endpoint `setLeadConsent` exists in `functions/src/index.ts` with auth + allowed source/language validation.
+- ✅ Inbound implicit consent is auto-stamped through `ensureInboundWhatsAppConsentByChatId` (`functions/src/services/firestore.ts`) and called from `processBufferedMessages`.
+- ✅ Explicit audit events are emitted for consent capture and auto-capture (`consent_captured`, `consent_auto_captured`).
 
 #### A6c. Cold-lead SMS opt-in bridge (Idealista)
 Status: ✅ Done
@@ -523,21 +577,19 @@ Implemented:
 - ✅ Config knobs present for audio/template IDs in code via param definitions.
 
 #### A6b. STOP / opt-out handling
-Status: 🟡 Partial
+Status: ✅ Done
 
 Implemented:
 - ✅ Opt-out detection exists in `functions/src/services/optOut.ts`.
-- ✅ Inbound webhook checks opt-out before buffering in `functions/src/index.ts`.
+- ✅ Inbound webhook checks opt-out before buffering in both `webhook` and `whatsappWebhook` (`functions/src/index.ts`).
 - ✅ Opted-out chats are written to `ignoredChats` and receive confirmation reply.
+- ✅ `conversations/{chatId}.optedOut = true` mirror is now written for UI visibility.
 - ✅ Template-send gate blocks if chat is ignored in `functions/src/services/messagingProvider.ts`.
+- ✅ UI visibility is implemented in `src/pages/Conversations.tsx` with opt-out badge/filter and send guard.
+- ✅ Explicit audit event is emitted on opt-out capture (`opt_out_captured`).
 
-Missing / divergent:
-- 🟡 Plan asks to set `conversations/{convId}.optedOut = true`; current implementation uses `ignoredChats` store and does not set `conversation.optedOut` field.
-- 🟡 Regex intentionally excludes `cancelar`; plan includes it. Current implementation documents this exclusion as a business tradeoff.
-
-Action to close:
-- Either implement `conversation.optedOut` as additional state mirror, or update plan/reviewer text to describe canonical ignoredChats approach.
-- Revisit keyword set for policy/UX balance.
+Notes:
+- `cancelar` remains intentionally excluded from STOP regex to avoid collisions with normal scheduling language; canonical opt-out keywords remain active (`stop`, `baja`, `unsubscribe`, `dar de baja`, etc.).
 
 #### A7. Lead privacy notice on first contact template
 Status: ✅ Done
@@ -547,43 +599,58 @@ Implemented:
 - ✅ STOP/BAJA style compliance footer is included.
 
 #### A8. Public legal URLs (privacy/terms/data-deletion)
-Status: ❌ Not done
+Status: ✅ Done
 
 Implemented:
-- ✅ Existing legal pages/routes are present but under legacy paths (`/privacy`, `/terms`) and markdown-backed route component.
-
-Missing:
-- ❌ Required URLs from plan are not present as specified:
+- ✅ Exact public URLs are available and routed:
   - `https://proplead.io/legal/privacy-policy`
   - `https://proplead.io/legal/terms`
   - `https://proplead.io/legal/data-deletion`
-- ❌ No dedicated `/legal/data-deletion` page found.
-- ❌ Current legal markdown still includes placeholders (e.g., `[PRIVACY_EMAIL]`, `[WEBSITE_DOMAIN]`) indicating incomplete publication readiness.
+- ✅ Legacy redirects maintained for compatibility (`/privacy` -> `/legal/privacy-policy`, `/terms` -> `/legal/terms`).
+- ✅ `/legal/privacy-policy` now contains Spanish + English sections in one page for incognito reviewer checks.
+- ✅ All three legal pages explicitly mention:
+  - WhatsApp Business Platform usage
+  - data categories
+  - Meta/Facebook as provider/sub-processor context
+  - retention/deletion framing
+  - user rights and deletion request instructions
+- ✅ A8-facing legal docs no longer contain draft markers/placeholders.
 
-Action to close:
-- Add exact `/legal/*` routes and pages.
-- Finalize bilingual legal copy with no placeholders.
+Reviewer-visible verification:
+- `curl -I -L https://proplead.io/legal/privacy-policy` -> `HTTP/2 200`
+- `curl -I -L https://proplead.io/legal/terms` -> `HTTP/2 200`
+- `curl -I -L https://proplead.io/legal/data-deletion` -> `HTTP/2 200`
 
 #### A9. App Secret Proof on Graph calls
-Status: ❌ Not done
+Status: ✅ Done
 
 Findings:
-- ❌ No `appsecret_proof` parameter found in `functions/src/services/cloudApiClient.ts`.
+- ✅ `appsecret_proof` is now added for Graph calls in `functions/src/services/cloudApiClient.ts`:
+  - `sendText`
+  - `sendTemplate`
+  - `createMessageTemplate`
+  - `checkCloudApiHealth`
+- ✅ Embedded Signup token-authenticated Graph calls now include `appsecret_proof` in `functions/src/services/embeddedSignup.ts`:
+  - `registerPhoneNumber`
+  - `subscribeAppToWaba`
+  - `fetchDisplayPhoneNumber`
+- ✅ `deleteMyOrganization` now sends `appsecret_proof` on `DELETE /{wabaId}/subscribed_apps` as additional hardening.
 
 Action to close:
-- Add `appsecret_proof = HMAC_SHA256(access_token, app_secret)` on Graph API calls where applicable.
+- Keep this as the standard for all new Graph API calls (append `appsecret_proof` wherever access-token auth is used).
 
 #### A10. Remove/gate Whapi and Twilio from default customer path
-Status: ❌ Not done
+Status: ✅ Done
 
-Findings:
-- ❌ Default provider remains `whapi` in `src/services/botConfig.ts`.
-- ❌ Provider selector still exposes Whapi/Twilio in `src/pages/Configuracion.tsx` for regular users.
+Implemented:
+- ✅ Default provider for new org config is `cloud_api` in `src/services/botConfig.ts`.
+- ✅ Missing provider values are normalized to `cloud_api` in `src/services/botConfig.ts`.
+- ✅ Customer-facing settings (`src/pages/Configuracion.tsx`) do not expose any provider picker.
+- ✅ Provider switching UI remains available only in internal admin tooling (`src/pages/AdminTools.tsx`) and is gated to `super_admin`.
+- ✅ Legacy backend support for Whapi/Twilio remains intact for controlled fallback use.
 
 Action to close:
-- Default new org provider to `cloud_api`.
-- Hide non-Cloud provider toggles from non-admin UI paths.
-- Keep legacy backend provider support for existing tenants only.
+- Keep this policy stable for App Review: Cloud API is the published/default path, legacy providers are internal-only fallback controls.
 
 ---
 
@@ -592,12 +659,12 @@ Action to close:
 Status: 🔍 Not code-verifiable
 
 Notes:
-- Items B1–B7 are mostly Meta console/business configuration tasks (domain verification, live mode, webhook setup in app dashboard, app review form submission, reviewer test users).
+- Items B1–B8 are mostly Meta console/business configuration tasks (domain verification, publish gating, webhook setup in app dashboard, app review form submission, reviewer test users).
 - These cannot be reliably confirmed from repository source alone.
 
 Operational checklist to confirm manually:
 - Business verified and domain verified.
-- App in Live mode at submission time.
+- Publish page state reviewed; unresolved App Review actions cleared before final publish.
 - WhatsApp webhook in Meta dashboard points to `.../whatsappWebhook`.
 - Verify token configured as `META_VERIFY_TOKEN`.
 - Embedded Signup FB Login configuration created and config ID set.
@@ -611,10 +678,8 @@ Status: 🟡 Partial (ready text exists, but must align with actual behavior)
 
 Notes:
 - Draft text in this plan is usable, but before submission ensure all claims are strictly true in production behavior.
-- Current code gaps affecting claim fidelity:
-  - Missing full consent capture UX/audit trail (A6a).
-  - `appsecret_proof` missing (A9).
-  - Customer path still exposes legacy providers (A10).
+- Current code no longer shows the previously listed A6a/A9/A10 implementation gaps.
+- Remaining fidelity risk is operational: confirm production behavior and reviewer narrative stay aligned with the latest deployed version.
 
 ---
 
@@ -648,18 +713,30 @@ Likely pass from code:
 - ✅ App-wide webhook endpoint exists.
 
 Likely fail/open:
-- ❌ Legal URL exact path requirements.
-- ❌ Cloud-only customer path requirement.
-- ❌ Full consent UI/evidence flow.
-- ❌ `appsecret_proof`.
-- 🔍 Live mode / review uploads / real reviewer account and WABA state are manual and unverified.
+- 🔍 Publish gating / review uploads / real reviewer account and WABA state are manual and unverified.
 
 ---
 
 ### J7. Priority Order to Reach Submission-Ready State
 
-1. **Close policy-critical gaps first**: A6a (full consent capture + audit), A9 (`appsecret_proof`), A10 (cloud-only customer path), A8 (public legal URLs).
-2. **Finalize onboarding compliance**: embed Connect WhatsApp as required step and add admin fallback gating.
-3. **Harden reviewer experience**: remove reviewer confusion from legacy provider toggles and legacy webhook docs.
-4. **Validate manual Meta setup**: B1–B7 in dashboard, then produce D1/D2 screencasts.
-5. **Run full checklist** in Part F with real end-to-end smoke tests before submit.
+1. **Validate manual Meta setup**: B1–B8 in dashboard, including Publish gating status, webhook settings, and Embedded Signup test roles.
+2. **Harden reviewer evidence**: record D1/D2 screencasts strictly matching visible product behavior and permission narratives.
+3. **Run full checklist** in Part F with real end-to-end smoke tests before submit.
+4. **Freeze reviewer-facing UX copy/routes** to avoid drift between screencasts, reviewer steps, and production UI.
+
+## Part K — Per-Org Template Ownership Cutover (2026-04-26)
+
+Policy alignment implemented:
+- Template ownership is now enforced per organization/WABA for both Twilio and Cloud API.
+- Global template fallback is retired from runtime send paths.
+- Missing required per-org template keys now produce fail-closed behavior.
+
+Operational controls added:
+- `callHandoffReadiness` now returns authoritative eligibility and `missingRequiredKeys`.
+- `backfillPerOrgTemplateEligibility` marks orgs blocked/unblocked for outbound templates using:
+  - `botConfig.templateEligibility.outboundTemplatesBlocked`
+  - `botConfig.templateEligibility.missingRequiredKeys`
+
+Required per-org keys at cutover:
+- Twilio: `voiceOptInConsent`, `callHandoffOrgEs`, `callHandoffOrgEn`, `idealistaInitialEs`, `idealistaInitialEn`, `agentNotification`.
+- Cloud API: `callHandoffOrgEs`, `callHandoffOrgEn`, `idealistaInitialEs`, `idealistaInitialEn`, `agentNotification`.

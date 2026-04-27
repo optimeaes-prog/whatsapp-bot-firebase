@@ -2,6 +2,7 @@ import axios from "axios";
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import crypto from "crypto";
 import { getActiveOrgId } from "./requestContext";
 import type { CloudApiConfig, CloudApiTemplateNames } from "../types";
 
@@ -20,9 +21,11 @@ import type { CloudApiConfig, CloudApiTemplateNames } from "../types";
 const DATABASE_ID = "realestate-whatsapp-bot";
 const DEFAULT_GRAPH_API_VERSION = "v23.0";
 const CREDENTIALS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+const APP_SECRET_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 
 type CachedCredentials = {
   accessToken: string;
+  appSecretProof: string;
   phoneNumberId: string;
   wabaId: string;
   graphApiVersion: string;
@@ -31,6 +34,7 @@ type CachedCredentials = {
 };
 
 const credentialsCache: Record<string, CachedCredentials> = {};
+let appSecretCache: { value: string; expiry: number } | null = null;
 
 let secretManagerClient: SecretManagerServiceClient | null = null;
 
@@ -65,6 +69,24 @@ async function accessSecretVersion(secretName: string): Promise<string> {
   return Buffer.isBuffer(payload) ? payload.toString("utf8") : String(payload);
 }
 
+async function getMetaAppSecret(): Promise<string> {
+  const now = Date.now();
+  if (appSecretCache && now < appSecretCache.expiry) {
+    return appSecretCache.value;
+  }
+  const value = (await accessSecretVersion("META_APP_SECRET")).trim();
+  if (!value) {
+    throw new Error("META_APP_SECRET is empty");
+  }
+  appSecretCache = { value, expiry: now + APP_SECRET_CACHE_TTL_MS };
+  return value;
+}
+
+async function buildAppSecretProof(accessToken: string): Promise<string> {
+  const appSecret = await getMetaAppSecret();
+  return crypto.createHmac("sha256", appSecret).update(accessToken).digest("hex");
+}
+
 export async function getCloudApiConfigForOrg(orgId?: string): Promise<CloudApiConfig> {
   const resolvedOrgId = orgId || getActiveOrgId();
   if (!resolvedOrgId) {
@@ -91,6 +113,7 @@ export async function getCloudApiConfigForOrg(orgId?: string): Promise<CloudApiC
  */
 export async function getCloudApiCredentials(orgId?: string): Promise<{
   accessToken: string;
+  appSecretProof: string;
   phoneNumberId: string;
   wabaId: string;
   graphApiVersion: string;
@@ -105,6 +128,7 @@ export async function getCloudApiCredentials(orgId?: string): Promise<{
   if (cached && now < cached.expiry) {
     return {
       accessToken: cached.accessToken,
+      appSecretProof: cached.appSecretProof,
       phoneNumberId: cached.phoneNumberId,
       wabaId: cached.wabaId,
       graphApiVersion: cached.graphApiVersion,
@@ -113,24 +137,30 @@ export async function getCloudApiCredentials(orgId?: string): Promise<{
   }
 
   const config = await getCloudApiConfigForOrg(resolvedOrgId);
+  const orgTemplates: CloudApiTemplateNames = {
+    ...(config.templates || {}),
+  };
   const accessToken = await accessSecretVersion(config.accessTokenSecretName);
+  const appSecretProof = await buildAppSecretProof(accessToken);
   const graphApiVersion = config.graphApiVersion?.trim() || DEFAULT_GRAPH_API_VERSION;
 
   credentialsCache[resolvedOrgId] = {
     accessToken,
+    appSecretProof,
     phoneNumberId: config.phoneNumberId,
     wabaId: config.wabaId,
     graphApiVersion,
-    templates: config.templates,
+    templates: orgTemplates,
     expiry: now + CREDENTIALS_CACHE_TTL_MS,
   };
 
   return {
     accessToken,
+    appSecretProof,
     phoneNumberId: config.phoneNumberId,
     wabaId: config.wabaId,
     graphApiVersion,
-    templates: config.templates,
+    templates: orgTemplates,
   };
 }
 
@@ -173,8 +203,16 @@ type SendTextResult = {
   messageId?: string;
 };
 
+type SendReplyButtonsParams = {
+  to: string;
+  body: string;
+  chatId?: string;
+  yesTitle: string;
+  noTitle: string;
+};
+
 export async function sendText(params: SendTextParams): Promise<SendTextResult> {
-  const { accessToken, phoneNumberId, graphApiVersion } = await getCloudApiCredentials();
+  const { accessToken, appSecretProof, phoneNumberId, graphApiVersion } = await getCloudApiCredentials();
   const to = toMetaPhoneNumber(params.to);
 
   const response = await axios.post(
@@ -190,6 +228,61 @@ export async function sendText(params: SendTextParams): Promise<SendTextResult> 
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
+      },
+      params: {
+        appsecret_proof: appSecretProof,
+      },
+    }
+  );
+
+  const data = response.data as { messages?: Array<{ id?: string }> };
+  return {
+    chatId: params.chatId || params.to,
+    messageId: data.messages?.[0]?.id,
+  };
+}
+
+export async function sendReplyButtons(params: SendReplyButtonsParams): Promise<SendTextResult> {
+  const { accessToken, appSecretProof, phoneNumberId, graphApiVersion } = await getCloudApiCredentials();
+  const to = toMetaPhoneNumber(params.to);
+
+  const response = await axios.post(
+    `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
+    {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: params.body },
+        action: {
+          buttons: [
+            {
+              type: "reply",
+              reply: {
+                id: "confirm_yes",
+                title: params.yesTitle.slice(0, 20),
+              },
+            },
+            {
+              type: "reply",
+              reply: {
+                id: "confirm_no",
+                title: params.noTitle.slice(0, 20),
+              },
+            },
+          ],
+        },
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      params: {
+        appsecret_proof: appSecretProof,
       },
     }
   );
@@ -252,7 +345,7 @@ export async function sendTemplate(params: SendTemplateParams): Promise<SendText
   if (!params.templateName) {
     throw new Error("sendTemplate: templateName is required (resolve from cloudApiConfig.templates)");
   }
-  const { accessToken, phoneNumberId, graphApiVersion } = await getCloudApiCredentials();
+  const { accessToken, appSecretProof, phoneNumberId, graphApiVersion } = await getCloudApiCredentials();
   const to = toMetaPhoneNumber(params.to);
 
   const payload = {
@@ -274,6 +367,9 @@ export async function sendTemplate(params: SendTemplateParams): Promise<SendText
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
+      },
+      params: {
+        appsecret_proof: appSecretProof,
       },
     }
   );
@@ -383,7 +479,7 @@ export async function createMessageTemplate(params: CreateTemplateParams): Promi
   status: string;
   category?: string;
 }> {
-  const { accessToken, wabaId, graphApiVersion } = await getCloudApiCredentials();
+  const { accessToken, appSecretProof, wabaId, graphApiVersion } = await getCloudApiCredentials();
 
   const response = await axios.post(
     `https://graph.facebook.com/${graphApiVersion}/${wabaId}/message_templates`,
@@ -397,6 +493,9 @@ export async function createMessageTemplate(params: CreateTemplateParams): Promi
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
+      },
+      params: {
+        appsecret_proof: appSecretProof,
       },
     }
   );
@@ -416,11 +515,12 @@ export async function createMessageTemplate(params: CreateTemplateParams): Promi
 
 export async function checkCloudApiHealth(orgId?: string): Promise<{ status: string; details?: any }> {
   try {
-    const { accessToken, phoneNumberId, graphApiVersion } = await getCloudApiCredentials(orgId);
+    const { accessToken, appSecretProof, phoneNumberId, graphApiVersion } = await getCloudApiCredentials(orgId);
     const response = await axios.get(
       `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}`,
       {
         headers: { Authorization: `Bearer ${accessToken}` },
+        params: { appsecret_proof: appSecretProof },
         timeout: 5000,
       }
     );
@@ -483,10 +583,25 @@ export function parseCloudApiWebhook(
       for (const raw of messages) {
         if (!raw || typeof raw !== "object") continue;
         const msg = raw as Record<string, unknown>;
-        if (msg.type !== "text") continue; // only handle plain text for now
+        const msgType = typeof msg.type === "string" ? msg.type : "";
         const from = typeof msg.from === "string" ? msg.from : "";
-        const textObj = msg.text as Record<string, unknown> | undefined;
-        const text = typeof textObj?.body === "string" ? (textObj.body as string) : "";
+        let text = "";
+        if (msgType === "text") {
+          const textObj = msg.text as Record<string, unknown> | undefined;
+          text = typeof textObj?.body === "string" ? (textObj.body as string) : "";
+        } else if (msgType === "interactive") {
+          const interactive = msg.interactive as Record<string, unknown> | undefined;
+          const buttonReply = interactive?.button_reply as Record<string, unknown> | undefined;
+          const buttonId = typeof buttonReply?.id === "string" ? buttonReply.id.trim() : "";
+          const buttonTitle = typeof buttonReply?.title === "string" ? buttonReply.title.trim() : "";
+          if (buttonId === "confirm_yes" || buttonId === "confirm_no") {
+            text = buttonId;
+          } else if (buttonTitle) {
+            const normalized = buttonTitle.toLowerCase();
+            if (normalized === "yes" || normalized === "si" || normalized === "sí") text = "confirm_yes";
+            if (normalized === "no") text = "confirm_no";
+          }
+        }
         if (!from || !text) continue;
 
         const tsRaw = msg.timestamp;

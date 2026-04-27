@@ -62,30 +62,60 @@ export async function fetchEmbeddedSignupConfig(): Promise<EmbeddedSignupConfig>
 }
 
 let sdkLoadPromise: Promise<void> | null = null;
+let sdkInitializedForAppId: string | null = null;
 export function loadFacebookSdk(appId: string): Promise<void> {
   if (sdkLoadPromise) return sdkLoadPromise;
   sdkLoadPromise = new Promise((resolve, reject) => {
-    if (window.FB) {
-      window.FB.init({ appId, cookie: true, xfbml: false, version: "v23.0" });
-      resolve();
-      return;
-    }
-    window.fbAsyncInit = () => {
+    const initSdk = () => {
+      if (!window.FB) {
+        reject(new Error("Facebook SDK no disponible"));
+        return;
+      }
       try {
-        window.FB!.init({ appId, cookie: true, xfbml: false, version: "v23.0" });
+        window.FB.init({ appId, cookie: true, xfbml: false, version: "v23.0" });
+        sdkInitializedForAppId = appId;
         resolve();
       } catch (err) {
         reject(err);
       }
     };
-    const existing = document.getElementById("facebook-jssdk");
-    if (existing) return;
+
+    if (window.FB) {
+      initSdk();
+      return;
+    }
+
+    window.fbAsyncInit = initSdk;
+
+    const existing = document.getElementById("facebook-jssdk") as HTMLScriptElement | null;
+    if (existing) {
+      const pollLimit = 50;
+      let attempts = 0;
+      const poll = () => {
+        attempts += 1;
+        if (window.FB) {
+          initSdk();
+          return;
+        }
+        if (attempts >= pollLimit) {
+          reject(new Error("Facebook SDK tardó demasiado en cargar"));
+          return;
+        }
+        window.setTimeout(poll, 100);
+      };
+      poll();
+      return;
+    }
+
     const script = document.createElement("script");
     script.id = "facebook-jssdk";
     script.async = true;
     script.defer = true;
     script.crossOrigin = "anonymous";
     script.src = "https://connect.facebook.net/en_US/sdk.js";
+    script.onload = () => {
+      if (window.FB) initSdk();
+    };
     script.onerror = () => reject(new Error("No se pudo cargar el SDK de Facebook"));
     document.body.appendChild(script);
   });
@@ -98,11 +128,16 @@ export function loadFacebookSdk(appId: string): Promise<void> {
  * server. Rejects if the user cancels or Meta reports an error.
  */
 export function launchEmbeddedSignup(
-  configId: string
+  configId: string,
+  appId: string
 ): Promise<{ code: string; phoneNumberId: string; wabaId: string }> {
   return new Promise((resolve, reject) => {
     if (!window.FB) {
       reject(new Error("Facebook SDK no inicializado"));
+      return;
+    }
+    if (!sdkInitializedForAppId) {
+      reject(new Error("Facebook SDK no inicializado correctamente. Recarga la página e inténtalo de nuevo."));
       return;
     }
 
@@ -136,35 +171,48 @@ export function launchEmbeddedSignup(
     const cleanup = () => window.removeEventListener("message", messageHandler);
     window.addEventListener("message", messageHandler);
 
-    window.FB.login(
-      (response) => {
-        cleanup();
-        const code = response?.authResponse?.code;
-        if (!code) {
-          reject(new Error("No se recibió el código de autorización de Meta"));
-          return;
+    try {
+      // Defensive re-init right before login to avoid intermittent SDK timing issues
+      // where FB.login is invoked before init is internally ready.
+      window.FB.init({ appId, cookie: true, xfbml: false, version: "v23.0" });
+      sdkInitializedForAppId = appId;
+    } catch (err) {
+      cleanup();
+      reject(err instanceof Error ? err : new Error("No se pudo inicializar Facebook SDK"));
+      return;
+    }
+
+    window.setTimeout(() => {
+      window.FB!.login(
+        (response) => {
+          cleanup();
+          const code = response?.authResponse?.code;
+          if (!code) {
+            reject(new Error("No se recibió el código de autorización de Meta"));
+            return;
+          }
+          if (!sessionInfo.phoneNumberId || !sessionInfo.wabaId) {
+            reject(
+              new Error(
+                "Meta no devolvió los datos del WhatsApp Business Account. Reinténtalo."
+              )
+            );
+            return;
+          }
+          resolve({
+            code,
+            phoneNumberId: sessionInfo.phoneNumberId,
+            wabaId: sessionInfo.wabaId,
+          });
+        },
+        {
+          config_id: configId,
+          response_type: "code",
+          override_default_response_type: true,
+          extras: { setup: {}, featureType: "", sessionInfoVersion: "3" },
         }
-        if (!sessionInfo.phoneNumberId || !sessionInfo.wabaId) {
-          reject(
-            new Error(
-              "Meta no devolvió los datos del WhatsApp Business Account. Reinténtalo."
-            )
-          );
-          return;
-        }
-        resolve({
-          code,
-          phoneNumberId: sessionInfo.phoneNumberId,
-          wabaId: sessionInfo.wabaId,
-        });
-      },
-      {
-        config_id: configId,
-        response_type: "code",
-        override_default_response_type: true,
-        extras: { setup: {}, featureType: "", sessionInfoVersion: "3" },
-      }
-    );
+      );
+    }, 0);
   });
 }
 
@@ -172,6 +220,8 @@ export async function exchangeEmbeddedSignupCode(params: {
   code: string;
   phoneNumberId: string;
   wabaId: string;
+  assistantAvatarId?: string;
+  assistantAvatarUrl?: string;
 }): Promise<EmbeddedSignupResult> {
   const token = await getAuthToken();
   const response = await fetch(`${FUNCTIONS_BASE_URL}/exchangeEmbeddedSignupCode`, {
@@ -197,9 +247,18 @@ export async function exchangeEmbeddedSignupCode(params: {
 }
 
 /** One-shot helper used by the UI. */
-export async function runEmbeddedSignup(): Promise<EmbeddedSignupResult> {
+export async function runEmbeddedSignup(params?: {
+  assistantAvatarId?: string;
+  assistantAvatarUrl?: string;
+}): Promise<EmbeddedSignupResult> {
   const config = await fetchEmbeddedSignupConfig();
   await loadFacebookSdk(config.appId);
-  const { code, phoneNumberId, wabaId } = await launchEmbeddedSignup(config.configId);
-  return exchangeEmbeddedSignupCode({ code, phoneNumberId, wabaId });
+  const { code, phoneNumberId, wabaId } = await launchEmbeddedSignup(config.configId, config.appId);
+  return exchangeEmbeddedSignupCode({
+    code,
+    phoneNumberId,
+    wabaId,
+    assistantAvatarId: params?.assistantAvatarId,
+    assistantAvatarUrl: params?.assistantAvatarUrl,
+  });
 }

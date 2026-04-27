@@ -64,8 +64,8 @@ export function Landing() {
               <div className="flex flex-col md:items-end gap-6 pt-2">
                 <div className="flex flex-wrap gap-x-8 gap-y-2 text-[11px] font-bold text-slate-400 font-heading">
                   <Link to="/aviso-legal" className="hover:text-primary-500 transition-colors">Aviso Legal</Link>
-                  <Link to="/terms" className="hover:text-primary-500 transition-colors">Términos</Link>
-                  <Link to="/privacy" className="hover:text-primary-500 transition-colors">Privacidad</Link>
+                  <Link to="/legal/terms" className="hover:text-primary-500 transition-colors">Términos</Link>
+                  <Link to="/legal/privacy-policy" className="hover:text-primary-500 transition-colors">Privacidad</Link>
                 </div>
                 <p className="text-[9px] text-slate-300 font-medium">
                   © 2026 Proplead | Marca comercial de Talmate Limited

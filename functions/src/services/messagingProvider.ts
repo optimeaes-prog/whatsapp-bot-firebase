@@ -1,4 +1,3 @@
-import * as admin from "firebase-admin";
 import { sendText as whapiSendText } from "./whapiClient";
 import {
   sendText as twilioSendText,
@@ -7,12 +6,13 @@ import {
 } from "./twilioClient";
 import {
   sendText as cloudApiSendText,
+  sendReplyButtons as cloudApiSendReplyButtons,
   sendTemplate as cloudApiSendTemplate,
   sendTextWithTemplateFallback as cloudApiSendTextWithTemplateFallback,
   getCloudApiCredentials,
 } from "./cloudApiClient";
 
-type MessagingProvider = "whapi" | "twilio" | "cloud_api";
+import type { MessagingProvider } from "../types";
 
 type SendTextParams = {
   to: string;
@@ -23,6 +23,7 @@ type SendTextParams = {
 type SendTextResult = {
   chatId: string;
   messageId?: string;
+  deliveredText?: string;
 };
 
 type SendTemplateParams = {
@@ -35,45 +36,79 @@ type SendTemplateParams = {
   templateSid?: string;
   /** Cloud API template name (ignored by Twilio / Whapi). */
   templateName?: string;
+  /**
+   * Legacy-only escape hatch to mirror pre-opt-in behavior.
+   * When true, skips A6a/b eligibility gate for outbound templates.
+   */
+  skipEligibilityGate?: boolean;
 };
 
-import { getFirestore } from "firebase-admin/firestore";
+type SendBinaryConfirmPromptParams = {
+  to: string;
+  chatId?: string;
+  language: "es" | "en";
+  body: string;
+};
+
 import { getActiveOrgId } from "./requestContext";
+import { findLeadByChatId, getGlobalMessagingPolicy, getOrganizationMessagingProvider } from "./firestore";
+import { normalizeToCanonicalChatId } from "../utils";
+import { recordSystemAction } from "./auditService";
+import { getFirestore } from "firebase-admin/firestore";
+import * as admin from "firebase-admin";
 
 const DATABASE_ID = "realestate-whatsapp-bot";
 
 // Cache providers per organization to support multitenancy
-const cachedProviders: Record<string, { provider: MessagingProvider; expiry: number }> = {};
+const cachedProviders: Record<string, { provider: MessagingProvider; source: "org" | "global" | "fallback"; expiry: number }> = {};
 const CACHE_TTL_MS = 60_000; // 1 minute cache
 
-/**
- * Get the active messaging provider from Firestore (botConfig/config)
- */
-export async function getActiveProvider(): Promise<MessagingProvider> {
-  const orgId = getActiveOrgId();
+export function invalidateProviderCache(orgId?: string): void {
+  if (orgId) {
+    delete cachedProviders[orgId];
+    return;
+  }
+  for (const key of Object.keys(cachedProviders)) {
+    delete cachedProviders[key];
+  }
+}
+
+export async function getEffectiveProviderForOrg(orgId: string): Promise<{
+  provider: MessagingProvider;
+  source: "org" | "global" | "fallback";
+}> {
   const now = Date.now();
   const cached = cachedProviders[orgId];
 
   if (cached && now < cached.expiry) {
-    return cached.provider;
+    return { provider: cached.provider, source: cached.source };
   }
 
   try {
-    const db = getFirestore(admin.app(), DATABASE_ID);
-    const configDoc = await db
-      .doc(`organizations/${orgId}/botConfig/config`)
-      .get();
+    const orgProvider = await getOrganizationMessagingProvider(orgId);
+    if (orgProvider) {
+      cachedProviders[orgId] = { provider: orgProvider, source: "org", expiry: now + CACHE_TTL_MS };
+      return { provider: orgProvider, source: "org" };
+    }
 
-    const data = configDoc.data();
-    const provider = (data?.messagingProvider as MessagingProvider) || "whapi";
-
-    cachedProviders[orgId] = { provider, expiry: now + CACHE_TTL_MS };
-
-    return provider;
+    const globalPolicy = await getGlobalMessagingPolicy();
+    const provider = globalPolicy.defaultProvider || "twilio";
+    cachedProviders[orgId] = { provider, source: "global", expiry: now + CACHE_TTL_MS };
+    return { provider, source: "global" };
   } catch (error) {
-    console.warn(`Failed to read messaging provider config for ${orgId}, defaulting to whapi`, error);
-    return "whapi";
+    console.warn(`Failed to resolve provider for ${orgId}, defaulting to twilio`, error);
+    cachedProviders[orgId] = { provider: "twilio", source: "fallback", expiry: now + CACHE_TTL_MS };
+    return { provider: "twilio", source: "fallback" };
   }
+}
+
+/**
+ * Get the active messaging provider for the current org context.
+ */
+export async function getActiveProvider(): Promise<MessagingProvider> {
+  const orgId = getActiveOrgId();
+  const resolved = await getEffectiveProviderForOrg(orgId);
+  return resolved.provider;
 }
 
 /**
@@ -93,6 +128,18 @@ async function assertTemplateSendAllowed(params: { to: string; chatId?: string }
   if (!orgId) return; // no org context → skip (scripts/tests)
   const db = getFirestore(admin.app(), DATABASE_ID);
 
+  const cfgSnap = await db.doc(`organizations/${orgId}/botConfig/config`).get();
+  const blocked = Boolean(cfgSnap.data()?.templateEligibility?.outboundTemplatesBlocked);
+  if (blocked) {
+    await recordSystemAction(
+      "conversation",
+      normalizeToCanonicalChatId(params.chatId || params.to),
+      "template_send_blocked",
+      { reason: "org_blocked", to: params.to }
+    );
+    throw new Error("No se puede enviar: la organización está bloqueada para plantillas hasta completar readiness.");
+  }
+
   // 1) Opt-out check
   const chatIdCandidates = [
     params.chatId,
@@ -102,18 +149,40 @@ async function assertTemplateSendAllowed(params: { to: string; chatId?: string }
   for (const cid of chatIdCandidates) {
     const ig = await db.doc(`organizations/${orgId}/ignoredChats/${cid}`).get();
     if (ig.exists) {
+      await recordSystemAction("conversation", normalizeToCanonicalChatId(cid), "template_send_blocked", {
+        reason: "opt_out",
+        to: params.to,
+      });
       throw new Error(
         "No se puede enviar: el usuario ha solicitado dejar de recibir mensajes (opt-out)."
       );
     }
   }
 
-  // 2) Opt-in check — find lead by phone
+  // 2) Opt-in check — prefer chat-linked lead, then phone fallback.
   const phoneDigits = params.to.replace(/[^0-9]/g, "");
-  const leadsRef = db.collection(`organizations/${orgId}/leads`);
-  const snap = await leadsRef.where("phone", "==", phoneDigits).limit(1).get();
-  const lead = snap.docs[0]?.data() as { consent?: unknown; hasResponse?: boolean } | undefined;
+  let lead: { consent?: unknown; hasResponse?: boolean } | undefined;
+  if (params.chatId) {
+    const fromChat = await findLeadByChatId(normalizeToCanonicalChatId(params.chatId));
+    if (fromChat) {
+      const snap = await db
+        .collection(`organizations/${orgId}/leads`)
+        .where("chatId", "==", fromChat.chatId)
+        .limit(1)
+        .get();
+      lead = snap.docs[0]?.data() as { consent?: unknown; hasResponse?: boolean } | undefined;
+    }
+  }
   if (!lead) {
+    const leadsRef = db.collection(`organizations/${orgId}/leads`);
+    const snap = await leadsRef.where("phone", "==", phoneDigits).limit(1).get();
+    lead = snap.docs[0]?.data() as { consent?: unknown; hasResponse?: boolean } | undefined;
+  }
+  if (!lead) {
+    await recordSystemAction("conversation", normalizeToCanonicalChatId(params.chatId || params.to), "template_send_blocked", {
+      reason: "missing_lead",
+      to: params.to,
+    });
     throw new Error(
       "No se puede enviar: no hay un lead con consentimiento registrado para este número."
     );
@@ -121,6 +190,10 @@ async function assertTemplateSendAllowed(params: { to: string; chatId?: string }
   const hasConsent = Boolean(lead.consent);
   const hasInbound = Boolean(lead.hasResponse);
   if (!hasConsent && !hasInbound) {
+    await recordSystemAction("conversation", normalizeToCanonicalChatId(params.chatId || params.to), "template_send_blocked", {
+      reason: "missing_consent",
+      to: params.to,
+    });
     throw new Error(
       "No se puede enviar: el lead no tiene prueba de consentimiento (opt-in). Registra el consentimiento antes de enviar plantillas."
     );
@@ -145,6 +218,31 @@ export async function sendTextMessage(params: SendTextParams): Promise<SendTextR
   return whapiSendText(params);
 }
 
+export async function sendBinaryConfirmPrompt(params: SendBinaryConfirmPromptParams): Promise<SendTextResult> {
+  const provider = await getActiveProvider();
+  const yesLabel = params.language === "en" ? "Yes" : "Si";
+  const noLabel = "No";
+  if (provider === "cloud_api") {
+    try {
+      return await cloudApiSendReplyButtons({
+        to: params.to,
+        chatId: params.chatId,
+        body: params.body,
+        yesTitle: yesLabel,
+        noTitle: noLabel,
+      });
+    } catch (error) {
+      console.warn("[cloud_api] Failed to send interactive buttons, falling back to text", error);
+    }
+  }
+  const fallbackBody = `${params.body}\n\n${params.language === "en" ? "Reply: Yes / No" : "Responde: Si / No"}`;
+  return sendTextMessage({
+    to: params.to,
+    chatId: params.chatId,
+    body: fallbackBody,
+  });
+}
+
 /**
  * Send initial contact message using a template (Twilio / Cloud API) or plain text (Whapi).
  * Twilio and Cloud API require approved templates for business-initiated messages outside the 24h window.
@@ -155,9 +253,8 @@ export async function sendInitialTemplateMessage(params: SendTemplateParams): Pr
 
   console.log(`Sending initial template message via ${provider} to ${params.to}`);
 
-  // A6a/b — enforce opt-in + opt-out for Cloud API business-initiated messages.
-  // Twilio / Whapi paths are legacy and will be deprecated; gates are applied only to cloud_api.
-  if (provider === "cloud_api") {
+  // A6a/b — enforce opt-in + opt-out for any template-based business-initiated message.
+  if ((provider === "cloud_api" || provider === "twilio") && !params.skipEligibilityGate) {
     await assertTemplateSendAllowed({ to: params.to, chatId: params.chatId });
   }
 
@@ -224,9 +321,10 @@ export async function sendAgentNotificationMessage(params: {
       try {
         const creds = await getCloudApiCredentials();
         templateName =
-          language === "en"
+          creds.templates?.agentNotification ||
+          (language === "en"
             ? creds.templates?.agentNotificationEn
-            : creds.templates?.agentNotificationEs;
+            : creds.templates?.agentNotificationEs);
       } catch (error) {
         console.warn("[cloud_api] Could not load templates for agent notification fallback", error);
       }

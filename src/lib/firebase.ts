@@ -2,6 +2,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getAnalytics } from "firebase/analytics";
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCUp1ZUmkZnCXhTF0H5NbtDqZgZLJSe7nU",
@@ -18,6 +19,7 @@ export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 // Connect to the specific Firestore database
 export const db = getFirestore(app, "realestate-whatsapp-bot");
+export const storage = getStorage(app);
 
 // Initialize Analytics only in browser
 let analytics = null;

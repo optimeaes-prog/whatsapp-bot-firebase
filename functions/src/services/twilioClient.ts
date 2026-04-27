@@ -1,16 +1,9 @@
 import axios from "axios";
-import { defineString } from "firebase-functions/params";
-import { TWILIO_AUTH_TOKEN } from "../secrets";
-
-const TWILIO_ACCOUNT_SID = defineString("TWILIO_ACCOUNT_SID");
-const TWILIO_WHATSAPP_NUMBER = defineString("TWILIO_WHATSAPP_NUMBER");
-// A6c — alphanumeric sender ID (e.g. "Marcos") used for opt-in SMS to cold Idealista leads.
-// Alphanumeric IDs don't accept replies; that's intentional — replies go via the wa.me link.
-const TWILIO_SMS_SENDER_ID = defineString("TWILIO_SMS_SENDER_ID");
-
-// Content Template SIDs for initial contact (business-initiated messages)
-const TEMPLATE_SID_ES = "HX24e33398987966c0716def76e02d8a04";
-const TEMPLATE_SID_EN = "HXf0d964deeae60a41ad1d513069569dc9";
+import * as admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
+import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import { getActiveOrgId } from "./requestContext";
+import type { BotConfig } from "../types";
 
 type SendTextParams = {
   to: string;
@@ -21,6 +14,15 @@ type SendTextParams = {
 type SendTextResult = {
   chatId: string;
   messageId?: string;
+  deliveredText?: string;
+};
+
+type CreateVoiceCallParams = {
+  to: string;
+  from: string;
+  url: string;
+  statusCallback?: string;
+  statusCallbackEvent?: string[];
 };
 
 type SendTextWithTemplateFallbackParams = SendTextParams & {
@@ -40,16 +42,84 @@ type SendTemplateParams = {
   templateSid?: string;
 };
 
-function getTwilioCredentials() {
-  const accountSid = TWILIO_ACCOUNT_SID.value();
-  const authToken = TWILIO_AUTH_TOKEN.value();
-  const fromNumber = TWILIO_WHATSAPP_NUMBER.value();
+type TwilioResolvedCredentials = {
+  accountSid: string;
+  authToken: string;
+  fromNumber: string;
+  smsSenderId: string;
+};
 
-  if (!accountSid || !authToken || !fromNumber) {
-    throw new Error("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN or TWILIO_WHATSAPP_NUMBER not configured");
+const DATABASE_ID = "realestate-whatsapp-bot";
+const CREDENTIALS_CACHE_TTL_MS = 5 * 60 * 1000;
+const credentialsCache: Record<string, TwilioResolvedCredentials & { expiry: number }> = {};
+let secretManagerClient: SecretManagerServiceClient | null = null;
+
+function getSecretManagerClient(): SecretManagerServiceClient {
+  if (!secretManagerClient) secretManagerClient = new SecretManagerServiceClient();
+  return secretManagerClient;
+}
+
+function getGcpProjectId(): string {
+  const envProject =
+    process.env.GCLOUD_PROJECT ||
+    process.env.GCP_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT;
+  if (envProject) return envProject;
+  const appProjectId = admin.app().options.projectId;
+  if (appProjectId) return appProjectId;
+  throw new Error("Could not determine GCP project ID for Secret Manager access");
+}
+
+async function accessSecretVersion(secretName: string): Promise<string> {
+  const [version] = await getSecretManagerClient().accessSecretVersion({
+    name: `projects/${getGcpProjectId()}/secrets/${secretName}/versions/latest`,
+  });
+  const payload = version.payload?.data;
+  if (!payload) throw new Error(`Secret ${secretName} has no payload`);
+  return Buffer.isBuffer(payload) ? payload.toString("utf8") : String(payload);
+}
+
+async function getTwilioCredentials(orgId?: string): Promise<TwilioResolvedCredentials> {
+  const resolvedOrgId = orgId || getActiveOrgId();
+  if (!resolvedOrgId) {
+    throw new Error("No active orgId in request context; cannot load Twilio credentials");
+  }
+  const cached = credentialsCache[resolvedOrgId];
+  const now = Date.now();
+  if (cached && now < cached.expiry) {
+    return {
+      accountSid: cached.accountSid,
+      authToken: cached.authToken,
+      fromNumber: cached.fromNumber,
+      smsSenderId: cached.smsSenderId,
+    };
   }
 
-  return { accountSid, authToken, fromNumber };
+  const db = getFirestore(admin.app(), DATABASE_ID);
+  const cfgSnap = await db.doc(`organizations/${resolvedOrgId}/botConfig/config`).get();
+  const cfg = (cfgSnap.data() || {}) as BotConfig;
+  const accountSid = cfg.twilioConfig?.accountSid?.trim();
+  const fromNumber = cfg.twilioConfig?.whatsappNumber?.trim();
+  const smsSenderId = cfg.twilioConfig?.smsSenderId?.trim();
+  const authTokenSecretName = cfg.twilioConfig?.authTokenSecretName?.trim();
+
+  if (!accountSid || !fromNumber || !smsSenderId || !authTokenSecretName) {
+    throw new Error(
+      `Twilio transport config is incomplete for org ${resolvedOrgId} (accountSid, whatsappNumber, smsSenderId, authTokenSecretName)`
+    );
+  }
+  const authToken = (await accessSecretVersion(authTokenSecretName)).trim();
+  if (!authToken) {
+    throw new Error(`Twilio auth token secret is empty for org ${resolvedOrgId} (${authTokenSecretName})`);
+  }
+  credentialsCache[resolvedOrgId] = {
+    accountSid,
+    authToken,
+    fromNumber,
+    smsSenderId,
+    expiry: now + CREDENTIALS_CACHE_TTL_MS,
+  };
+  return { accountSid, authToken, fromNumber, smsSenderId };
 }
 
 function formatWhatsAppNumber(number: string): string {
@@ -58,12 +128,18 @@ function formatWhatsAppNumber(number: string): string {
     : `whatsapp:+${number.replace(/^\+/, "")}`;
 }
 
+function formatE164Number(number: string): string {
+  const trimmed = String(number || "").trim();
+  if (!trimmed) throw new Error("Phone number is required");
+  return trimmed.startsWith("+") ? trimmed : `+${trimmed.replace(/^\+?/, "")}`;
+}
+
 /**
  * Send a free-form WhatsApp message via Twilio API
  * Only works within the 24h customer service window
  */
 export async function sendText(params: SendTextParams): Promise<SendTextResult> {
-  const { accountSid, authToken, fromNumber } = getTwilioCredentials();
+  const { accountSid, authToken, fromNumber } = await getTwilioCredentials();
 
   const toWhatsApp = formatWhatsAppNumber(params.to);
   const fromWhatsApp = formatWhatsAppNumber(fromNumber);
@@ -85,7 +161,30 @@ export async function sendText(params: SendTextParams): Promise<SendTextResult> 
   return {
     chatId: params.chatId || params.to,
     messageId: data.sid,
+    deliveredText: typeof data.body === "string" ? data.body : params.body,
   };
+}
+
+async function fetchTwilioMessageBody(params: {
+  accountSid: string;
+  authToken: string;
+  messageSid?: string;
+}): Promise<string | undefined> {
+  const sid = typeof params.messageSid === "string" ? params.messageSid.trim() : "";
+  if (!sid) return undefined;
+  try {
+    const response = await axios.get(
+      `https://api.twilio.com/2010-04-01/Accounts/${params.accountSid}/Messages/${sid}.json`,
+      {
+        auth: { username: params.accountSid, password: params.authToken },
+      }
+    );
+    const body = response.data?.body;
+    return typeof body === "string" && body.trim() ? body : undefined;
+  } catch (error) {
+    console.warn("Failed to fetch Twilio message body", error);
+    return undefined;
+  }
 }
 
 /**
@@ -93,12 +192,7 @@ export async function sendText(params: SendTextParams): Promise<SendTextResult> 
  * configured in TWILIO_SMS_SENDER_ID. Spain supports alphanumeric without pre-registration.
  */
 export async function sendSms(params: { to: string; body: string }): Promise<{ messageId: string }> {
-  const accountSid = TWILIO_ACCOUNT_SID.value();
-  const authToken = TWILIO_AUTH_TOKEN.value();
-  const senderId = TWILIO_SMS_SENDER_ID.value();
-  if (!accountSid || !authToken || !senderId) {
-    throw new Error("TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN or TWILIO_SMS_SENDER_ID not configured");
-  }
+  const { accountSid, authToken, smsSenderId: senderId } = await getTwilioCredentials();
   const to = params.to.startsWith("+") ? params.to : `+${params.to.replace(/^\+?/, "")}`;
   const response = await axios.post(
     `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
@@ -179,12 +273,15 @@ export async function sendTextWithTemplateFallback(
  * Used for business-initiated messages (outside the 24h window)
  */
 export async function sendTemplate(params: SendTemplateParams): Promise<SendTextResult> {
-  const { accountSid, authToken, fromNumber } = getTwilioCredentials();
+  const { accountSid, authToken, fromNumber } = await getTwilioCredentials();
 
   const toWhatsApp = formatWhatsAppNumber(params.to);
   const fromWhatsApp = formatWhatsAppNumber(fromNumber);
 
-  const templateSid = params.templateSid || (params.language === "en" ? TEMPLATE_SID_EN : TEMPLATE_SID_ES);
+  const templateSid = typeof params.templateSid === "string" ? params.templateSid.trim() : "";
+  if (!templateSid) {
+    throw new Error("sendTemplate: templateSid is required (per-org Twilio template ownership enforced)");
+  }
 
   const postData: Record<string, string> = {
     From: fromWhatsApp,
@@ -207,10 +304,59 @@ export async function sendTemplate(params: SendTemplateParams): Promise<SendText
   );
 
   const data = response.data;
+  const deliveredFromCreate = typeof data.body === "string" && data.body.trim() ? data.body : undefined;
+  const deliveredFromLookup = deliveredFromCreate || await fetchTwilioMessageBody({
+    accountSid,
+    authToken,
+    messageSid: data.sid,
+  });
   return {
     chatId: params.chatId || params.to,
     messageId: data.sid,
+    deliveredText: deliveredFromLookup,
   };
+}
+
+/**
+ * Create an outbound Twilio Programmable Voice call.
+ */
+export async function createVoiceCall(params: CreateVoiceCallParams): Promise<{ callSid: string; status?: string }> {
+  const { accountSid, authToken } = await getTwilioCredentials();
+  const to = formatE164Number(params.to);
+  const from = formatE164Number(params.from);
+  const voiceUrl = String(params.url || "").trim();
+  if (!voiceUrl) {
+    throw new Error("createVoiceCall: url is required");
+  }
+
+  const form = new URLSearchParams({
+    To: to,
+    From: from,
+    Url: voiceUrl,
+    Method: "POST",
+  });
+  if (params.statusCallback) {
+    form.set("StatusCallback", params.statusCallback);
+    form.set("StatusCallbackMethod", "POST");
+  }
+  if (params.statusCallbackEvent && params.statusCallbackEvent.length > 0) {
+    form.set("StatusCallbackEvent", params.statusCallbackEvent.join(" "));
+  }
+
+  const response = await axios.post(
+    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`,
+    form.toString(),
+    {
+      auth: { username: accountSid, password: authToken },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    }
+  );
+
+  const data = response.data as { sid?: string; status?: string };
+  if (!data?.sid) {
+    throw new Error("createVoiceCall: Twilio did not return call sid");
+  }
+  return { callSid: data.sid, status: data.status };
 }
 
 type CreateContentTemplateParams = {
@@ -220,10 +366,11 @@ type CreateContentTemplateParams = {
   variables?: Record<string, string>;
   /** Twilio Content API types payload */
   types: Record<string, unknown>;
+  orgId?: string;
 };
 
 export async function createContentTemplate(params: CreateContentTemplateParams): Promise<{ contentSid: string }> {
-  const { accountSid, authToken } = getTwilioCredentials();
+  const { accountSid, authToken } = await getTwilioCredentials(params.orgId);
 
   const response = await axios.post(
     `https://content.twilio.com/v1/Content`,
@@ -266,7 +413,7 @@ export async function listInboundMessages(params: {
   lookbackHours: number;
   maxResults?: number;
 }): Promise<TwilioMessage[]> {
-  const { accountSid, authToken, fromNumber } = getTwilioCredentials();
+  const { accountSid, authToken, fromNumber } = await getTwilioCredentials();
   const botWhatsApp = formatWhatsAppNumber(fromNumber);
   
   const since = new Date(Date.now() - params.lookbackHours * 60 * 60 * 1000);

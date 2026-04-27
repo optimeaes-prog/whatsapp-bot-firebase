@@ -78,6 +78,13 @@ export type Lead = {
   lastAnalyzedAt?: Timestamp;
   conversationSummary?: string;
   errorDetails?: string;
+  consent?: {
+    capturedAt: Timestamp;
+    source: "idealista_form" | "agency_website" | "phone_call" | "in_person" | "inbound_whatsapp";
+    collectedBy?: string;
+    language?: "es" | "en";
+    proofUrl?: string;
+  };
 };
 
 export type HistoryItem = {
@@ -101,6 +108,7 @@ export type Conversation = {
   tags?: string[];
   followUpSent?: boolean;
   botDisabled?: boolean;
+  optedOut?: boolean;
 };
 
 export type BotStyle = {
@@ -110,15 +118,58 @@ export type BotStyle = {
   promptModifier: string;
 };
 
+export type CloudApiConfig = {
+  accessTokenSecretName: string;
+  phoneNumberId: string;
+  wabaId: string;
+  graphApiVersion?: string;
+  verifyToken: string;
+  displayPhoneNumber?: string;
+  assistantAvatarId?: string;
+  assistantAvatarName?: string;
+  assistantAvatarUrl?: string;
+  templates?: {
+    agentNotification?: string;
+    agentNotificationEs?: string;
+    agentNotificationEn?: string;
+    idealistaConfirmEs?: string;
+    idealistaConfirmEn?: string;
+    idealistaInitialEs?: string;
+    idealistaInitialEn?: string;
+    callHandoffOrgEs?: string;
+    callHandoffOrgEn?: string;
+  };
+};
+
 export type BotConfig = {
   activeStyleId: string;
   styles: BotStyle[];
   messagingProvider?: MessagingProvider;
   orgName?: string;                       // Nombre de la inmobiliaria
   notificationNumbers?: string;
+  cloudApiConfig?: CloudApiConfig;
+  twilioTemplates?: {
+    agentNotification?: string;
+    callHandoffOrgEs?: string;
+    callHandoffOrgEn?: string;
+    voiceOptInConsent?: string;
+    idealistaInitialEs?: string;
+    idealistaInitialEn?: string;
+  };
+  twilioConfig?: {
+    accountSid?: string;
+    whatsappNumber?: string;
+    smsSenderId?: string;
+    authTokenSecretName?: string;
+  };
+  templateEligibility?: {
+    outboundTemplatesBlocked?: boolean;
+    missingRequiredKeys?: string[];
+    checkedAt?: Timestamp;
+  };
 };
 
-export type MessagingProvider = "whapi" | "twilio";
+export type MessagingProvider = "cloud_api" | "whapi" | "twilio";
 
 
 export type AlertSeverity = "info" | "warning" | "critical" | "healthy";

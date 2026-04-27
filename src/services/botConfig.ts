@@ -77,7 +77,7 @@ export async function getBotConfig(): Promise<BotConfig> {
     const defaultConfig: BotConfig = {
       activeStyleId: "directo",
       styles: DEFAULT_STYLES,
-      messagingProvider: "whapi",
+      messagingProvider: "cloud_api",
       orgName: "Atlas Capital Group",
     };
     await setDoc(docRef, defaultConfig);
@@ -87,7 +87,7 @@ export async function getBotConfig(): Promise<BotConfig> {
   const data = snapshot.data() as BotConfig;
   // Ensure messagingProvider has a default
   if (!data.messagingProvider) {
-    data.messagingProvider = "whapi";
+    data.messagingProvider = "cloud_api";
   }
   return data;
 }

@@ -18,14 +18,18 @@ export async function sendIdealistaOptInSms(params: {
   name: string;
   listingCode: string;
   leadId?: string;
+  orgId?: string;
   baseDomain?: string;
 }): Promise<void> {
   const name20 = (params.name || "").slice(0, 20).trim() || "";
   const greeting = name20 ? `Hola, ${name20}.` : "Hola.";
   const base = params.baseDomain || DEFAULT_BASE;
+  const query = new URLSearchParams();
+  if (params.leadId) query.set("l", params.leadId);
+  if (params.orgId) query.set("o", params.orgId);
   const shortLink =
     `${base}/w/${encodeURIComponent(params.listingCode)}` +
-    (params.leadId ? `?l=${encodeURIComponent(params.leadId)}` : "");
+    (query.toString() ? `?${query.toString()}` : "");
   const body =
     `${greeting} ¿Te has interesado este anuncio? idealista.com/inmueble/${params.listingCode}\n` +
     `Contáctanos por WhatsApp: ${shortLink}`;

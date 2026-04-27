@@ -228,7 +228,7 @@ export function Listings() {
     else {
       const value = Number(m2);
       if (Number.isNaN(value)) errors.m2 = "Debe ser numérico.";
-      else if (value > 100) errors.m2 = "Máximo 100.";
+      else if (value > 1000) errors.m2 = "Máximo 1000.";
     }
 
     if (!rooms) errors.rooms = "Las habitaciones son obligatorias.";

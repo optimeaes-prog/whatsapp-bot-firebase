@@ -156,6 +156,25 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                 </form>
             </div>
 
+            {initialLead?.consent && (
+                <div className="space-y-1 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-xs font-semibold text-emerald-800">Consentimiento registrado</p>
+                    <p className="text-xs text-emerald-700">
+                        Fuente: {initialLead.consent.source} · Idioma: {initialLead.consent.language || "es"}
+                    </p>
+                    {initialLead.consent.proofUrl && (
+                        <a
+                            href={initialLead.consent.proofUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-emerald-700 underline"
+                        >
+                            Ver prueba
+                        </a>
+                    )}
+                </div>
+            )}
+
             <div className="flex justify-end pt-2">
                 <Button
                     type="button"

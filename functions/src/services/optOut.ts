@@ -1,6 +1,9 @@
-import { sendText as cloudApiSendText } from "./cloudApiClient";
 import { ignoreChat, isChatIgnored } from "./firestore";
 import { normalizeToCanonicalChatId } from "../utils";
+import * as admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
+import { recordSystemAction } from "./auditService";
+import { sendTextMessage } from "./messagingProvider";
 
 /**
  * Opt-out keywords. WhatsApp Business Messaging Policy requires us to honor
@@ -34,9 +37,18 @@ export async function applyOptOut(params: {
   const canonical = normalizeToCanonicalChatId(params.chatId);
   const already = await isChatIgnored(canonical);
   await ignoreChat(canonical);
+  const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+  await db.doc(`organizations/${params.orgId}/conversations/${canonical}`).set(
+    { optedOut: true },
+    { merge: true }
+  );
+  await recordSystemAction("conversation", canonical, "opt_out_captured", {
+    phone: params.phone,
+    source: "keyword",
+  });
   if (!already) {
     try {
-      await cloudApiSendText({ to: params.phone, body: OPT_OUT_CONFIRMATION_ES, chatId: canonical });
+      await sendTextMessage({ to: params.phone, body: OPT_OUT_CONFIRMATION_ES, chatId: canonical });
     } catch (err) {
       console.warn("applyOptOut: could not send confirmation reply:", (err as Error)?.message || err);
     }

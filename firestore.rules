@@ -26,43 +26,89 @@ service cloud.firestore {
        return getUserData().role;
     }
 
-    // Users can read/write their own profile
+    function isSuperAdmin() {
+      return isAuthenticated() && getRole() == "super_admin";
+    }
+
+    function canAccessOrg(orgId) {
+      return isAuthenticated() && (getOrgId() == orgId || isSuperAdmin());
+    }
+
+    function canManageOrg(orgId) {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        (getOrgId() == orgId && (getRole() == "admin" || getRole() == "owner"))
+      );
+    }
+
+    function isValidSelfUserCreate() {
+      return request.resource.data.orgId is string &&
+        request.resource.data.role == "member";
+    }
+
+    function isSafeSelfUserUpdate() {
+      return request.resource.data.orgId == resource.data.orgId &&
+        request.resource.data.role == resource.data.role;
+    }
+
+    // Platform operator: self-upgrade to super_admin without changing org (verify email in ID token).
+    function isInternalSuperAdminEmailForUser(userId) {
+      return isAuthenticated() &&
+        request.auth.uid == userId &&
+        request.auth.token.email == "ejperezreyes@gmail.com";
+    }
+
+    function isAllowlistedSuperAdminRoleUpgrade(userId) {
+      return isInternalSuperAdminEmailForUser(userId) &&
+        request.resource.data.role == "super_admin" &&
+        (!("orgId" in resource.data) || request.resource.data.orgId == resource.data.orgId);
+    }
+
+    // Users can read their own profile. Writes are constrained to prevent role/org escalation.
     match /users/{userId} {
-      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow create: if isAuthenticated() && request.auth.uid == userId && isValidSelfUserCreate();
+      allow update: if isAuthenticated() && request.auth.uid == userId && (
+        isSafeSelfUserUpdate() || isAllowlistedSuperAdminRoleUpgrade(userId)
+      );
+      allow delete: if false;
       // Also allow owners/admins of the same org to read
-      allow read: if isAuthenticated() && getOrgId() == resource.data.orgId;
+      allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || isSuperAdmin());
     }
     
     match /organizations/{orgId} {
       // Organization access is restricted to members
-      allow read: if isAuthenticated() && getOrgId() == orgId;
-      allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
+      allow read: if canAccessOrg(orgId);
+      allow write: if canManageOrg(orgId);
 
       match /botConfig/{configId} {
-        allow read, write: if isAuthenticated() && getOrgId() == orgId;
+        allow read: if canAccessOrg(orgId);
+        allow write: if canManageOrg(orgId);
       }
 
       match /listings/{listingId} {
-        allow read: if isAuthenticated() && getOrgId() == orgId;
-        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
+        allow read: if canAccessOrg(orgId);
+        allow write: if canManageOrg(orgId);
       }
       
       match /leads/{leadId} {
-        allow read: if isAuthenticated() && getOrgId() == orgId;
-        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
+        allow read: if canAccessOrg(orgId);
+        allow write: if canManageOrg(orgId);
       }
       
       match /conversations/{convId} {
-        allow read: if isAuthenticated() && getOrgId() == orgId;
-        allow write: if isAuthenticated() && getOrgId() == orgId && (getRole() == 'admin' || getRole() == 'owner');
+        allow read: if canAccessOrg(orgId);
+        allow write: if canManageOrg(orgId);
       }
 
       match /calls/{callId} {
-        allow read, write: if isAuthenticated() && getOrgId() == orgId;
+        allow read: if canAccessOrg(orgId);
+        allow write: if canManageOrg(orgId);
       }
 
       match /ignoredChats/{chatId} {
-        allow read, write: if isAuthenticated() && getOrgId() == orgId;
+        allow read: if canAccessOrg(orgId);
+        allow write: if canManageOrg(orgId);
       }
     }
 

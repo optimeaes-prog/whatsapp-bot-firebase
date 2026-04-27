@@ -13,6 +13,7 @@ import { resolveConversationQualification } from "../lib/conversationQualificati
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
 import { LeadEditModal } from "../components/LeadEditModal";
+import { ConsentModal } from "../components/ConsentModal";
 import { Send } from "lucide-react";
 import { Button, PageHeader, PageLoading, FilterCard, SegmentedControl } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
@@ -34,6 +35,7 @@ const COMPACT_STATUS_VISIBLE_COLUMNS: Record<string, boolean> = {
   listingDescription: true,
   operationType: false,
   qualificationStatus: true,
+  consentStatus: true,
   qualifiedAt: true,
   lastMessageDate: false,
   messageCount: true,
@@ -106,6 +108,7 @@ export function Leads() {
       listingDescription: true,
       operationType: true,
       qualificationStatus: true,
+      consentStatus: true,
       qualifiedAt: false,
       lastMessageDate: true,
       messageCount: true,
@@ -142,6 +145,7 @@ export function Leads() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
   const [leadToEdit, setLeadToEdit] = useState<Lead | null>(null);
+  const [leadToConsent, setLeadToConsent] = useState<Lead | null>(null);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [isMassMessageModalOpen, setIsMassMessageModalOpen] = useState(false);
   const [massMessageText, setMassMessageText] = useState("");
@@ -255,6 +259,21 @@ export function Leads() {
 
   function openEditModal(lead: Lead) {
     setLeadToEdit(lead);
+  }
+
+  function renderConsentBadge(lead: Lead) {
+    if (lead.consent) {
+      return (
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
+          Consent OK
+        </span>
+      );
+    }
+    return (
+      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold">
+        No consent
+      </span>
+    );
   }
 
   async function handleDeleteLead(e: React.MouseEvent, lead: Lead) {
@@ -1215,6 +1234,7 @@ export function Leads() {
                       { id: "listingDescription", label: "Identificador Anuncio" },
                       { id: "operationType", label: "Tipo" },
                       { id: "qualificationStatus", label: "Estado" },
+                      { id: "consentStatus", label: "Consentimiento" },
                       { id: "qualifiedAt", label: "Cualificacion" },
                       { id: "lastMessageDate", label: "Último Mensaje" },
                       { id: "messageCount", label: "Mensajes" },
@@ -1326,6 +1346,7 @@ export function Leads() {
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                     <QualificationBadge status={lead.qualificationStatus} />
                     <OperationTypeBadge type={lead.operationType} />
+                    {renderConsentBadge(lead)}
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-1 bg-gray-100 px-2 py-0.5 rounded text-[11px] font-bold text-gray-600 border border-gray-200 shadow-sm w-fit">
                         <span className="text-gray-400 font-medium">ID</span>
@@ -1346,9 +1367,20 @@ export function Leads() {
                         {lead.messageCount || 0} mensajes
                       </span>
                     </div>
-                    <span>
-                      {lead.lastMessageDate ? formatDate(lead.lastMessageDate.toDate()) : "—"}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setLeadToConsent(lead);
+                        }}
+                        className="text-xs text-primary-700 hover:text-primary-900 underline"
+                      >
+                        Consent
+                      </button>
+                      <span>
+                        {lead.lastMessageDate ? formatDate(lead.lastMessageDate.toDate()) : "—"}
+                      </span>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1447,6 +1479,11 @@ export function Leads() {
                             Estado
                             {getSortIcon("qualificationStatus")}
                           </div>
+                        </th>
+                      )}
+                      {visibleColumns.consentStatus && (
+                        <th className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
+                          Consentimiento
                         </th>
                       )}
                       {visibleColumns.qualifiedAt && (
@@ -1612,6 +1649,11 @@ export function Leads() {
                             <QualificationBadge status={lead.qualificationStatus} />
                           </td>
                         )}
+                        {visibleColumns.consentStatus && (
+                          <td className="px-3 py-3 whitespace-nowrap cursor-pointer" onClick={() => openEditModal(lead)}>
+                            {renderConsentBadge(lead)}
+                          </td>
+                        )}
                         {visibleColumns.qualifiedAt && (
                           <td className="px-3 py-3 whitespace-nowrap text-xs text-gray-500 cursor-pointer" onClick={() => openEditModal(lead)}>
                             {lead.qualificationStatus === "qualified" && lead.lastMessageDate ? formatDate(lead.lastMessageDate.toDate()) : "—"}
@@ -1679,16 +1721,28 @@ export function Leads() {
                         )}
                         {visibleColumns.chat && (
                           <td className="px-3 py-3 whitespace-nowrap text-center">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openConversation(lead);
-                              }}
-                              className="text-primary-600 hover:text-primary-700 hover:bg-primary-50 p-2 rounded-btn transition-colors"
-                              title="Ver chat"
-                            >
-                              <MessageSquare size={16} />
-                            </button>
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openConversation(lead);
+                                }}
+                                className="text-primary-600 hover:text-primary-700 hover:bg-primary-50 p-2 rounded-btn transition-colors"
+                                title="Ver chat"
+                              >
+                                <MessageSquare size={16} />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setLeadToConsent(lead);
+                                }}
+                                className="text-[10px] px-2 py-1 rounded-btn border border-gray-200 hover:bg-gray-50"
+                                title="Registrar consentimiento"
+                              >
+                                Consent
+                              </button>
+                            </div>
                           </td>
                         )}
                         {visibleColumns.tags && (
@@ -1871,6 +1925,14 @@ export function Leads() {
           onClose={() => setLeadToEdit(null)}
           onUpdate={loadLeads}
           onViewConversation={openConversation}
+        />
+      )}
+      {leadToConsent && organizationId && (
+        <ConsentModal
+          lead={leadToConsent}
+          organizationId={organizationId}
+          onClose={() => setLeadToConsent(null)}
+          onSaved={loadLeads}
         />
       )}
 

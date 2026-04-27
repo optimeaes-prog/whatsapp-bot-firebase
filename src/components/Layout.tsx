@@ -21,6 +21,7 @@ import {
   FileBox,
   CreditCard,
   Wrench,
+  Building2,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -44,6 +45,7 @@ const mainNavItems: NavItem[] = [
 const adminNavItems: NavItem[] = [
   { href: "/onboards", label: "Onboards", icon: <FileBox size={20} /> },
   { href: "/admin/tools", label: "Herramientas", icon: <Wrench size={20} /> },
+  { href: "/botTest", label: "Bot Test", icon: <Wrench size={20} /> },
   { href: "/alertas", label: "Alertas", icon: <Bell size={20} /> },
   { href: "/email-templates", label: "Templates de Email", icon: <Mail size={20} /> },
   { href: "/historial", label: "Historial", icon: <History size={20} /> },
@@ -52,18 +54,18 @@ const adminNavItems: NavItem[] = [
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { user, signOut } = useAuth();
+  const { user, signOut, role, organizationId, availableOrganizations, switchOrganization } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCurrentlyInAdminRoute = adminNavItems.some(item => location.pathname === item.href);
   const [adminExpanded, setAdminExpanded] = useState(isCurrentlyInAdminRoute);
-  const isAdmin = user?.email === "ejperezreyes@gmail.com";
+  const isAdmin = role === "super_admin";
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(true);
 
   useEffect(() => {
     async function checkOnboarding() {
-      if (!user) return;
+      if (!user || !organizationId) return;
       try {
         const { getOrganizationSettings } = await import("../services/organization");
         const settings = await getOrganizationSettings();
@@ -73,7 +75,7 @@ export function Layout({ children }: { children: ReactNode }) {
       }
     }
     checkOnboarding();
-  }, [user, location.pathname]); // refetch on navigation just in case
+  }, [user, organizationId, location.pathname]); // refetch on navigation just in case
 
   const handleSignOut = async () => {
     await signOut();
@@ -120,6 +122,26 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
 
         <nav className="p-4 space-y-1 overflow-y-auto flex-1 pb-4">
+          {isAdmin && (
+            <div className="mb-4 p-3 rounded-xl border border-primary-100 bg-primary-50/60">
+              <div className="flex items-center gap-2 mb-2 text-[11px] font-black text-primary-700 uppercase tracking-[0.16em] font-heading">
+                <Building2 size={14} />
+                Organización activa
+              </div>
+              <select
+                value={organizationId}
+                onChange={(e) => switchOrganization(e.target.value)}
+                className="w-full rounded-btn border border-primary-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500"
+              >
+                {availableOrganizations.map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.agencyName || org.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {mainNavItems.map((item) => {
             const isTarget = location.pathname === item.href;
             const isOnboardingItem = item.href === "/onboarding";
@@ -230,10 +252,10 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 mb-3">
-            <Link to="/terms" className="hover:text-gray-700 underline underline-offset-2">
+            <Link to="/legal/terms" className="hover:text-gray-700 underline underline-offset-2">
               Términos
             </Link>
-            <Link to="/privacy" className="hover:text-gray-700 underline underline-offset-2">
+            <Link to="/legal/privacy-policy" className="hover:text-gray-700 underline underline-offset-2">
               Privacidad
             </Link>
             <Link to="/cookies" className="hover:text-gray-700 underline underline-offset-2">

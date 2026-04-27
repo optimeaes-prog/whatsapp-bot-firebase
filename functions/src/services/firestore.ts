@@ -1,6 +1,21 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-import { ListingRow, ListingForResolution, BotConfig, BotStyle, ConversationState, QualificationStatus, HistoryItem, OperationType, CloudApiConfig, CloudApiTemplateNames } from "../types";
+import {
+  ListingRow,
+  ListingForResolution,
+  BotConfig,
+  BotStyle,
+  ConversationState,
+  QualificationStatus,
+  HistoryItem,
+  OperationType,
+  CloudApiConfig,
+  CloudApiTemplateNames,
+  GlobalMessagingPolicy,
+  MessagingProvider,
+  TwilioTemplateNames,
+  TwilioTransportConfig,
+} from "../types";
 import { getChatIdVariants, normalizeToCanonicalChatId } from "../utils";
 import { normalizeForSearch } from "../utils/addressNormalize";
 
@@ -23,6 +38,10 @@ import { getActiveOrgId } from "./requestContext";
 const getOrgDb = () => {
   return getDb().collection("organizations").doc(getActiveOrgId());
 };
+
+const GLOBAL_CONFIG_COLLECTION = "globalConfig";
+const GLOBAL_MESSAGING_POLICY_DOC = "messagingPolicy";
+const DEFAULT_PLATFORM_PROVIDER: MessagingProvider = "twilio";
 
 function buildLeadDocId(phone: string, listingCode: string): string {
   // Firestore document IDs cannot contain "/" and should be stable for idempotent upserts.
@@ -807,6 +826,53 @@ export async function getBotConfig(): Promise<BotConfig> {
   return doc.data() as BotConfig;
 }
 
+export async function getGlobalMessagingPolicy(): Promise<GlobalMessagingPolicy> {
+  const docRef = getDb().collection(GLOBAL_CONFIG_COLLECTION).doc(GLOBAL_MESSAGING_POLICY_DOC);
+  const doc = await docRef.get();
+  if (!doc.exists) {
+    const bootstrap: GlobalMessagingPolicy = {
+      defaultProvider: DEFAULT_PLATFORM_PROVIDER,
+      version: 1,
+      updatedAt: admin.firestore.Timestamp.now(),
+      updatedBy: "system_bootstrap",
+    };
+    await docRef.set(bootstrap, { merge: true });
+    return bootstrap;
+  }
+  const data = doc.data() as GlobalMessagingPolicy;
+  return {
+    ...data,
+    defaultProvider: data.defaultProvider || DEFAULT_PLATFORM_PROVIDER,
+  };
+}
+
+export async function updateGlobalMessagingPolicy(params: {
+  patch: Partial<GlobalMessagingPolicy>;
+  updatedBy: string;
+}): Promise<GlobalMessagingPolicy> {
+  const docRef = getDb().collection(GLOBAL_CONFIG_COLLECTION).doc(GLOBAL_MESSAGING_POLICY_DOC);
+  await docRef.set(
+    {
+      ...params.patch,
+      updatedBy: params.updatedBy,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      version: admin.firestore.FieldValue.increment(1),
+    },
+    { merge: true }
+  );
+  return getGlobalMessagingPolicy();
+}
+
+export async function setPlatformDefaultProvider(params: {
+  provider: MessagingProvider;
+  updatedBy: string;
+}): Promise<GlobalMessagingPolicy> {
+  return updateGlobalMessagingPolicy({
+    patch: { defaultProvider: params.provider },
+    updatedBy: params.updatedBy,
+  });
+}
+
 export async function getActiveStyle(): Promise<BotStyle> {
   const config = await getBotConfig();
   const activeStyle = config.styles.find((s) => s.id === config.activeStyleId);
@@ -834,6 +900,29 @@ export async function updateCloudApiConfig(patch: Partial<CloudApiConfig>): Prom
 export async function updateCloudApiTemplates(templates: CloudApiTemplateNames): Promise<void> {
   const docRef = getOrgDb().collection("botConfig").doc("config");
   await docRef.set({ cloudApiConfig: { templates } }, { merge: true });
+}
+
+export async function updateTwilioTemplates(templates: TwilioTemplateNames): Promise<void> {
+  const docRef = getOrgDb().collection("botConfig").doc("config");
+  await docRef.set({ twilioTemplates: templates }, { merge: true });
+}
+
+export async function updateTwilioConfig(patch: Partial<TwilioTransportConfig>): Promise<void> {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    cleaned[key] = value;
+  }
+  if (Object.keys(cleaned).length === 0) return;
+  const docRef = getOrgDb().collection("botConfig").doc("config");
+  await docRef.set({ twilioConfig: cleaned }, { merge: true });
+}
+
+export async function getOrganizationMessagingProvider(orgId: string): Promise<MessagingProvider | undefined> {
+  const doc = await getDb().doc(`organizations/${orgId}/botConfig/config`).get();
+  const value = doc.data()?.messagingProvider;
+  if (value === "cloud_api" || value === "twilio" || value === "whapi") return value;
+  return undefined;
 }
 
 // Update lead status when qualified or rejected
@@ -949,6 +1038,159 @@ export async function markLeadAsResponded(chatId: string): Promise<void> {
       lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
     });
   }
+}
+
+type LeadConsentSource =
+  | "idealista_form"
+  | "agency_website"
+  | "phone_call"
+  | "in_person"
+  | "inbound_whatsapp";
+
+type LeadConsentPayload = {
+  capturedAt: FirebaseFirestore.Timestamp;
+  source: LeadConsentSource;
+  collectedBy?: string;
+  language?: "es" | "en";
+  proofUrl?: string;
+};
+
+/**
+ * Persist/replace consent metadata for a lead by document id.
+ */
+export async function setLeadConsentByLeadId(params: {
+  leadId: string;
+  consent: LeadConsentPayload;
+}): Promise<void> {
+  const docRef = getOrgDb().collection("leads").doc(params.leadId);
+  await docRef.set(
+    {
+      consent: params.consent,
+      lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Upsert explicit consent on the lead linked to this chatId.
+ * Returns the affected lead id, or null if lead could not be found/created.
+ */
+export async function setLeadConsentByChatId(params: {
+  chatId: string;
+  phone?: string;
+  listingCode?: string;
+  operationType?: OperationType;
+  consent: LeadConsentPayload & {
+    proofType?: "twilio_call_sid" | "twilio_recording_sid" | "wa_inbound";
+    consentScriptVersion?: string;
+    dtmfDigit?: "1";
+  };
+}): Promise<{ leadId: string } | null> {
+  const leadsRef = getOrgDb().collection("leads");
+  const snap = await leadsRef.where("chatId", "==", params.chatId).limit(1).get();
+
+  if (snap.empty) {
+    if (!params.phone || !params.listingCode) return null;
+    const docRef = leadsRef.doc(buildLeadDocId(params.phone, params.listingCode));
+    await docRef.set(
+      {
+        phone: params.phone,
+        listingCode: params.listingCode,
+        chatId: params.chatId,
+        operationType: params.operationType,
+        consent: params.consent,
+        hasResponse: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        firstMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+        lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    return { leadId: docRef.id };
+  }
+
+  const docRef = snap.docs[0].ref;
+  await docRef.set(
+    {
+      consent: params.consent,
+      lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  return { leadId: docRef.id };
+}
+
+/**
+ * Persist a call handoff event for auditability and troubleshooting.
+ * Stored under the source org (global intake org).
+ */
+export async function recordCallHandoffEvent(params: {
+  sourceOrgId: string;
+  correlationId: string;
+  chatId: string;
+  phone: string;
+  language?: "es" | "en";
+  status: "pending" | "transferred" | "failed";
+  targetOrgId?: string;
+  matchedListingCode?: string;
+  reason?: string;
+}): Promise<void> {
+  const db = getDb();
+  const docRef = db
+    .doc(`organizations/${params.sourceOrgId}/callHandoffs/${params.correlationId}`);
+
+  await docRef.set(
+    {
+      correlationId: params.correlationId,
+      chatId: params.chatId,
+      phone: params.phone,
+      language: params.language || null,
+      sourceOrgId: params.sourceOrgId,
+      targetOrgId: params.targetOrgId || null,
+      matchedListingCode: params.matchedListingCode || null,
+      status: params.status,
+      reason: params.reason || null,
+      transferredAt: params.status === "transferred" ? admin.firestore.FieldValue.serverTimestamp() : null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Auto-stamp implicit inbound WhatsApp consent once for the lead bound to this chat.
+ * Returns the lead doc id when consent was newly created.
+ */
+export async function ensureInboundWhatsAppConsentByChatId(params: {
+  chatId: string;
+  proofUrl?: string;
+  language?: "es" | "en";
+}): Promise<{ leadId: string } | null> {
+  const snap = await getOrgDb().collection("leads").where("chatId", "==", params.chatId).limit(1).get();
+  if (snap.empty) return null;
+
+  const doc = snap.docs[0];
+  const data = doc.data() as { consent?: unknown } | undefined;
+  if (data?.consent) {
+    return null;
+  }
+
+  await doc.ref.set(
+    {
+      consent: {
+        capturedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: "inbound_whatsapp",
+        language: params.language || "es",
+        proofUrl: params.proofUrl || undefined,
+      },
+      lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  return { leadId: doc.id };
 }
 
 // ==================== MESSAGE BUFFER FUNCTIONS ====================

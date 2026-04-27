@@ -29,6 +29,7 @@ import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 import FontGallery from "./pages/FontGallery";
 import EmailGallery from "./pages/EmailGallery";
 import { TeamManagement } from "./pages/TeamManagement";
+import { BotTest } from "./pages/BotTest";
 
 import { useEffect } from "react";
 import { usePageTracking } from "./hooks/usePageTracking";
@@ -97,8 +98,11 @@ function App() {
             <Route path="/" element={<Landing />} />
             <Route path="/landingv2" element={<MarketingLanding />} />
             <Route path="/landingv3" element={<MarketingLandingV2 />} />
-            <Route path="/terms" element={<LegalDoc title="Términos y Condiciones" path="/legal/terms.es.md" />} />
-            <Route path="/privacy" element={<LegalDoc title="Política de Privacidad" path="/legal/privacy.es.md" />} />
+            <Route path="/terms" element={<Navigate to="/legal/terms" replace />} />
+            <Route path="/privacy" element={<Navigate to="/legal/privacy-policy" replace />} />
+            <Route path="/legal/terms" element={<LegalDoc title="Términos y Condiciones" path="/legal/terms.md" />} />
+            <Route path="/legal/privacy-policy" element={<LegalDoc title="Política de Privacidad" path="/legal/privacy-policy.md" />} />
+            <Route path="/legal/data-deletion" element={<LegalDoc title="Eliminación y exportación de datos" path="/legal/data-deletion.md" />} />
             <Route path="/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
             <Route path="/aviso-legal" element={<LegalDoc title="Aviso Legal" path="/legal/aviso.es.md" />} />
             <Route path="/legal/deletion-status" element={<DeletionStatus />} />
@@ -222,7 +226,7 @@ function App() {
             <Route
               path="/usuarios"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requiredRoles={["admin", "owner", "super_admin"]}>
                   <Layout>
                     <Users />
                   </Layout>
@@ -242,7 +246,7 @@ function App() {
             <Route
               path="/onboards"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requiredRoles={["super_admin"]}>
                   <Layout>
                     <AdminOnboards />
                   </Layout>
@@ -252,9 +256,19 @@ function App() {
             <Route
               path="/admin/tools"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requiredRoles={["super_admin"]}>
                   <Layout>
                     <AdminTools />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/botTest"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <BotTest />
                   </Layout>
                 </ProtectedRoute>
               }

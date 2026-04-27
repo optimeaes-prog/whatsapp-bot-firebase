@@ -1,25 +1,39 @@
 import * as admin from "firebase-admin";
 import axios from "axios";
 import crypto from "crypto";
+import JSZip from "jszip";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import { sendEmailToUser } from "./services/emailService";
 import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineString } from "firebase-functions/params";
-import { AuditAction, AuditEntityType, ConversationState, HistoryItem, InboundMessage, LeadRow, LeadSummary, ListingRow, OperationType, PendingItem } from "./types";
+import {
+  AuditAction,
+  AuditEntityType,
+  CloudApiTemplateNames,
+  BotConfig,
+  ConversationState,
+  HistoryItem,
+  InboundMessage,
+  LeadRow,
+  LeadSummary,
+  ListingRow,
+  OperationType,
+  PendingItem,
+  TwilioTemplateNames,
+} from "./types";
 import {
   fetchListingByCode,
   fetchListingGlobally,
-  listActiveListingsForResolution,
   findLeadByChatId,
   findLeadByPhone,
+  findOrgIdByChatId,
   updateLeadChatInfo,
   updateLeadStatus,
   createPendingCallLead,
   updateLeadListingByChatId,
   appendConversationRow,
-  findOrgIdByChatId,
 
    getActiveStyle,
    getBotConfig,
@@ -34,25 +48,35 @@ import {
   isChatIgnored,
   getAlertCountSince,
   markLeadAsResponded,
+  ensureInboundWhatsAppConsentByChatId,
+  setLeadConsentByLeadId,
+  setLeadConsentByChatId,
+  recordCallHandoffEvent,
   getResponseRateStats,
   getAllLeadsWithChatId,
   updateLeadAnalysis,
   upsertCallIntent,
   updateCloudApiTemplates,
+  getGlobalMessagingPolicy,
+  updateGlobalMessagingPolicy,
+  setPlatformDefaultProvider,
+  getOrganizationMessagingProvider,
 } from "./services/firestore";
 import { sendIdealistaOptInSms } from "./services/smsOptIn";
 import { checkWhapiHealth } from "./services/whapiClient";
 import {
   sendTextMessage,
+  sendBinaryConfirmPrompt,
   sendInitialTemplateMessage,
   sendAgentNotificationMessage,
   getActiveProvider as getActiveProviderFn,
+  getEffectiveProviderForOrg,
+  invalidateProviderCache,
 } from "./services/messagingProvider";
-import { createContentTemplate } from "./services/twilioClient";
+import { createContentTemplate, createVoiceCall } from "./services/twilioClient";
 import {
   checkCloudApiHealth,
   createMessageTemplate as createCloudApiMessageTemplate,
-  getCloudApiConfigForOrg,
   getCloudApiCredentials,
   parseCloudApiWebhook,
   invalidateCloudApiCredentialsCache,
@@ -67,22 +91,23 @@ import {
   translateTextToBritishEnglish,
   checkLeadPassesFilters,
 } from "./services/openaiClient";
-import { scheduleBufferTask, BUFFER_DELAY_SECONDS, REGION } from "./shared";
+import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS, REGION } from "./shared";
 import { sendAlert, sendHealthReport } from "./services/alertService";
 import { isOptOutMessage, applyOptOut } from "./services/optOut";
 import { ALERT_CATALOG } from "./services/alertCatalog";
 import { syncConversationsWithWhapi, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
-import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY, META_APP_ID, META_APP_SECRET, META_FB_LOGIN_CONFIG_ID, META_VERIFY_TOKEN } from "./secrets";
+import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY, META_APP_ID, META_APP_SECRET, META_FB_LOGIN_CONFIG_ID, META_VERIFY_TOKEN, ELEVENLABS_KEY, MAKE_WEBHOOK_SHARED_SECRET } from "./secrets";
 import {
   exchangeCodeForToken,
   registerPhoneNumber,
   subscribeAppToWaba,
+  setWhatsAppProfilePhoto,
   storeAccessTokenInSecretManager,
   persistCloudApiConfigForOrg,
   generateRegistrationPin,
-  generateVerifyToken,
   fetchDisplayPhoneNumber,
 } from "./services/embeddedSignup";
+import { buildAvatarPublicUrl, getAssistantAvatarById } from "./services/assistantAvatars";
 import {
   addOrgConversations,
   addOrgConversationsForPaymentIntentOnce,
@@ -122,6 +147,7 @@ import {
 import { normalizeForSearch } from "./utils/addressNormalize";
 import { getActiveOrgId, requestContext } from "./services/requestContext";
 import { sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
+import { generateSpeechMp3 } from "./services/elevenLabsClient";
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
   admin.initializeApp();
@@ -150,13 +176,12 @@ const VOICE_AUDIO_1_URL = defineString("VOICE_AUDIO_1_URL");
 // A6c — idealista confirm template removed; cold Idealista leads now receive an
 // SMS opt-in link (Meta Business Messaging Policy requires prior consent before
 // sending a marketing template).
-const TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION = defineString("TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION");
-const TWILIO_TEMPLATE_SID_CALL_INITIAL_ES = defineString("TWILIO_TEMPLATE_SID_CALL_INITIAL_ES");
-// A6d — template sent only after DTMF 1 consent on voiceWebhook.
-// No body variables. Create in Twilio Content API and paste the resulting ContentSid here.
-const TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT = defineString("TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT");
 // Public URL for the second voice prompt (DTMF 1 opt-in). Served from Firebase Hosting.
 const VOICE_AUDIO_2_OPTIN_URL = defineString("VOICE_AUDIO_2_OPTIN_URL");
+const PROPLEAD_INTAKE_ORG_ID = defineString("PROPLEAD_INTAKE_ORG_ID");
+const VOICE_CONSENT_SCRIPT_VERSION = defineString("VOICE_CONSENT_SCRIPT_VERSION");
+const OUTBOUND_CALLER_NUMBER = defineString("OUTBOUND_CALLER_NUMBER");
+const OUTBOUND_AUDIO_BUCKET = defineString("OUTBOUND_AUDIO_BUCKET");
 
 const LEAD_QUALIFIED_MARKER = "[LEAD_CUALIFICADO]";
 const LEAD_NOT_INTERESTED_MARKER = "[LEAD_NO_INTERESADO]";
@@ -177,14 +202,66 @@ const PLAN_RANKS: Record<string, number> = {
   pro_plus: 3,
 };
 
-function getAgentNotificationTemplateSid(): string | undefined {
-  const sid = TWILIO_TEMPLATE_SID_AGENT_NOTIFICATION.value();
+type OrgTemplateSnapshot = {
+  cloudApiTemplates: CloudApiTemplateNames;
+  twilioTemplates: TwilioTemplateNames;
+};
+
+async function getOrgTemplateSnapshot(orgId: string): Promise<OrgTemplateSnapshot> {
+  const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+  const snap = await db.doc(`organizations/${orgId}/botConfig/config`).get();
+  const data = (snap.data() || {}) as {
+    cloudApiConfig?: { templates?: CloudApiTemplateNames };
+    twilioTemplates?: TwilioTemplateNames;
+  };
+  return {
+    cloudApiTemplates: { ...(data.cloudApiConfig?.templates || {}) },
+    twilioTemplates: { ...(data.twilioTemplates || {}) },
+  };
+}
+
+function requireTemplate(value: string | undefined, message: string): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) throw new Error(message);
+  return normalized;
+}
+
+function getGcpProjectId(): string {
+  const envProject =
+    process.env.GCLOUD_PROJECT ||
+    process.env.GCP_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT;
+  if (envProject) return envProject;
+  const appProjectId = admin.app().options.projectId;
+  if (appProjectId) return appProjectId;
+  throw new Error("Could not determine GCP project ID");
+}
+
+async function getAgentNotificationTemplateSid(orgId: string): Promise<string | undefined> {
+  const { twilioTemplates } = await getOrgTemplateSnapshot(orgId);
+  const sid = twilioTemplates.agentNotification;
   const normalized = typeof sid === "string" ? sid.trim() : "";
   return normalized || undefined;
 }
 
+async function getVoiceOptInTemplateSid(orgId: string): Promise<string> {
+  const { twilioTemplates } = await getOrgTemplateSnapshot(orgId);
+  const sid = twilioTemplates.voiceOptInConsent || "HX8da52518b4b16392cffdd1f89dd49b55";
+  return requireTemplate(
+    sid,
+    "Twilio voice opt-in template missing for intake org (voiceOptInConsent)"
+  );
+}
+
 function buildTwiml(xmlBody: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n${xmlBody}\n</Response>`;
+}
+
+const FORCED_SUPER_ADMIN_EMAILS = new Set(["ejperezreyes@gmail.com"]);
+
+function isForcedSuperAdminEmail(email?: string): boolean {
+  const normalized = typeof email === "string" ? email.trim().toLowerCase() : "";
+  return !!normalized && FORCED_SUPER_ADMIN_EMAILS.has(normalized);
 }
 
 async function resolveOrgIdFromToken(authHeader?: string): Promise<string> {
@@ -219,12 +296,30 @@ async function resolveUserContextFromToken(authHeader?: string): Promise<{
   const uid = decoded.uid;
   const email = typeof decoded.email === "string" ? decoded.email.toLowerCase() : "";
   const DATABASE_ID = "realestate-whatsapp-bot";
-  const userDoc = await getFirestore(admin.app(), DATABASE_ID).collection("users").doc(uid).get();
+  const userRef = getFirestore(admin.app(), DATABASE_ID).collection("users").doc(uid);
+  const userDoc = await userRef.get();
   const data = userDoc.data() || {};
   const orgId = typeof data.orgId === "string" ? data.orgId : "";
-  const role = typeof data.role === "string" ? data.role : "";
-  if (!orgId) throw new Error("Organization not found for user");
+  let role = typeof data.role === "string" ? data.role : "";
+
+  if (isForcedSuperAdminEmail(email) && role !== "super_admin") {
+    await userRef.set({ role: "super_admin", email }, { merge: true });
+    role = "super_admin";
+  }
+  if (!orgId && role !== "super_admin") throw new Error("Organization not found for user");
   return { uid, orgId, role, email };
+}
+
+const ALLOWED_CONSENT_SOURCES = new Set([
+  "idealista_form",
+  "agency_website",
+  "phone_call",
+  "in_person",
+  "inbound_whatsapp",
+] as const);
+
+function normalizeConsentLanguage(value: unknown): "es" | "en" {
+  return value === "en" ? "en" : "es";
 }
 
 function twimlEscape(text: string): string {
@@ -234,6 +329,159 @@ function twimlEscape(text: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+}
+
+const MADRID_TIMEZONE = "Europe/Madrid";
+const OUTBOUND_CALL_BUSINESS_START_HOUR = 9;
+const OUTBOUND_CALL_BUSINESS_END_HOUR = 22;
+const OUTBOUND_ELEVENLABS_VOICE_ID_DEFAULT = "7QQzpAyzlKTVrRzQJmTE";
+const OUTBOUND_CALLER_NUMBER_DEFAULT = "+34911676990";
+const OUTBOUND_AUDIO_BUCKET_DEFAULT = "real-estate-idealista-bot-outbound-voice";
+const OUTBOUND_AUDIO_MAX_GENERATION_ATTEMPTS = 2;
+const OUTBOUND_AUDIO_PREFLIGHT_TTL_MS = 5 * 60 * 1000;
+
+let outboundAudioPreflightCache: { ok: boolean; checkedAt: number; bucket: string; reason?: string } | null = null;
+
+type MadridTimeParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  weekday: number;
+};
+
+const madridPartsFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: MADRID_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  weekday: "short",
+});
+
+function getMadridTimeParts(date: Date): MadridTimeParts {
+  const map: Record<string, string> = {};
+  for (const part of madridPartsFormatter.formatToParts(date)) {
+    if (part.type === "literal") continue;
+    map[part.type] = part.value;
+  }
+  const weekdayRaw = map.weekday || "";
+  const weekday = weekdayRaw === "Mon" ? 1 :
+    weekdayRaw === "Tue" ? 2 :
+      weekdayRaw === "Wed" ? 3 :
+        weekdayRaw === "Thu" ? 4 :
+          weekdayRaw === "Fri" ? 5 :
+            weekdayRaw === "Sat" ? 6 : 7;
+  return {
+    year: Number(map.year || 0),
+    month: Number(map.month || 0),
+    day: Number(map.day || 0),
+    hour: Number(map.hour || 0),
+    minute: Number(map.minute || 0),
+    weekday,
+  };
+}
+
+function isMadridBusinessSlot(date: Date): boolean {
+  const p = getMadridTimeParts(date);
+  const isWeekday = p.weekday >= 1 && p.weekday <= 5;
+  const inHours = p.hour >= OUTBOUND_CALL_BUSINESS_START_HOUR && p.hour < OUTBOUND_CALL_BUSINESS_END_HOUR;
+  return isWeekday && inHours;
+}
+
+function alignToMadridBusinessSlot(date: Date): Date {
+  const next = new Date(date.getTime());
+  for (let i = 0; i < 60 * 24 * 10; i += 1) {
+    if (isMadridBusinessSlot(next)) {
+      return next;
+    }
+    next.setMinutes(next.getMinutes() + 1);
+  }
+  return next;
+}
+
+function nextBusinessDaySameTimeFromReference(reference: Date): Date {
+  const ref = getMadridTimeParts(reference);
+  const candidate = new Date(reference.getTime() + 24 * 60 * 60 * 1000);
+  for (let i = 0; i < 60 * 24 * 10; i += 1) {
+    const p = getMadridTimeParts(candidate);
+    if (
+      p.weekday >= 1 &&
+      p.weekday <= 5 &&
+      p.hour === ref.hour &&
+      p.minute === ref.minute &&
+      p.hour >= OUTBOUND_CALL_BUSINESS_START_HOUR &&
+      p.hour < OUTBOUND_CALL_BUSINESS_END_HOUR
+    ) {
+      return candidate;
+    }
+    candidate.setMinutes(candidate.getMinutes() + 1);
+  }
+  return alignToMadridBusinessSlot(candidate);
+}
+
+function normalizeE164Phone(phoneRaw: string): string {
+  const digits = String(phoneRaw || "").replace(/[^\d+]/g, "").replace(/^\+?/, "");
+  return digits ? `+${digits}` : "";
+}
+
+function formatOperationForSpeech(operationType?: OperationType): string {
+  return operationType === "Alquiler" ? "alquiler" : "venta";
+}
+
+function formatPriceForSpeech(price?: string): string {
+  const parsed = Number(String(price || "").replace(/[^\d.,]/g, "").replace(/\./g, "").replace(",", "."));
+  if (!Number.isFinite(parsed) || parsed <= 0) return "precio no especificado";
+  const rounded = Math.round(parsed);
+  return `${rounded.toLocaleString("es-ES")} euros`;
+}
+
+function formatLocationForSpeech(params: { street?: string; city?: string; address?: string }): string {
+  const street = typeof params.street === "string" ? params.street.trim() : "";
+  const city = typeof params.city === "string" ? params.city.trim() : "";
+  const address = typeof params.address === "string" ? params.address.trim() : "";
+  if (street && city) return `${street}, ${city}`;
+  if (street) return street;
+  if (city) return city;
+  if (address) return address;
+  return "ubicación no especificada";
+}
+
+function buildOutboundConsentSpeechEs(params: {
+  leadName?: string;
+  assistantName: string;
+  operationType?: OperationType;
+  price?: string;
+  street?: string;
+  city?: string;
+  address?: string;
+}): string {
+  const saludoNombre = params.leadName ? ` ${params.leadName}` : "";
+  const operation = formatOperationForSpeech(params.operationType);
+  const priceText = formatPriceForSpeech(params.price);
+  const locationText = formatLocationForSpeech({
+    street: params.street,
+    city: params.city,
+    address: params.address,
+  });
+  return [
+    `¡Hola${saludoNombre}! Soy ${params.assistantName}, el asistente de tu agencia inmobiliaria, encantado.`,
+    `Te llamo porque te has interesado en una vivienda en ${operation} en ${locationText} por ${priceText}.`,
+    "Actualmente solo resolvemos dudas y agendamos visitas por WhatsApp.",
+    "¿Estas de acuerdo en que nuestro equipo siga la conversación y te contacte por esta vía?",
+    "Si estas de acuerdo, por favor pulsa 1. De lo contrario, por favor cuelgue.",
+    "¡Un saludo!",
+  ].join(" ");
+}
+
+function secureCompare(a: string, b: string): boolean {
+  const left = Buffer.from(String(a || ""), "utf8");
+  const right = Buffer.from(String(b || ""), "utf8");
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
 }
 
 function normalizeE164FromTwilio(from: unknown): string {
@@ -255,38 +503,53 @@ function extractListingCodeFromText(text: string): string | null {
 
 function extractPriceFromText(text: string): number | undefined {
   const t = (text || "").toLowerCase();
-  // 250k / 250 K
-  const k = t.match(/\b(\d{2,4})\s*k\b/);
-  if (k?.[1]) {
-    const value = Number(k[1]) * 1000;
-    return Number.isFinite(value) ? value : undefined;
+  const kMatch = t.match(/\b(\d+(?:[.,]\d+)?)\s*k\b/);
+  if (kMatch?.[1]) {
+    const v = Number(kMatch[1].replace(",", "."));
+    if (Number.isFinite(v)) return Math.round(v * 1000);
   }
-  // 250.000 / 250000 / 250,000
-  const n = t.match(/\b(\d{2,3}(?:[.,]\d{3})+|\d{5,7})\b/);
-  if (!n?.[1]) return undefined;
-  const cleaned = n[1].replace(/[^\d]/g, "");
-  const value = Number(cleaned);
-  return Number.isFinite(value) ? value : undefined;
+  const mMatch = t.match(/\b(\d+(?:[.,]\d+)?)\s*m\b/);
+  if (mMatch?.[1]) {
+    const v = Number(mMatch[1].replace(",", "."));
+    if (Number.isFinite(v)) return Math.round(v * 1_000_000);
+  }
+  const plain = t.match(/\b(\d{4,9})\b/);
+  if (!plain?.[1]) return undefined;
+  const n = Number(plain[1]);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 type ListingCandidate = {
   listingCode: string;
+  orgId?: string;
   description?: string;
   address?: string;
   price?: string | number;
   link?: string;
+  confidence: number;
 };
 
-function isLikelyListingHint(text: string): boolean {
-  const t = (text || "").trim();
-  if (!t) return false;
-  if (extractListingCodeFromText(t)) return true;
-  if (extractPriceFromText(t) !== undefined) return true;
-  if (t.length >= 4 && /[a-záéíóúñü]/i.test(t)) return true;
-  return false;
-}
+const MIN_CANDIDATE_CONFIDENCE = 0.4;
+const AUTO_ACCEPT_CONFIDENCE = 0.9;
+const MAX_AI_SHORTLIST = 120;
+const MAX_RETURNED_CANDIDATES = 30;
 
-function buildRetryListingLookupMessage(attempt: number): string {
+function buildRetryListingLookupMessage(attempt: number, language: InitialLanguage): string {
+  if (language === "en") {
+    const header = attempt <= 1
+      ? "Okay, I still can't locate it with that information."
+      : "I still can't identify it with enough confidence.";
+    return compactMessage([
+      header,
+      "Can you share another detail so I can find it?",
+      "",
+      "You can send:",
+      "1) Listing reference number (9 digits, starts with 1)",
+      "2) Street or area",
+      "3) Approximate price",
+      "4) Or the listing link",
+    ]);
+  }
   const header = attempt <= 1
     ? "Vale, aún no lo localizo con esos datos."
     : "Sigo sin localizarlo con seguridad.";
@@ -302,7 +565,15 @@ function buildRetryListingLookupMessage(attempt: number): string {
   ]);
 }
 
-function buildConfirmListingMessage(candidate: ListingCandidate): string {
+function buildConfirmListingMessage(candidate: ListingCandidate, language: InitialLanguage): string {
+  if (language === "en") {
+    return compactMessage([
+      "Great, I think I found it.",
+      candidate.link ? `Link: ${candidate.link}` : "",
+      "",
+      "Is this the property you're contacting us about?",
+    ]);
+  }
   return compactMessage([
     "Estupendo, creo que ya lo tengo.",
     candidate.link ? `Link: ${candidate.link}` : "",
@@ -311,83 +582,194 @@ function buildConfirmListingMessage(candidate: ListingCandidate): string {
   ]);
 }
 
-function buildPickListingMessage(candidates: ListingCandidate[]): string {
-  const items = candidates.slice(0, 5).map((c, idx) => {
-    const bits = [
-      c.description || `Anuncio ${c.listingCode}`,
-      c.address ? `(${c.address})` : "",
-      c.price ? `- ${c.price}` : "",
-      c.link ? `- ${c.link}` : "",
-    ].filter(Boolean);
-    return `${idx + 1}) ${bits.join(" ")}`.trim();
-  });
-  return compactMessage([
-    "He encontrado varios anuncios que podrían encajar.",
-    "¿Cuál es el correcto?",
-    "",
-    ...items,
-    "",
-    "Respóndeme con el número (1-5), o pega el enlace/ref.",
-    "Si no es ninguno, dime “ninguna” y lo buscamos con otro dato.",
-  ]);
-}
-
-function parsePickSelection(text: string, max: number): { kind: "number"; index: number } | { kind: "none" } | { kind: "unknown" } {
-  const t = (text || "").trim().toLowerCase();
-  if (!t) return { kind: "unknown" };
-  if (t.includes("ninguna") || t.includes("ninguno") || t.includes("no es") || t === "no") return { kind: "none" };
-  const m = t.match(/\b([1-9])\b/);
-  if (m?.[1]) {
-    const idx = Number(m[1]) - 1;
-    if (idx >= 0 && idx < max) return { kind: "number", index: idx };
-  }
-  return { kind: "unknown" };
-}
-
 async function resolveListingFromBufferedText(params: {
   operationType?: OperationType;
   text: string;
+  orgId?: string;
+  includeAllOrgs?: boolean;
 }): Promise<
-  | { kind: "match"; listing: ListingRow }
-  | { kind: "ambiguous"; candidates: ListingRow[] }
+  | { kind: "match"; candidate: ListingCandidate; candidates: ListingCandidate[] }
+  | { kind: "candidates"; candidates: ListingCandidate[] }
   | { kind: "none" }
 > {
+  const DATABASE_ID = "realestate-whatsapp-bot";
+  const db = getFirestore(admin.app(), DATABASE_ID);
   const combinedText = params.text || "";
   const directCode = extractListingCodeFromText(combinedText);
   if (directCode) {
-    const direct = await fetchListingByCode(directCode);
-    if (direct) return { kind: "match", listing: direct };
+    const direct = await fetchListingGlobally(directCode);
+    if (direct && (params.includeAllOrgs !== false || !params.orgId || direct.orgId === params.orgId)) {
+      return {
+        kind: "match",
+        candidate: {
+          listingCode: direct.data.listingCode,
+          orgId: direct.orgId,
+          description: direct.data.description,
+          address: direct.data.address || direct.data.street,
+          price: direct.data.price,
+          link: direct.data.link,
+          confidence: 1,
+        },
+        candidates: [
+          {
+            listingCode: direct.data.listingCode,
+            orgId: direct.orgId,
+            description: direct.data.description,
+            address: direct.data.address || direct.data.street,
+            price: direct.data.price,
+            link: direct.data.link,
+            confidence: 1,
+          },
+        ],
+      };
+    }
   }
-  const activeListings = await listActiveListingsForResolution({
-    operationType: params.operationType,
-    limit: 600,
-  });
-  if (!activeListings.length) return { kind: "none" };
+
+  const snap = await db.collectionGroup("listings").limit(1200).get();
+  const includeAllOrgs = params.includeAllOrgs !== false;
+  const activeListings = snap.docs.map((doc) => {
+    const data = doc.data();
+    const orgId = doc.ref.path.split("/")[1] || "";
+    return {
+      orgId,
+      listingCode: data.listingCode || "",
+      operationType: data.operationType as OperationType | undefined,
+      description: data.description || "",
+      address: data.address || "",
+      street: data.street || "",
+      city: data.city || "",
+      province: data.province || "",
+      price: data.price,
+      link: data.link || "",
+      isActive: data.isActive !== false,
+      full: data as ListingRow,
+    };
+  }).filter((row) => row.orgId && row.listingCode && row.isActive && (includeAllOrgs || !params.orgId || row.orgId === params.orgId));
+  const operationFilteredListings = params.operationType
+    ? activeListings.filter((row) => row.operationType === params.operationType)
+    : activeListings;
+  if (!operationFilteredListings.length) return { kind: "none" };
+
+  const normalize = (value: string): string =>
+    value
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+  const textNorm = normalize(combinedText);
+  const textTokens = new Set((textNorm.match(/[a-z0-9]+/g) || []).filter((t) => t.length >= 2));
+  const extractedPrice = extractPriceFromText(combinedText);
+  const extractedCode = extractListingCodeFromText(combinedText);
+  const parsePrice = (value: unknown): number | undefined => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value !== "string") return undefined;
+    const cleaned = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+  const lexicalScore = (row: (typeof operationFilteredListings)[number]): number => {
+    if (!textNorm) return 0;
+    const combined = normalize(
+      [
+        row.listingCode,
+        row.description || "",
+        row.address || "",
+        row.street || "",
+        row.city || "",
+        row.province || "",
+      ].join(" ")
+    );
+    if (!combined) return 0;
+    if (extractedCode && row.listingCode === extractedCode) return 1;
+    let hits = 0;
+    for (const token of textTokens) {
+      if (combined.includes(token)) hits += 1;
+    }
+    const tokenScore = textTokens.size > 0 ? hits / textTokens.size : 0;
+    const priceVal = parsePrice(row.price);
+    let priceScore = 0;
+    if (extractedPrice && priceVal && extractedPrice > 0) {
+      const relDiff = Math.abs(priceVal - extractedPrice) / extractedPrice;
+      priceScore = Math.max(0, 1 - relDiff);
+    }
+    return Math.min(1, tokenScore * 0.8 + priceScore * 0.2);
+  };
+
+  const preRanked = operationFilteredListings
+    .map((row) => ({ row, det: lexicalScore(row) }))
+    .sort((a, b) => b.det - a.det);
+  const aiShortlist = preRanked.slice(0, MAX_AI_SHORTLIST).map((item) => item.row);
 
   const decision = await resolveListingWithAgent({
     bufferText: combinedText,
-    activeListings,
+    activeListings: aiShortlist.map((row) => ({
+      listingCode: row.listingCode,
+      operationType: row.operationType,
+      description: row.description,
+      address: row.address,
+      street: row.street,
+      city: row.city,
+      province: row.province,
+      price: row.price,
+      link: row.link,
+    })),
     operationType: params.operationType,
   });
   console.log("Listing agent decision", {
     kind: decision.kind,
     confidence: decision.confidence,
     reason: decision.reason,
+    topCandidates: decision.candidates?.slice(0, 3) || [],
     operationType: params.operationType || "unknown",
-    listingCount: activeListings.length,
+    listingCount: operationFilteredListings.length,
+    aiShortlistCount: aiShortlist.length,
   });
 
-  if (decision.kind === "match") {
-    if (decision.confidence < 0.7) return { kind: "none" };
-    const found = await fetchListingByCode(decision.listingCode);
-    return found ? { kind: "match", listing: found } : { kind: "none" };
+  const aiConfidenceByCode = new Map<string, number>();
+  for (const c of decision.candidates || []) {
+    const conf = Number.isFinite(c.confidence) ? c.confidence : 0;
+    aiConfidenceByCode.set(c.listingCode, Math.max(0, Math.min(1, conf)));
   }
 
-  if (decision.kind === "ambiguous") {
-    if (decision.confidence < 0.35) return { kind: "none" };
-    const rows = await Promise.all(decision.listingCodes.slice(0, 5).map((code) => fetchListingByCode(code)));
-    const candidates = rows.filter((row): row is ListingRow => !!row);
-    return candidates.length >= 2 ? { kind: "ambiguous", candidates } : { kind: "none" };
+  const candidates = preRanked
+    .slice(0, Math.max(MAX_RETURNED_CANDIDATES, MAX_AI_SHORTLIST))
+    .map(({ row, det }) => {
+      const ai = aiConfidenceByCode.get(row.listingCode) ?? 0;
+      // Blend to keep AI as the dominant signal while still scoring broad candidates cheaply.
+      const blended = ai > 0
+        ? (ai * 0.8 + det * 0.2)
+        : (det * 0.55);
+      return {
+        listingCode: row.listingCode,
+        orgId: row.orgId,
+        description: row.description,
+        address: row.address || row.street,
+        price: row.price,
+        link: row.link,
+        confidence: Math.max(0, Math.min(1, blended)),
+      } as ListingCandidate;
+    })
+    .filter((candidate) => candidate.confidence >= MIN_CANDIDATE_CONFIDENCE)
+    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+    .slice(0, MAX_RETURNED_CANDIDATES);
+
+  if (candidates.length === 0) return { kind: "none" };
+
+  if (decision.kind === "match") {
+    const matched = candidates.find((candidate) => candidate.listingCode === decision.listingCode);
+    if (matched) return { kind: "match", candidate: matched, candidates };
+  }
+
+  if (candidates.length === 1) {
+    return { kind: "match", candidate: candidates[0], candidates };
+  }
+
+  if (decision.kind === "ambiguous" || decision.kind === "match") {
+    return { kind: "candidates", candidates };
+  }
+
+  if (decision.kind === "none" && candidates.length > 0) {
+    return { kind: "candidates", candidates };
   }
 
   return { kind: "none" };
@@ -406,7 +788,11 @@ function buildCallInitialWhatsAppMessageEs(agentName?: string): string {
   ].join("\n\n");
 }
 
-function buildListingNotFoundFallback(agentName?: string): string {
+function buildListingNotFoundFallback(agentName: string | undefined, language: InitialLanguage): string {
+  if (language === "en") {
+    const who = agentName ? ` to ${agentName}` : "";
+    return `Okay, I can't find it in my system right now, but no worries. I'll send your contact${who} so they can call you as soon as possible.`;
+  }
   const who = agentName ? ` a ${agentName}` : "";
   return `Vale, parece que no lo encuentro en mi sistema, pero no te preocupes. Le enviaré tu contacto${who} para que te llame lo antes posible.`;
 }
@@ -443,6 +829,45 @@ const conversationStates = new Map<string, ConversationState>();
 // Initial language resolving
 function resolveInitialLanguage(phone?: string): InitialLanguage {
   return isSpanishPhoneNumber(phone) ? "es" : "en";
+}
+
+const SPANISH_LANGUAGE_TOKENS = new Set([
+  "hola", "gracias", "vale", "anuncio", "vivienda", "calle", "zona", "precio", "ninguna", "ninguno",
+  "si", "sí", "quiero", "interesado", "interesada", "referencia", "enlace", "correcto", "es",
+]);
+const ENGLISH_LANGUAGE_TOKENS = new Set([
+  "hello", "thanks", "thank", "listing", "property", "street", "area", "price", "none",
+  "yes", "no", "link", "reference", "correct", "interested", "not",
+]);
+
+function isLikelySpanishReply(text: string): boolean {
+  const lowered = text.toLowerCase();
+  if (!/[a-záéíóúñü]/i.test(lowered)) return false;
+  if (/[¿¡ñáéíóúü]/i.test(lowered)) return true;
+  const words = lowered.match(/[a-záéíóúñü]+/gi) || [];
+  if (words.length === 0) return false;
+  let esScore = 0;
+  let enScore = 0;
+  for (const rawWord of words) {
+    const word = rawWord.trim();
+    if (!word) continue;
+    if (SPANISH_LANGUAGE_TOKENS.has(word)) esScore += 1;
+    if (ENGLISH_LANGUAGE_TOKENS.has(word)) enScore += 1;
+  }
+  return esScore > 0 && esScore >= enScore;
+}
+
+function resolveReplyLanguageFromMessages(messages: PendingItem[], fallback: InitialLanguage): InitialLanguage {
+  let sawSpanish = false;
+  for (const message of messages) {
+    const text = (message.text || "").trim();
+    if (!/[a-záéíóúñü]/i.test(text)) continue;
+    if (!isLikelySpanishReply(text)) {
+      return "en";
+    }
+    sawSpanish = true;
+  }
+  return sawSpanish ? "es" : fallback;
 }
 
 function cleanFeature(line: string): string {
@@ -617,7 +1042,17 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
   // Check if it's a Twilio payload (form-urlencoded usually results in top-level fields)
   if (candidate.SmsSid && candidate.From && candidate.Body) {
     const from = String(candidate.From);
-    const bodyText = String(candidate.Body);
+    const bodyText = String(candidate.Body || "");
+    const buttonPayload = typeof candidate.ButtonPayload === "string" ? candidate.ButtonPayload.trim() : "";
+    const buttonText = typeof candidate.ButtonText === "string" ? candidate.ButtonText.trim() : "";
+    const normalizedButton = buttonPayload === "confirm_yes" || buttonPayload === "confirm_no"
+      ? buttonPayload
+      : (buttonText.toLowerCase() === "yes" || buttonText.toLowerCase() === "si" || buttonText.toLowerCase() === "sí")
+        ? "confirm_yes"
+        : buttonText.toLowerCase() === "no"
+          ? "confirm_no"
+          : "";
+    const normalizedText = normalizedButton || bodyText;
     const waId = candidate.WaId ? String(candidate.WaId) : extractPhoneFromChatId(from);
     
     // Canonical format for Twilio WhatsApp is whatsapp:+123456789
@@ -630,7 +1065,7 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
     return [{
       chatId,
       phone,
-      text: bodyText,
+      text: normalizedText,
       timestamp: ensureTimestampMillis(timestampValue),
     }];
   }
@@ -855,9 +1290,29 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
   console.log(`Processing ${sortedMessages.length} buffered message(s) for ${state.chatId}`);
 
+  const fallbackLanguage: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
+  const inferredLanguage = resolveReplyLanguageFromMessages(sortedMessages, fallbackLanguage);
+  if (state.language !== inferredLanguage) {
+    state.language = inferredLanguage;
+    await upsertConversation(state.chatId, { language: inferredLanguage });
+  }
+
   // Mark lead as responded if there are user messages
   if (sortedMessages.length > 0) {
     await markLeadAsResponded(state.chatId);
+    const firstInbound = sortedMessages[0];
+    const created = await ensureInboundWhatsAppConsentByChatId({
+      chatId: state.chatId,
+      language: state.language || "es",
+      proofUrl: `wa_inbound:${state.chatId}:${firstInbound.timestamp}`,
+    });
+    if (created) {
+      await recordSystemAction("lead", created.leadId, "consent_auto_captured", {
+        source: "inbound_whatsapp",
+        chatId: state.chatId,
+        timestamp: firstInbound.timestamp,
+      });
+    }
   }
 
   // Try to extract client name if not known
@@ -882,7 +1337,10 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     }
   }
 
-  const applyListingToStateAndPersist = async (listing: ListingRow): Promise<void> => {
+  const applyListingToStateAndPersist = async (listing: ListingRow, targetOrgId: string): Promise<void> => {
+    const sourceOrgId = getActiveOrgId();
+    const isCrossOrgCallHandoff = targetOrgId !== sourceOrgId || (state.tags || []).includes("call");
+    const correlationId = `handoff_${state.chatId}_${Date.now()}`;
     const initialLanguage = state.language || resolveInitialLanguage(state.phone);
     const featuresText = await getFeaturesForLanguage(listing.features, initialLanguage);
 
@@ -898,6 +1356,19 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     state.type = "lead";
     state.tags = Array.from(new Set([...(state.tags || ["lead"]), "lead"]));
     state.language = initialLanguage;
+    if (isCrossOrgCallHandoff) {
+      state.handoff = {
+        correlationId,
+        sourceOrgId,
+        targetOrgId,
+        matchedListingCode: listing.listingCode,
+        language: initialLanguage,
+        phone: state.phone,
+        status: "pending",
+      };
+    } else {
+      state.handoff = undefined;
+    }
 
     await upsertConversation(state.chatId, {
       listingCode: listing.listingCode,
@@ -916,6 +1387,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       pendingListingCandidate: undefined,
       pendingListingCandidates: undefined,
       listingResolveAttempts: state.listingResolveAttempts || 0,
+      handoff: state.handoff || undefined,
     });
 
     await updateLeadListingByChatId({
@@ -926,6 +1398,54 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       name: state.name,
       listingResolutionStatus: "resolved",
       tags: state.tags,
+    });
+
+    if (!isCrossOrgCallHandoff) {
+      const config = await getBotConfig();
+      const avatarName = resolveConfiguredAssistantName(config);
+      const agentName =
+        listing.agentName ||
+        config.orgName ||
+        (initialLanguage === "en" ? "our team" : "nuestro equipo");
+      const introMessage = initialLanguage === "en"
+        ? compactMessage([
+          `Hello${state.name ? ` ${state.name}` : ""}.`,
+          `I'm ${avatarName}, the virtual assistant for ${agentName}. It's a pleasure to help you.`,
+          "",
+          "Have you seen the property highlights?",
+          formatFeaturesList(featuresText || "", "en"),
+        ])
+        : compactMessage([
+          `Hola${state.name ? ` ${state.name}` : ""}.`,
+          `Soy ${avatarName}, el asistente virtual de ${agentName}, un placer ayudarte.`,
+          "",
+          "¿Has visto las características de la vivienda?",
+          formatFeaturesList(featuresText || "", "es"),
+        ]);
+      await sendTextMessage({
+        to: state.phone,
+        chatId: state.chatId,
+        body: introMessage,
+      });
+      state.history.push({ role: "assistant", text: introMessage, timestamp: Date.now() });
+      state.flowStep = "qualification";
+      await upsertConversation(state.chatId, {
+        history: state.history,
+        flowStep: "qualification",
+      });
+      return;
+    }
+
+    await recordCallHandoffEvent({
+      sourceOrgId,
+      correlationId,
+      chatId: state.chatId,
+      phone: state.phone,
+      language: initialLanguage,
+      status: "pending",
+      targetOrgId,
+      matchedListingCode: listing.listingCode,
+      reason: "listing_confirmed_user",
     });
 
     // Quick qualification toggle: if enabled, notify agent immediately and hand off.
@@ -941,7 +1461,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         `Anuncio: ${listing.description} (ID ${listing.listingCode})`,
         listing.link ? `Link: ${listing.link}` : "",
       ]);
-      const templateSid = getAgentNotificationTemplateSid();
+      const templateSid = await getAgentNotificationTemplateSid(getActiveOrgId());
       for (const num of agentNums) {
         try {
           await sendAgentNotificationMessage({
@@ -966,11 +1486,248 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         isFinished: true,
         tags: state.tags,
       });
+      await recordCallHandoffEvent({
+        sourceOrgId,
+        correlationId,
+        chatId: state.chatId,
+        phone: state.phone,
+        language: initialLanguage,
+        status: "failed",
+        targetOrgId,
+        matchedListingCode: listing.listingCode,
+        reason: "quick_qualification_enabled",
+      });
+      return;
     }
+
+    const targetLanguage: "es" | "en" = initialLanguage === "en" ? "en" : "es";
+    const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+    const inheritedPhoneCallConsent = async () => {
+      const sourceLeadSnap = await db
+        .collection(`organizations/${sourceOrgId}/leads`)
+        .where("chatId", "==", state.chatId)
+        .limit(1)
+        .get();
+      const sourceConsent = sourceLeadSnap.docs[0]?.data()?.consent as
+        | {
+            source?: string;
+            proofUrl?: string;
+            proofType?: "twilio_call_sid" | "twilio_recording_sid" | "wa_inbound";
+            consentScriptVersion?: string;
+            dtmfDigit?: "1";
+          }
+        | undefined;
+      const proofUrl = sourceConsent?.proofUrl || undefined;
+      return {
+        capturedAt: admin.firestore.Timestamp.now(),
+        source: "phone_call" as const,
+        language: targetLanguage,
+        proofUrl,
+        proofType: sourceConsent?.proofType || "twilio_call_sid",
+        consentScriptVersion: sourceConsent?.consentScriptVersion || VOICE_CONSENT_SCRIPT_VERSION.value() || "v1",
+        dtmfDigit: sourceConsent?.dtmfDigit || "1",
+      };
+    };
+    const handoffConsent = await inheritedPhoneCallConsent();
+
+    const handoffTransitionMessage = targetLanguage === "en"
+      ? `Great. ${listing.agentName || "the agent"}'s assistant will message you now to help with any questions and, if you want, coordinate a viewing.`
+      : `Estupendo. El asistente de tu agente ${listing.agentName || ""} te escribirá ahora para ayudarte con cualquier duda y, si quieres, coordinar una visita.`;
+    try {
+      await sendTextMessage({
+        to: state.phone,
+        chatId: state.chatId,
+        body: handoffTransitionMessage.replace(/\s+/g, " ").trim(),
+      });
+    } catch (error) {
+      console.warn("Failed to send handoff transition message", error);
+    }
+
+    await requestContext.run({ orgId: targetOrgId }, async () => {
+      // Ensure lead + inherited phone-call consent exist in target org before template send gate.
+      const targetConfig = await getBotConfig();
+      const targetAvatarName =
+        typeof targetConfig.orgName === "string" && targetConfig.orgName.trim()
+          ? targetConfig.orgName.trim()
+          : "el asistente virtual";
+      const targetAgentName = listing.agentName || targetAvatarName || "nuestro equipo";
+      const targetListingLink = listing.link || "";
+      const formattedFeatures = formatFeaturesList(state.features || "", targetLanguage).slice(0, 900);
+      const leadName = state.name || "Hola";
+
+      await updateLeadChatInfo({
+        phone: state.phone,
+        listingCode: listing.listingCode,
+        chatId: state.chatId,
+        operationType: listing.operationType,
+        name: state.name,
+        tags: ["lead", "call", "handoff"],
+        qualificationStatus: "not_qualified",
+      });
+      await setLeadConsentByChatId({
+        chatId: state.chatId,
+        phone: state.phone,
+        listingCode: listing.listingCode,
+        operationType: listing.operationType,
+        consent: handoffConsent,
+      });
+      const targetLeadSnap = await db
+        .collection(`organizations/${targetOrgId}/leads`)
+        .where("chatId", "==", state.chatId)
+        .limit(1)
+        .get();
+      if (!targetLeadSnap.empty) {
+        await targetLeadSnap.docs[0].ref.set(
+          {
+            leadSource: "call",
+            listingResolutionStatus: "resolved",
+          },
+          { merge: true }
+        );
+      }
+
+      const provider = await getActiveProviderFn();
+      if (provider === "twilio") {
+        const { twilioTemplates } = await getOrgTemplateSnapshot(targetOrgId);
+        const templateSid = targetLanguage === "en"
+          ? requireTemplate(
+            twilioTemplates.callHandoffOrgEn,
+            "Twilio call handoff template missing for org (callHandoffOrgEn)"
+          )
+          : requireTemplate(
+            twilioTemplates.callHandoffOrgEs,
+            "Twilio call handoff template missing for org (callHandoffOrgEs)"
+          );
+        await sendInitialTemplateMessage({
+          to: state.phone,
+          chatId: state.chatId,
+          language: targetLanguage,
+          variables: {
+            "1": leadName,
+            "2": targetAvatarName,
+            "3": targetAgentName,
+            "4": targetListingLink,
+            "5": formattedFeatures,
+          },
+          templateSid,
+        });
+      } else if (provider === "cloud_api") {
+        const creds = await getCloudApiCredentials();
+        const templateName = targetLanguage === "en"
+          ? requireTemplate(
+            creds.templates?.callHandoffOrgEn,
+            "Cloud API handoff template missing for org (callHandoffOrgEn)"
+          )
+          : requireTemplate(
+            creds.templates?.callHandoffOrgEs,
+            "Cloud API handoff template missing for org (callHandoffOrgEs)"
+          );
+        await sendInitialTemplateMessage({
+          to: state.phone,
+          chatId: state.chatId,
+          language: targetLanguage,
+          variables: {
+            "1": leadName,
+            "2": targetAgentName,
+            "3": targetListingLink,
+          },
+          templateName,
+        });
+      } else {
+        await sendTextMessage({
+          to: state.phone,
+          chatId: state.chatId,
+          body: compactMessage([
+            `Hola${state.name ? `, ${state.name}` : ""}.`,
+            `Soy ${targetAvatarName}, el asistente virtual de ${targetAgentName}.`,
+            "Entiendo que te has interesado en esta vivienda:",
+            targetListingLink,
+            "",
+            "¿Has visto las características?",
+            formattedFeatures,
+            "",
+            "Si quieres dejar de recibir estos mensajes, escribe STOP en cualquier momento.",
+          ]),
+        });
+      }
+    });
+
+    state.isFinished = true;
+    state.tags = Array.from(new Set([...(state.tags || []), "handoff-transferred"]));
+    if (state.handoff) {
+      state.handoff = {
+        ...state.handoff,
+        status: "transferred",
+      };
+    }
+    await upsertConversation(state.chatId, {
+      isFinished: true,
+      flowStep: "closed",
+      tags: state.tags,
+      handoff: state.handoff
+        ? ({
+          ...state.handoff,
+          transferredAt: admin.firestore.FieldValue.serverTimestamp(),
+        } as ConversationState["handoff"])
+        : undefined,
+    });
+    await recordCallHandoffEvent({
+      sourceOrgId,
+      correlationId,
+      chatId: state.chatId,
+      phone: state.phone,
+      language: initialLanguage,
+      status: "transferred",
+      targetOrgId,
+      matchedListingCode: listing.listingCode,
+      reason: "org_intro_sent",
+    });
   };
 
-  // Deterministic call→WhatsApp listing resolution & confirmation before enabling AI flow.
-  if (state.listingCode === CALL_PENDING_LISTING_CODE || !state.listingCode) {
+  const sendListingResolutionIntroIfNeeded = async (
+    language: InitialLanguage,
+    candidate?: ListingCandidate
+  ): Promise<void> => {
+    if ((state.tags || []).includes("listing-resolution-intro-sent")) return;
+    const config = await getBotConfig();
+    const avatarName = resolveConfiguredAssistantName(config);
+    let candidateAgentName = "";
+    if (candidate?.listingCode) {
+      try {
+        const listing = await fetchListingGlobally(candidate.listingCode);
+        candidateAgentName = listing?.data?.agentName || "";
+      } catch (error) {
+        console.warn("Failed to load listing for intro agent name", error);
+      }
+    }
+    const agentName = candidateAgentName || config.orgName || (language === "en" ? "our team" : "nuestro equipo");
+    const intro = language === "en"
+      ? compactMessage([
+        `Hello${state.name ? ` ${state.name}` : ""}.`,
+        `I'm ${avatarName}, the virtual assistant for ${agentName}. It's a pleasure to help you.`,
+      ])
+      : compactMessage([
+        `Hola${state.name ? ` ${state.name}` : ""}.`,
+        `Soy ${avatarName}, el asistente virtual de ${agentName}, un placer ayudarte.`,
+      ]);
+    await sendTextMessage({
+      to: state.phone,
+      chatId: state.chatId,
+      body: intro,
+    });
+    state.history.push({ role: "assistant", text: intro, timestamp: Date.now() });
+    state.tags = Array.from(new Set([...(state.tags || []), "listing-resolution-intro-sent"]));
+    await upsertConversation(state.chatId, { history: state.history, tags: state.tags });
+  };
+
+  // Deterministic listing resolution & confirmation before enabling AI flow.
+  if (
+    state.flowStep === "call_listing_collect" ||
+    state.flowStep === "call_listing_confirm" ||
+    state.listingCode === CALL_PENDING_LISTING_CODE ||
+    !state.listingCode
+  ) {
+    const callFlowLanguage: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
     const currentStep = state.flowStep || "call_listing_collect";
     const combinedText = sortedMessages.map((m) => m.text).join("\n");
     const lastUserText = sortedMessages.length > 0 ? sortedMessages[sortedMessages.length - 1].text : "";
@@ -991,7 +1748,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         extra ? `Texto: ${extra}` : "",
         `ChatId: ${state.chatId}`,
       ]);
-      const templateSid = getAgentNotificationTemplateSid();
+      const templateSid = await getAgentNotificationTemplateSid(getActiveOrgId());
       for (const num of agentNums) {
         try {
           await sendAgentNotificationMessage({
@@ -1010,133 +1767,94 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     };
 
     try {
-      if (currentStep === "call_listing_pick") {
-        const extractedCode = extractListingCodeFromText(lastUserText);
-        if (extractedCode) {
-          const listing = await fetchListingByCode(extractedCode);
-          if (listing) {
-            state.pendingListingCandidate = { listingCode: listing.listingCode, link: listing.link, description: listing.description };
-            state.pendingListingCandidates = undefined;
-            state.flowStep = "call_listing_confirm";
-            await upsertConversation(state.chatId, {
-              flowStep: "call_listing_confirm",
-              pendingListingCandidate: state.pendingListingCandidate,
-              pendingListingCandidates: undefined,
-              listingResolveAttempts: attempt,
-            });
-            await sendTextMessage({ to: state.phone, body: buildConfirmListingMessage(state.pendingListingCandidate), chatId: state.chatId });
-            return;
-          }
-        }
-
-        const candidates = state.pendingListingCandidates || [];
-        const sel = parsePickSelection(lastUserText, candidates.length);
-        if (sel.kind === "number") {
-          const picked = candidates[sel.index];
-          state.pendingListingCandidate = picked;
-          state.pendingListingCandidates = undefined;
-          state.flowStep = "call_listing_confirm";
-          await upsertConversation(state.chatId, {
-            flowStep: "call_listing_confirm",
-            pendingListingCandidate: picked,
-            pendingListingCandidates: undefined,
-            listingResolveAttempts: attempt,
-          });
-          await sendTextMessage({ to: state.phone, body: buildConfirmListingMessage(picked), chatId: state.chatId });
-          return;
-        }
-
-        if (sel.kind === "none") {
-          const nextAttempt = attempt + 1;
-          state.listingResolveAttempts = nextAttempt;
-          state.flowStep = "call_listing_collect";
-          state.pendingListingCandidates = undefined;
-          state.pendingListingCandidate = undefined;
-          await upsertConversation(state.chatId, {
-            flowStep: "call_listing_collect",
-            listingResolveAttempts: nextAttempt,
-            pendingListingCandidates: undefined,
-            pendingListingCandidate: undefined,
-          });
-          if (nextAttempt <= 2) {
-            await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt), chatId: state.chatId });
-            return;
-          }
-          const fallbackToUser = buildListingNotFoundFallback(undefined);
-          await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
-          await updateLeadListingByChatId({
-            chatId: state.chatId,
-            phone: state.phone,
-            listingCode: CALL_PENDING_LISTING_CODE,
-            operationType: state.operationType,
-            name: state.name,
-            listingResolutionStatus: "failed",
-            tags: state.tags,
-          });
-          await notifyAgentAndClose("Nuevo lead (no se pudo encontrar el anuncio).", combinedText);
-          return;
-        }
-
-        // Unknown selection → resend list
-        if (candidates.length > 0) {
-          await sendTextMessage({ to: state.phone, body: buildPickListingMessage(candidates), chatId: state.chatId });
-          return;
-        }
-
-        state.flowStep = "call_listing_collect";
-      }
-
-      if (currentStep === "call_listing_confirm") {
-        const candidate = state.pendingListingCandidate;
-        if (!candidate?.listingCode) {
-          state.flowStep = "call_listing_collect";
-          await upsertConversation(state.chatId, { flowStep: "call_listing_collect" });
-          return;
-        }
-
-        const decision = await classifyConfirmDeny({
-          userText: lastUserText,
+      const classifyBinaryDecision = async (text: string, candidate: ListingCandidate): Promise<"confirm" | "deny" | "unclear"> => {
+        const normalized = normalizeForSearch(text);
+        if (
+          normalized === "confirm_yes" ||
+          normalized === "si" ||
+          normalized === "sí" ||
+          normalized === "yes" ||
+          normalized === "y"
+        ) return "confirm";
+        if (
+          normalized === "confirm_no" ||
+          normalized === "no" ||
+          normalized === "nop" ||
+          normalized === "none" ||
+          normalized === "ninguna" ||
+          normalized === "ninguno"
+        ) return "deny";
+        return classifyConfirmDeny({
+          userText: text,
           promptContext: `Candidato: ${candidate.description || ""} (ID ${candidate.listingCode})\nLink: ${candidate.link || ""}`.trim(),
         });
+      };
 
+      const queue = state.pendingListingQueue || [];
+      const queueIndex = Math.max(0, state.pendingListingQueueIndex || 0);
+
+      if (currentStep === "call_listing_confirm" && queue.length > 0) {
+        const candidate = queue[queueIndex];
+        if (!candidate?.listingCode) {
+          state.flowStep = "call_listing_collect";
+          state.pendingListingQueue = undefined;
+          state.pendingListingQueueIndex = undefined;
+          await upsertConversation(state.chatId, {
+            flowStep: "call_listing_collect",
+            pendingListingQueue: undefined,
+            pendingListingQueueIndex: undefined,
+          });
+          return;
+        }
+
+        const decision = await classifyBinaryDecision(lastUserText, candidate);
         if (decision === "confirm") {
-          const listing = await fetchListingByCode(candidate.listingCode);
+          const listing = await fetchListingGlobally(candidate.listingCode);
           if (!listing) {
             const nextAttempt = attempt + 1;
             state.listingResolveAttempts = nextAttempt;
             state.flowStep = "call_listing_collect";
             state.pendingListingCandidate = undefined;
+            state.pendingListingQueue = undefined;
+            state.pendingListingQueueIndex = undefined;
             await upsertConversation(state.chatId, {
               flowStep: "call_listing_collect",
               listingResolveAttempts: nextAttempt,
               pendingListingCandidate: undefined,
+              pendingListingQueue: undefined,
+              pendingListingQueueIndex: undefined,
             });
-            await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt), chatId: state.chatId });
+            await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt, callFlowLanguage), chatId: state.chatId });
             return;
           }
-
-          await applyListingToStateAndPersist(listing);
-          if (state.isFinished) return;
-
-          const language = state.language || resolveInitialLanguage(state.phone);
-          const formattedFeatures = formatFeaturesList(state.features || "", language);
-          const msg = compactMessage([
-            "Estupendo, ¡lo tengo!",
-            "",
-            listing.link || "",
-            "",
-            "Por confirmar, ¿has visto las características?",
-            "",
-            formattedFeatures,
-          ]);
-          await sendTextMessage({ to: state.phone, body: msg, chatId: state.chatId });
-          state.flowStep = "qualification";
-          await upsertConversation(state.chatId, { flowStep: "qualification" });
+          await applyListingToStateAndPersist(listing.data, candidate.orgId || listing.orgId);
           return;
         }
 
         if (decision === "deny") {
-          const fallbackToUser = buildListingNotFoundFallback(undefined);
+          const nextIndex = queueIndex + 1;
+          state.rejectedListingCodes = Array.from(new Set([...(state.rejectedListingCodes || []), candidate.listingCode]));
+          if (nextIndex < queue.length) {
+            const nextCandidate = queue[nextIndex];
+            state.pendingListingQueueIndex = nextIndex;
+            state.pendingListingCandidate = nextCandidate;
+            await upsertConversation(state.chatId, {
+              flowStep: "call_listing_confirm",
+              pendingListingQueueIndex: nextIndex,
+              pendingListingCandidate: nextCandidate,
+              rejectedListingCodes: state.rejectedListingCodes,
+            });
+            await sendListingResolutionIntroIfNeeded(callFlowLanguage, nextCandidate);
+            await sendBinaryConfirmPrompt({
+              to: state.phone,
+              chatId: state.chatId,
+              language: callFlowLanguage,
+              body: buildConfirmListingMessage(nextCandidate, callFlowLanguage),
+            });
+            return;
+          }
+
+          const fallbackToUser = buildListingNotFoundFallback(undefined, callFlowLanguage);
           await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
           await updateLeadListingByChatId({
             chatId: state.chatId,
@@ -1147,60 +1865,96 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
             listingResolutionStatus: "failed",
             tags: state.tags,
           });
-          await notifyAgentAndClose("Nuevo lead (el usuario indicó que NO es el anuncio).", combinedText);
+          await notifyAgentAndClose("Nuevo lead (sin coincidencias confirmadas tras ranking AI).", combinedText);
           return;
         }
 
-        await sendTextMessage({ to: state.phone, body: "¿Me confirmas si es esta vivienda? Si no lo es, dime otro dato o pega el enlace/ref.", chatId: state.chatId });
+          await sendListingResolutionIntroIfNeeded(callFlowLanguage, candidate);
+          await sendBinaryConfirmPrompt({
+          to: state.phone,
+          chatId: state.chatId,
+            language: callFlowLanguage,
+            body: callFlowLanguage === "en"
+              ? "Is this the correct property?"
+              : "¿Es correcta esta vivienda?",
+        });
         return;
       }
 
-      // Default (collect): attempt to resolve listing from buffered text
-      if (sortedMessages.length > 0 && isLikelyListingHint(combinedText)) {
+      // Default (collect): always attempt to resolve listing from buffered text.
+      if (sortedMessages.length > 0) {
         const res = await resolveListingFromBufferedText({
           operationType: state.operationType,
           text: combinedText,
+          orgId: getActiveOrgId(),
+          includeAllOrgs: (state.tags || []).includes("call"),
         });
 
         if (res.kind === "match") {
-          const cand: ListingCandidate = {
-            listingCode: res.listing.listingCode,
-            description: res.listing.description,
-            address: res.listing.address || res.listing.street,
-            price: res.listing.price,
-            link: res.listing.link,
-          };
-          state.pendingListingCandidate = cand;
+          const candidate = res.candidate;
+          if ((candidate.confidence || 0) >= AUTO_ACCEPT_CONFIDENCE) {
+            const listing = await fetchListingGlobally(candidate.listingCode);
+            if (listing) {
+              await applyListingToStateAndPersist(listing.data, candidate.orgId || listing.orgId);
+              return;
+            }
+          }
+
+          state.pendingListingCandidate = candidate;
+          state.pendingListingQueue = [candidate];
+          state.pendingListingQueueIndex = 0;
           state.pendingListingCandidates = undefined;
           state.flowStep = "call_listing_confirm";
           await upsertConversation(state.chatId, {
             flowStep: "call_listing_confirm",
-            pendingListingCandidate: cand,
+            pendingListingCandidate: candidate,
+            pendingListingQueue: [candidate],
+            pendingListingQueueIndex: 0,
             pendingListingCandidates: undefined,
             listingResolveAttempts: attempt,
           });
-          await sendTextMessage({ to: state.phone, body: buildConfirmListingMessage(cand), chatId: state.chatId });
+          await sendListingResolutionIntroIfNeeded(callFlowLanguage, candidate);
+          await sendBinaryConfirmPrompt({
+            to: state.phone,
+            chatId: state.chatId,
+            language: callFlowLanguage,
+            body: buildConfirmListingMessage(candidate, callFlowLanguage),
+          });
           return;
         }
 
-        if (res.kind === "ambiguous") {
-          const cands: ListingCandidate[] = res.candidates.slice(0, 5).map((l) => ({
-            listingCode: l.listingCode,
-            description: l.description,
-            address: l.address || l.street,
-            price: l.price,
-            link: l.link,
-          }));
-          state.pendingListingCandidates = cands;
-          state.pendingListingCandidate = undefined;
-          state.flowStep = "call_listing_pick";
+        if (res.kind === "candidates") {
+          const queueCandidates = res.candidates.slice(0, 5);
+          const firstCandidate = queueCandidates[0];
+          if (!firstCandidate) return;
+          if (queueCandidates.length === 1 && (firstCandidate.confidence || 0) >= AUTO_ACCEPT_CONFIDENCE) {
+            const listing = await fetchListingGlobally(firstCandidate.listingCode);
+            if (listing) {
+              await applyListingToStateAndPersist(listing.data, firstCandidate.orgId || listing.orgId);
+              return;
+            }
+          }
+
+          state.pendingListingQueue = queueCandidates;
+          state.pendingListingQueueIndex = 0;
+          state.pendingListingCandidate = firstCandidate;
+          state.pendingListingCandidates = undefined;
+          state.flowStep = "call_listing_confirm";
           await upsertConversation(state.chatId, {
-            flowStep: "call_listing_pick",
-            pendingListingCandidates: cands,
-            pendingListingCandidate: undefined,
+            flowStep: "call_listing_confirm",
+            pendingListingQueue: queueCandidates,
+            pendingListingQueueIndex: 0,
+            pendingListingCandidate: firstCandidate,
+            pendingListingCandidates: undefined,
             listingResolveAttempts: attempt,
           });
-          await sendTextMessage({ to: state.phone, body: buildPickListingMessage(cands), chatId: state.chatId });
+          await sendListingResolutionIntroIfNeeded(callFlowLanguage, firstCandidate);
+          await sendBinaryConfirmPrompt({
+            to: state.phone,
+            chatId: state.chatId,
+            language: callFlowLanguage,
+            body: buildConfirmListingMessage(firstCandidate, callFlowLanguage),
+          });
           return;
         }
 
@@ -1211,12 +1965,13 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           flowStep: "call_listing_collect",
           listingResolveAttempts: nextAttempt,
         });
+        await sendListingResolutionIntroIfNeeded(callFlowLanguage);
         if (nextAttempt <= 2) {
-          await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt), chatId: state.chatId });
+          await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt, callFlowLanguage), chatId: state.chatId });
           return;
         }
 
-        const fallbackToUser = buildListingNotFoundFallback(undefined);
+        const fallbackToUser = buildListingNotFoundFallback(undefined, callFlowLanguage);
         await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
         state.tags = Array.from(new Set([...(state.tags || []), "listing-not-found"]));
         await updateLeadListingByChatId({
@@ -1246,102 +2001,6 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     qualified: state.qualificationStatus,
     isFinished: state.isFinished,
   });
-
-  // Deterministic step: Idealista confirmation (Si/No) before enabling AI flow.
-  if (state.flowStep === "idealista_confirm") {
-    const combinedUserText = sortedMessages.map((m) => m.text).join("\n").trim();
-    const lastUserText = sortedMessages.length > 0 ? sortedMessages[sortedMessages.length - 1].text : "";
-    const normalized = normalizeForSearch(lastUserText || "");
-
-    let decision: "confirm" | "deny" | "unclear" = "unclear";
-    if (combinedUserText) {
-      try {
-        decision = await classifyConfirmDeny({
-          userText: combinedUserText,
-          promptContext: [
-            "Paso actual: confirmación inicial tras mensaje de Idealista.",
-            "Pregunta esperada al usuario: ¿Es correcto? (Sí/No)",
-            `Anuncio actual: ${state.link || "sin_link"}`,
-          ].join("\n"),
-        });
-      } catch (error) {
-        console.warn("Failed to classify idealista confirmation, using lexical fallback", error);
-      }
-    }
-
-    // Safety net when the classifier cannot decide.
-    if (decision === "unclear") {
-      if (normalized === "si" || normalized === "s" || normalized === "sí" || normalized === "yes") {
-        decision = "confirm";
-      } else if (normalized === "no" || normalized === "nop") {
-        decision = "deny";
-      }
-    }
-
-    if (decision === "confirm") {
-      const language = state.language || resolveInitialLanguage(state.phone);
-      const formattedFeatures = formatFeaturesList(state.features || "", language);
-      const msg = compactMessage([
-        language === "en"
-          ? "Great. Have you seen the highlights?"
-          : "Estupendo. ¿Has visto las características?",
-        formattedFeatures,
-      ]);
-
-      try {
-        await sendTextMessage({ to: state.phone, body: msg, chatId: state.chatId });
-      } catch (error) {
-        console.error("Failed to send features after confirm", error);
-      }
-
-      state.history.push({ role: "assistant", text: msg, timestamp: Date.now() });
-      state.flowStep = "qualification";
-
-      await upsertConversation(state.chatId, {
-        history: state.history,
-        flowStep: "qualification",
-      });
-      return;
-    }
-
-    if (decision === "deny") {
-      const msg = "Perfecto, gracias. Lo dejamos aquí.";
-      try {
-        await sendTextMessage({ to: state.phone, body: msg, chatId: state.chatId });
-      } catch (error) {
-        console.error("Failed to send close after NO", error);
-      }
-
-      state.history.push({ role: "assistant", text: msg, timestamp: Date.now() });
-      state.flowStep = "closed";
-      state.isFinished = true;
-
-      await upsertConversation(state.chatId, {
-        history: state.history,
-        flowStep: "closed",
-        isFinished: true,
-      });
-
-      try {
-        await updateLeadStatus({ chatId: state.chatId, name: state.name, qualificationStatus: "rejected" });
-      } catch (error) {
-        console.error("Failed to mark lead rejected after NO", error);
-      }
-
-      return;
-    }
-
-    // Unrecognized response: re-ask succinctly.
-    const reprompt = "¿Es correcto? Responde: Si / No";
-    try {
-      await sendTextMessage({ to: state.phone, body: reprompt, chatId: state.chatId });
-    } catch (error) {
-      console.error("Failed to reprompt confirm", error);
-    }
-    state.history.push({ role: "assistant", text: reprompt, timestamp: Date.now() });
-    await upsertConversation(state.chatId, { history: state.history });
-    return;
-  }
 
   // Non-lead / unknown numbers: never use OpenAI; botDisabled is only for manual agent toggle in Proplead.
   if (state.type === "non-lead") {
@@ -1528,15 +2187,23 @@ export const webhook = onRequest(
       Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
         try {
           // Tiered organization resolution:
-          // 1. Explicit query parameter (highest priority)
-          // 2. Recency-based lookup (searching all organizations)
+          // 1. Explicit query parameter/body orgId (highest priority)
+          // 2. Recency-based lookup by chatId across all organizations
           const orgQueryId = req.query.orgId as string | undefined;
-          let orgId = orgQueryId || await findOrgIdByChatId(chatId);
+          const orgBodyId = typeof req.body?.orgId === "string" ? req.body.orgId : undefined;
+          let orgId = orgQueryId || orgBodyId;
+          if (!orgId) {
+            orgId = await findOrgIdByChatId(chatId) || undefined;
+          }
           
           if (orgQueryId) {
             console.log(`Using explicit orgId from query: ${orgQueryId} for chatId ${chatId}`);
+          } else if (orgBodyId) {
+            console.log(`Using explicit orgId from body: ${orgBodyId} for chatId ${chatId}`);
           } else if (orgId) {
-            console.log(`Resolved orgId via recency for chatId ${chatId}: ${orgId}`);
+            console.log(`Resolved explicit orgId for chatId ${chatId}: ${orgId}`);
+          } else if (orgId) {
+            console.log(`Resolved orgId via chat lookup for chatId ${chatId}: ${orgId}`);
           } else {
             console.warn(`Could not resolve organization for chatId ${chatId}`);
           }
@@ -1556,6 +2223,10 @@ export const webhook = onRequest(
             if (await isChatIgnored(chatId)) {
                 console.log(`Chat ${chatId} is ignored in org ${orgId}, skipping.`);
                 return;
+            }
+            if (messages.some((m) => isOptOutMessage(m.text))) {
+              await applyOptOut({ orgId, chatId, phone: messages[0].phone });
+              return;
             }
 
             // Ensure we have a valid conversation state
@@ -1621,197 +2292,6 @@ export const webhook = onRequest(
  * Twilio sends form-urlencoded data we can handle in the same logic
  */
 export const twilioWebhook = webhook;
-
-/**
- * Dedicated webhook for WhatsApp Cloud API (Meta).
- *
- * URL shape (configured in Meta Business Manager per organization):
- *   https://{region}-{project}.cloudfunctions.net/cloudApiWebhook?orgId={orgId}
- *
- * The `orgId` query parameter is the primary routing mechanism — each WABA is associated 1:1 to an org,
- * so the URL configured in Meta encodes the tenant. We do NOT look up orgs by phone_number_id.
- *
- * GET (verification handshake):
- *   Meta sends ?hub.mode=subscribe&hub.verify_token=X&hub.challenge=Y. We compare X against the verifyToken
- *   stored in the org's cloudApiConfig, and if it matches, reply with the value of Y as text/plain.
- *
- * POST (inbound messages / statuses):
- *   Body is the Meta webhook JSON. We parse `entry[].changes[].value.messages[]` (text only for now)
- *   and buffer them for processing via the shared pipeline.
- */
-export const cloudApiWebhook = onRequest(
-  { cors: true, region: REGION, secrets: [META_APP_SECRET] },
-  async (req, res) => {
-    try {
-      const orgId = typeof req.query.orgId === "string" ? req.query.orgId : "";
-      if (!orgId) {
-        console.warn("cloudApiWebhook received request without orgId query param");
-        res.status(400).send("Missing orgId query parameter");
-        return;
-      }
-
-      // ---- GET: webhook verification handshake ----
-      if (req.method === "GET") {
-        const mode = typeof req.query["hub.mode"] === "string" ? req.query["hub.mode"] : "";
-        const verifyToken =
-          typeof req.query["hub.verify_token"] === "string" ? req.query["hub.verify_token"] : "";
-        const challenge =
-          typeof req.query["hub.challenge"] === "string" ? req.query["hub.challenge"] : "";
-
-        if (mode !== "subscribe") {
-          res.status(400).send("Invalid hub.mode");
-          return;
-        }
-
-        try {
-          const cfg = await getCloudApiConfigForOrg(orgId);
-          if (!cfg.verifyToken || cfg.verifyToken !== verifyToken) {
-            console.warn(`cloudApiWebhook verify token mismatch for org ${orgId}`);
-            res.status(403).send("Forbidden");
-            return;
-          }
-        } catch (error) {
-          console.error(`cloudApiWebhook verification: failed to load config for org ${orgId}`, error);
-          res.status(404).send("Org not configured");
-          return;
-        }
-
-        // Meta expects the challenge value echoed back as plain text.
-        res.set("Content-Type", "text/plain");
-        res.status(200).send(challenge);
-        return;
-      }
-
-      if (req.method !== "POST") {
-        res.status(405).json({ error: "Method not allowed" });
-        return;
-      }
-
-      // ---- Verify X-Hub-Signature-256 against META_APP_SECRET ----
-      // Meta signs the raw request body with the app secret (HMAC-SHA256). Reject anything else.
-      const signatureHeader = req.header("x-hub-signature-256") || "";
-      const rawBody: Buffer | undefined = (req as unknown as { rawBody?: Buffer }).rawBody;
-      if (!rawBody || !signatureHeader.startsWith("sha256=")) {
-        console.warn(`cloudApiWebhook missing rawBody or signature for org ${orgId}`);
-        res.status(401).send("Unauthorized");
-        return;
-      }
-      const expected =
-        "sha256=" +
-        crypto.createHmac("sha256", META_APP_SECRET.value()).update(rawBody).digest("hex");
-      const sigBuf = Buffer.from(signatureHeader);
-      const expBuf = Buffer.from(expected);
-      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-        console.warn(`cloudApiWebhook signature mismatch for org ${orgId}`);
-        res.status(401).send("Unauthorized");
-        return;
-      }
-
-      // ---- POST: parse messages and buffer them ----
-      console.log("cloudApiWebhook POST received for org", orgId, JSON.stringify(req.body, null, 2));
-
-      const inboundMessages = parseCloudApiWebhook(
-        req.body,
-        normalizeToCanonicalChatId,
-        ensureTimestampMillis
-      );
-
-      if (inboundMessages.length === 0) {
-        // Meta also posts status updates (delivered/read/etc) — just ack.
-        res.status(200).json({ received: true, buffered: false });
-        return;
-      }
-
-      // Group messages by chatId so multi-message bursts from the same user share a buffer task
-      const messagesByChatId = new Map<string, InboundMessage[]>();
-      for (const msg of inboundMessages) {
-        const existing = messagesByChatId.get(msg.chatId) || [];
-        existing.push({ chatId: msg.chatId, phone: msg.phone, text: msg.text, timestamp: msg.timestamp });
-        messagesByChatId.set(msg.chatId, existing);
-      }
-
-      await requestContext.run({ orgId }, async () => {
-        await Promise.all(
-          Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
-            try {
-              if (await isChatIgnored(chatId)) {
-                console.log(`Chat ${chatId} is ignored in org ${orgId}, skipping.`);
-                return;
-              }
-
-              // A6b — STOP/BAJA opt-out: honor consumer-initiated opt-out before buffering.
-              if (messages.some((m) => isOptOutMessage(m.text))) {
-                await applyOptOut({ orgId, chatId, phone: messages[0].phone });
-                console.log(`Chat ${chatId} opted out in org ${orgId}.`);
-                return;
-              }
-
-              const state = await ensureConversationState(chatId, messages[0].phone);
-              if (!state) {
-                console.warn("Could not reconstruct conversation state", chatId, "in org", orgId);
-                await sendAlert(
-                  "Estado no encontrado",
-                  `No se pudo reconstruir el estado para el chat: ${chatId}.`,
-                  { chatId, phone: messages[0].phone, orgId }
-                );
-                return;
-              }
-
-              if (state.isFinished) {
-                console.log("Conversation already finished, skipping buffer", chatId);
-                return;
-              }
-
-              const canonicalChatId = state.chatId;
-
-              for (const msg of messages) {
-                await addPendingMessage(canonicalChatId, {
-                  text: msg.text,
-                  timestamp: msg.timestamp,
-                });
-              }
-
-              const processUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`;
-              const { taskName, scheduledTime } = await scheduleBufferTask(
-                canonicalChatId,
-                processUrl,
-                state.pendingTaskName,
-                orgId
-              );
-
-              await updateBufferTask(canonicalChatId, taskName, scheduledTime);
-
-              console.log(
-                `[cloud_api] Buffered ${messages.length} message(s) for ${canonicalChatId} (via ${chatId}), ` +
-                  `will process at ${new Date(scheduledTime).toISOString()} (Org: ${orgId})`
-              );
-            } catch (error) {
-              console.error("Error buffering Cloud API messages for", chatId, error);
-              await sendAlert("Webhook Error", `Error al bufferear mensajes Cloud API para ${chatId}`, {
-                error: error instanceof Error ? error.message : String(error),
-                chatId,
-                orgId,
-              });
-            }
-          })
-        );
-      });
-
-      res.status(200).json({
-        received: true,
-        buffered: true,
-        count: inboundMessages.length,
-        bufferDelaySeconds: BUFFER_DELAY_SECONDS,
-      });
-    } catch (error) {
-      console.error("cloudApiWebhook fatal error:", error);
-      await sendAlert("Fatal Webhook Error", "Error crítico en el webhook de Cloud API", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      res.status(500).json({ error: "Internal server error" });
-    }
-  }
-);
 
 /**
  * App-wide WhatsApp Cloud API webhook.
@@ -1882,7 +2362,10 @@ export const whatsappWebhook = onRequest(
           const idx = await db.doc(`wabaIndex/${wabaId}`).get();
           const orgId = idx.exists ? (idx.data()?.orgId as string | undefined) : undefined;
           if (!orgId) {
-            console.warn(`whatsappWebhook: no org mapping for wabaId=${wabaId}`);
+            console.error(
+              `whatsappWebhook: no org mapping for wabaId=${wabaId}. ` +
+                "Ensure Embedded Signup/manual Cloud API config has persisted wabaIndex."
+            );
             return;
           }
 
@@ -1999,17 +2482,20 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
     );
 
     setImmediate(async () => {
-      try {
-        if (callSid) {
-          await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
-        }
-      } catch (error) {
-        console.error("voiceWebhook failed upserting call intent", error);
+      const intakeOrgId = PROPLEAD_INTAKE_ORG_ID.value();
+      if (!intakeOrgId) {
+        console.error("voiceWebhook: PROPLEAD_INTAKE_ORG_ID is not configured");
+        return;
       }
       try {
-        await createPendingCallLead({ phone: fromPhone, chatId });
+        await requestContext.run({ orgId: intakeOrgId }, async () => {
+          if (callSid) {
+            await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
+          }
+          await createPendingCallLead({ phone: fromPhone, chatId });
+        });
       } catch (error) {
-        console.error("voiceWebhook failed creating pending call lead", error);
+        console.error("voiceWebhook failed initializing pending intake lead", error);
       }
     });
   } catch (error) {
@@ -2058,19 +2544,15 @@ export const voiceGatherCallback = onRequest(
 
       setImmediate(async () => {
         try {
-          // Resolve org from the pending lead created by voiceWebhook.
-          const orgId = await findOrgIdByPhone(phone);
+          // Call intake always starts in the global Proplead intake org.
+          const orgId = PROPLEAD_INTAKE_ORG_ID.value();
           if (!orgId) {
-            console.warn("voiceGatherCallback: no org found for phone", phone);
+            console.warn("voiceGatherCallback: PROPLEAD_INTAKE_ORG_ID is not configured");
             return;
           }
           await requestContext.run({ orgId }, async () => {
             await recordVoiceConsent({ phone, chatId, callSid });
-            const templateSid = TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT.value();
-            if (!templateSid) {
-              console.error("TWILIO_TEMPLATE_SID_VOICE_OPTIN_CONSENT not set; skipping send");
-              return;
-            }
+            const templateSid = await getVoiceOptInTemplateSid(orgId);
             await sendInitialTemplateMessage({
               to: phone,
               chatId,
@@ -2092,27 +2574,6 @@ export const voiceGatherCallback = onRequest(
 );
 
 /**
- * Find the orgId that owns a pending call lead for this phone (set by voiceWebhook
- * via createPendingCallLead). Scans the pending-call collection across orgs.
- */
-async function findOrgIdByPhone(phone: string): Promise<string | null> {
-  const DATABASE_ID = "realestate-whatsapp-bot";
-  const db = getFirestore(admin.app(), DATABASE_ID);
-  const phoneDigits = phone.replace(/[^0-9]/g, "");
-  const snap = await db
-    .collectionGroup("leads")
-    .where("phone", "==", phoneDigits)
-    .limit(5)
-    .get();
-  for (const doc of snap.docs) {
-    const path = doc.ref.path; // organizations/{orgId}/leads/{leadId}
-    const parts = path.split("/");
-    if (parts[0] === "organizations" && parts[1]) return parts[1];
-  }
-  return null;
-}
-
-/**
  * Write consent proof on the lead doc after DTMF 1. Idempotent.
  */
 async function recordVoiceConsent(params: {
@@ -2132,6 +2593,9 @@ async function recordVoiceConsent(params: {
     source: "phone_call" as const,
     proofUrl: params.callSid || null,
     language: "es" as const,
+    proofType: "twilio_call_sid" as const,
+    consentScriptVersion: VOICE_CONSENT_SCRIPT_VERSION.value() || "v1",
+    dtmfDigit: "1" as const,
   };
   if (snap.empty) {
     // Create a minimal lead row so the consent gate finds it.
@@ -2169,24 +2633,36 @@ export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION, se
   const resolvedChatId = chatId || normalizeToCanonicalChatId(phone);
 
   try {
-    const orgId = await findOrgIdByChatId(resolvedChatId);
+    const orgId = PROPLEAD_INTAKE_ORG_ID.value();
     if (!orgId) {
-      console.error("sendCallHandoffMessage: could not resolve orgId for", phone);
-      res.status(500).json({ ok: false, error: "org not found" });
+      console.error("sendCallHandoffMessage: PROPLEAD_INTAKE_ORG_ID is not configured");
+      res.status(500).json({ ok: false, error: "intake org not configured" });
       return;
     }
 
     await requestContext.run({ orgId }, async () => {
       const provider = await getActiveProviderFn();
-      if (provider === "twilio" || provider === "cloud_api") {
-        const templateSid = TWILIO_TEMPLATE_SID_CALL_INITIAL_ES.value();
-        if (!templateSid) throw new Error("TWILIO_TEMPLATE_SID_CALL_INITIAL_ES not configured");
+      if (provider === "twilio") {
+        const templateSid = await getVoiceOptInTemplateSid(orgId);
         await sendInitialTemplateMessage({
           to: phone,
           chatId: resolvedChatId,
           language: "es",
           variables: { "1": agentName },
           templateSid,
+        });
+      } else if (provider === "cloud_api") {
+        const creds = await getCloudApiCredentials();
+        const templateName = requireTemplate(
+          creds.templates?.callHandoffOrgEs,
+          "Cloud API call handoff template missing for intake org (callHandoffOrgEs)"
+        );
+        await sendInitialTemplateMessage({
+          to: phone,
+          chatId: resolvedChatId,
+          language: "es",
+          variables: { "1": agentName, "2": agentName, "3": "" },
+          templateName,
         });
       } else {
         await sendTextMessage({
@@ -2233,15 +2709,15 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
       return;
     }
 
-    const resolvedOrgId = orgId || await findOrgIdByChatId(chatId);
+    const resolvedOrgId = orgId;
     if (!resolvedOrgId) {
-      console.error(`Could not resolve orgId in processBuffer for chatId ${chatId}`);
+      console.error(`Missing orgId in processBuffer for chatId ${chatId}`);
       await sendAlert(
         "ProcessBuffer missing org",
-        "No se pudo resolver orgId al procesar el buffer. Se omite el procesamiento para evitar datos cruzados.",
+        "Falta orgId al procesar el buffer. Se omite el procesamiento para evitar datos cruzados.",
         { chatId, incomingOrgId: orgId || null }
       );
-      res.status(200).json({ processed: false, reason: "org_not_resolved", chatId });
+      res.status(400).json({ processed: false, reason: "org_missing", chatId });
       return;
     }
 
@@ -2303,11 +2779,14 @@ export async function runNewLeadMessagingPipeline(params: {
   listingCode: string;
   listingData: ListingRow;
   leadTags: string[];
+  leadName?: string;
+  skipEligibilityGate?: boolean;
 }): Promise<
   | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
   | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
 > {
   const { phone, listingCode, listingData, leadTags } = params;
+  const providedLeadName = (params.leadName || "").trim();
 
   const initialLanguage = resolveInitialLanguage(phone);
   const featuresText = await getFeaturesForLanguage(listingData.features, initialLanguage);
@@ -2325,6 +2804,7 @@ export async function runNewLeadMessagingPipeline(params: {
       listingCode,
       chatId,
       operationType: listingData.operationType,
+      name: providedLeadName || undefined,
       tags: leadTags,
     });
   } catch (error) {
@@ -2340,48 +2820,127 @@ export async function runNewLeadMessagingPipeline(params: {
       const formattedFeatures = formatFeaturesList(featuresText, initialLanguage);
       const sanitizedFeatures = formattedFeatures.replace(/\n/g, " | ");
 
-      // Resolve cloud_api template name by language (if applicable).
+      // Resolve provider template by language (per-org only, no global fallback).
+      let twilioTemplateSid: string | undefined;
       let cloudApiTemplateName: string | undefined;
-      if (provider === "cloud_api") {
+      let usingLegacyVoiceOutboundTemplate = false;
+      let usingLegacyIdealistaConfirmOldTemplate = false;
+      if (provider === "twilio") {
+        const { twilioTemplates } = await getOrgTemplateSnapshot(getActiveOrgId());
+        const legacyIdealistaConfirmEsOld =
+          (twilioTemplates as unknown as { idealista_confirm_es_old?: string })
+            .idealista_confirm_es_old;
+        const legacyIdealistaConfirmEnOld =
+          (twilioTemplates as unknown as { idealista_confirm_en_old?: string })
+            .idealista_confirm_en_old;
+        const legacyVoiceOutboundEs =
+          (twilioTemplates as unknown as { voice_lead_initial_outbound_contact_es?: string })
+            .voice_lead_initial_outbound_contact_es;
+        const legacyVoiceOutboundEn =
+          (twilioTemplates as unknown as { voice_lead_initial_outbound_contact_en?: string })
+            .voice_lead_initial_outbound_contact_en;
+        if (initialLanguage === "en") {
+          // For legacy newLead behavior, prefer explicit *_old templates when present.
+          // Those templates are 4-variable confirms: leadName, assistantName, agentName, listingLink.
+          if (params.skipEligibilityGate && legacyIdealistaConfirmEnOld) {
+            usingLegacyIdealistaConfirmOldTemplate = true;
+          }
+          usingLegacyVoiceOutboundTemplate = !usingLegacyIdealistaConfirmOldTemplate &&
+            !twilioTemplates.idealistaInitialEn &&
+            Boolean(legacyVoiceOutboundEn);
+          twilioTemplateSid = requireTemplate(
+            (usingLegacyIdealistaConfirmOldTemplate ? legacyIdealistaConfirmEnOld : undefined) ||
+            twilioTemplates.idealistaInitialEn ||
+            legacyVoiceOutboundEn,
+            "Missing Twilio template SID (idealistaInitialEn) in org botConfig.twilioTemplates"
+          );
+        } else {
+          if (params.skipEligibilityGate && legacyIdealistaConfirmEsOld) {
+            usingLegacyIdealistaConfirmOldTemplate = true;
+          }
+          usingLegacyVoiceOutboundTemplate = !usingLegacyIdealistaConfirmOldTemplate &&
+            !twilioTemplates.idealistaInitialEs &&
+            Boolean(legacyVoiceOutboundEs);
+          twilioTemplateSid = requireTemplate(
+            (usingLegacyIdealistaConfirmOldTemplate ? legacyIdealistaConfirmEsOld : undefined) ||
+            twilioTemplates.idealistaInitialEs ||
+            legacyVoiceOutboundEs,
+            "Missing Twilio template SID (idealistaInitialEs) in org botConfig.twilioTemplates"
+          );
+        }
+      } else if (provider === "cloud_api") {
         const creds = await getCloudApiCredentials();
         cloudApiTemplateName =
           initialLanguage === "en"
-            ? creds.templates?.idealistaInitialEn
-            : creds.templates?.idealistaInitialEs;
-        if (!cloudApiTemplateName) {
-          throw new Error(
-            `Missing Cloud API template name (idealistaInitial${initialLanguage === "en" ? "En" : "Es"}) in botConfig.cloudApiConfig.templates`
-          );
-        }
+            ? requireTemplate(
+              creds.templates?.idealistaInitialEn,
+              "Missing Cloud API template name (idealistaInitialEn) in org cloudApiConfig.templates"
+            )
+            : requireTemplate(
+              creds.templates?.idealistaInitialEs,
+              "Missing Cloud API template name (idealistaInitialEs) in org cloudApiConfig.templates"
+            );
       }
+
+      const resolvedLeadName = providedLeadName || "Hola";
+      const resolvedAssistantName = await resolveAssistantNameForOrg();
+      const twilioVariables: Record<string, string> = usingLegacyVoiceOutboundTemplate
+        ? {
+            // Legacy voice outbound templates usually expect 5 ordered variables.
+            "1": resolvedLeadName,
+            "2": resolvedAssistantName,
+            "3": agentName,
+            "4": listingData.link || "",
+            "5": sanitizedFeatures,
+          }
+        : usingLegacyIdealistaConfirmOldTemplate
+          ? {
+              // Custom legacy idealista_confirm_*_old templates expect 4 ordered variables.
+              "1": resolvedLeadName,
+              "2": resolvedAssistantName,
+              "3": agentName,
+              "4": listingData.link || "",
+            }
+        : {
+            // Standard idealista_initial template expects 3 ordered variables.
+            "1": agentName,
+            "2": listingData.link,
+            "3": sanitizedFeatures,
+          };
 
       const result = await sendInitialTemplateMessage({
         to: phone,
         chatId,
         language: initialLanguage,
-        variables: {
+        variables: provider === "twilio" ? twilioVariables : {
           "1": agentName,
           "2": listingData.link,
           "3": sanitizedFeatures,
         },
         mediaUrl: "https://real-estate-idealista-bot.web.app/idealista.jpg",
+        templateSid: twilioTemplateSid,
         templateName: cloudApiTemplateName,
+        skipEligibilityGate: params.skipEligibilityGate,
       });
 
       if (result.chatId && result.chatId !== chatId) {
         chatId = result.chatId;
       }
 
-      const templateText =
-        initialLanguage === "en"
-          ? `Hi, I'm Marcos, the virtual assistant for ${agentName}, it's a pleasure to help you 🙂\n\nYou've shown interest in this property: ${listingData.link}\n\nJust to confirm, have you reviewed the property highlights?\n\n${formattedFeatures}\n\nI look forward to hearing from you.`
-          : `Hola, soy Marcos, el asistente virtual de ${agentName}, un placer atenderte 🙂\n\nTe has interesado en esta vivienda: ${listingData.link}\n\nPor confirmar, ¿has visto las características?\n\n${formattedFeatures}\n\nEspero tu respuesta.`;
-
-      initialHistory.push({
-        role: "assistant",
-        text: templateText,
-        timestamp: Date.now(),
-      });
+      const deliveredText = typeof result.deliveredText === "string" ? result.deliveredText.trim() : "";
+      if (deliveredText) {
+        initialHistory.push({
+          role: "assistant",
+          text: deliveredText,
+          timestamp: Date.now(),
+        });
+      } else {
+        console.warn("Template sent but provider did not return delivered text; skipping synthetic history mirror", {
+          provider,
+          chatId,
+          messageId: result.messageId,
+        });
+      }
     } else {
       for (let i = 0; i < initialMessages.length; i += 1) {
         const body = initialMessages[i];
@@ -2430,6 +2989,7 @@ export async function runNewLeadMessagingPipeline(params: {
       listingCode,
       chatId,
       operationType: listingData.operationType,
+      name: providedLeadName || undefined,
       tags: leadTags,
     });
   } catch (error) {
@@ -2467,11 +3027,12 @@ async function runIdealistaConfirmPipeline(params: {
   leadTags: string[];
   leadName?: string;
   language?: "es" | "en";
+  orgId?: string;
 }): Promise<
   | { ok: true; chatId: string; initialHistory: HistoryItem[]; featuresText: string }
   | { ok: false; kind: "send_failed"; chatId: string; details: string; initialHistory: HistoryItem[]; featuresText: string }
 > {
-  const { phone, listingCode, listingData, leadTags, leadName, language } = params;
+  const { phone, listingCode, listingData, leadTags, leadName, language, orgId } = params;
   const initialLanguage = language || resolveInitialLanguage(phone);
   const featuresText = await getFeaturesForLanguage(listingData.features, initialLanguage);
 
@@ -2514,7 +3075,7 @@ async function runIdealistaConfirmPipeline(params: {
     isFinished: false,
     tags: leadTags,
     recordings: [],
-    flowStep: "idealista_confirm",
+    flowStep: "call_listing_collect",
     botDisabled: false,
     name: leadName,
   };
@@ -2532,6 +3093,7 @@ async function runIdealistaConfirmPipeline(params: {
       phoneE164,
       name: leadName || "",
       listingCode,
+      orgId,
       baseDomain: initialLanguage === "en" ? undefined : undefined, // reserved for future i18n
     });
     return { ok: true, chatId, initialHistory: [], featuresText };
@@ -2547,6 +3109,746 @@ async function runIdealistaConfirmPipeline(params: {
 // the Business Messaging Policy's opt-in requirement. The path above now sends an
 // SMS opt-in link instead; the lead's first inbound WhatsApp message opens the 24h
 // window and implicit consent, after which the conversational flow proceeds normally.
+
+type OutboundCallOutcome =
+  | "consent_captured"
+  | "no_answer"
+  | "busy"
+  | "voicemail"
+  | "wrong_key_or_timeout"
+  | "hangup_before_consent"
+  | "failed";
+
+async function getLeadDocByChatId(chatId: string): Promise<FirebaseFirestore.QueryDocumentSnapshot | null> {
+  const orgId = getActiveOrgId();
+  if (!orgId) return null;
+  const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+  const snap = await db.collection(`organizations/${orgId}/leads`).where("chatId", "==", chatId).limit(1).get();
+  return snap.empty ? null : snap.docs[0];
+}
+
+function resolveConfiguredAssistantName(config: BotConfig): string {
+  const configuredName = config.cloudApiConfig?.assistantAvatarName;
+  if (typeof configuredName === "string" && configuredName.trim()) {
+    return configuredName.trim();
+  }
+  return "Marcos";
+}
+
+async function resolveAssistantNameForOrg(): Promise<string> {
+  const config = await getBotConfig();
+  return resolveConfiguredAssistantName(config);
+}
+
+function getOutboundAudioBucketName(): string {
+  const configured = (OUTBOUND_AUDIO_BUCKET.value() || "").trim();
+  return configured || OUTBOUND_AUDIO_BUCKET_DEFAULT;
+}
+
+async function assertOutboundAudioBucketWritable(bucketName: string): Promise<void> {
+  const cache = outboundAudioPreflightCache;
+  const now = Date.now();
+  if (
+    cache &&
+    cache.bucket === bucketName &&
+    now - cache.checkedAt < OUTBOUND_AUDIO_PREFLIGHT_TTL_MS &&
+    cache.ok
+  ) {
+    return;
+  }
+
+  const bucket = admin.storage().bucket(bucketName);
+  const probePath = `voice-outbound/_preflight/${now}.txt`;
+  const probeFile = bucket.file(probePath);
+  try {
+    await probeFile.save("ok", { resumable: false, contentType: "text/plain" });
+    await probeFile.delete().catch(() => undefined);
+    outboundAudioPreflightCache = { ok: true, checkedAt: now, bucket: bucketName };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    outboundAudioPreflightCache = { ok: false, checkedAt: now, bucket: bucketName, reason };
+    throw new Error(
+      `[outbound-audio-preflight] bucket ${bucketName} is not writable by runtime service account: ${reason}`
+    );
+  }
+}
+
+async function ensureOutboundAudioForLead(params: {
+  chatId: string;
+  leadName?: string;
+  listingData: ListingRow;
+}): Promise<{ audioUrl: string; sourceText: string; voiceId: string }> {
+  const state = await getConversationByChatId(params.chatId);
+  const existingAudio = state?.outboundCallAudio;
+  if (existingAudio?.status === "ready" && existingAudio.audioUrl && existingAudio.voiceId) {
+    return {
+      audioUrl: existingAudio.audioUrl,
+      sourceText: existingAudio.sourceText || "",
+      voiceId: existingAudio.voiceId,
+    };
+  }
+
+  const elevenLabsKey = ELEVENLABS_KEY.value();
+  if (!elevenLabsKey) {
+    throw new Error("11LABS_KEY secret is empty or inaccessible. Verify Secret Manager permissions.");
+  }
+  const assistantName = await resolveAssistantNameForOrg();
+  const sourceText = buildOutboundConsentSpeechEs({
+    leadName: params.leadName,
+    assistantName,
+    operationType: params.listingData.operationType,
+    price: params.listingData.price,
+    street: params.listingData.street,
+    city: params.listingData.city,
+    address: params.listingData.address,
+  });
+  // Locked by product decision: always use the approved ElevenLabs voice.
+  const voiceId = OUTBOUND_ELEVENLABS_VOICE_ID_DEFAULT;
+  const orgId = getActiveOrgId();
+  if (!orgId) throw new Error("No active org while generating outbound audio");
+  const bucketName = getOutboundAudioBucketName();
+  await assertOutboundAudioBucketWritable(bucketName);
+  const bucket = admin.storage().bucket(bucketName);
+  const filePath = `voice-outbound/${orgId}/${params.chatId}.mp3`;
+  let audioUrl = "";
+  let retryAttempts = 0;
+  let failureReason = "";
+  for (let attempt = 1; attempt <= OUTBOUND_AUDIO_MAX_GENERATION_ATTEMPTS; attempt += 1) {
+    retryAttempts = attempt;
+    try {
+      console.log("[outbound-audio] generation attempt", {
+        phase: "tts_generate",
+        retry_attempt: attempt,
+        orgId,
+        chatId: params.chatId,
+        bucket: bucketName,
+      });
+      const file = bucket.file(filePath);
+      const audioMp3 = await generateSpeechMp3({
+        apiKey: elevenLabsKey,
+        voiceId,
+        text: sourceText,
+      });
+      console.log("[outbound-audio] upload attempt", {
+        phase: "bucket_upload",
+        retry_attempt: attempt,
+        orgId,
+        chatId: params.chatId,
+        bucket: bucketName,
+      });
+      await file.save(audioMp3, {
+        resumable: false,
+        contentType: "audio/mpeg",
+        metadata: {
+          cacheControl: "public,max-age=3600",
+        },
+      });
+      const [signedUrl] = await file.getSignedUrl({
+        version: "v4",
+        action: "read",
+        expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+      audioUrl = signedUrl;
+      break;
+    } catch (error) {
+      failureReason = error instanceof Error ? error.message : String(error);
+      console.warn("[outbound-audio] attempt failed", {
+        phase: "tts_or_upload_failed",
+        retry_attempt: attempt,
+        orgId,
+        chatId: params.chatId,
+        failureReason,
+      });
+      if (attempt < OUTBOUND_AUDIO_MAX_GENERATION_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+      }
+    }
+  }
+
+  await upsertConversation(params.chatId, {
+    outboundCallAudio: {
+      provider: "elevenlabs",
+      voiceId,
+      status: audioUrl ? "ready" : "failed_after_retries",
+      audioUrl: audioUrl || undefined,
+      generatedAt: Date.now(),
+      sourceText,
+      failureReason: audioUrl ? undefined : failureReason || "unknown",
+      retryAttempts,
+    },
+  } as Partial<ConversationState>);
+
+  return { audioUrl, sourceText, voiceId };
+}
+
+function computeRetrySchedule(params: {
+  outcome: OutboundCallOutcome;
+  state?: ConversationState;
+}): { shouldRetry: boolean; nextAttemptAt?: number; finishedReason?: string } {
+  const consent = params.state?.outboundCallConsent || {};
+  const now = new Date();
+  const firstAttemptAt = consent.firstAttemptAt ? new Date(consent.firstAttemptAt) : now;
+
+  if (params.outcome === "consent_captured") {
+    return { shouldRetry: false, finishedReason: "consent_captured" };
+  }
+  if (params.outcome === "failed") {
+    return { shouldRetry: false, finishedReason: "failed" };
+  }
+
+  if (params.outcome === "no_answer" || params.outcome === "busy" || params.outcome === "voicemail") {
+    const count = Number(consent.noAnswerRetryCount || 0);
+    if (count >= 3) return { shouldRetry: false, finishedReason: "max_no_answer_retries" };
+    const baseDate = new Date();
+    if (count === 0) baseDate.setHours(baseDate.getHours() + 1);
+    if (count === 1) baseDate.setHours(baseDate.getHours() + 4);
+    if (count === 2) {
+      const next = nextBusinessDaySameTimeFromReference(firstAttemptAt);
+      return { shouldRetry: true, nextAttemptAt: next.getTime() };
+    }
+    return { shouldRetry: true, nextAttemptAt: alignToMadridBusinessSlot(baseDate).getTime() };
+  }
+
+  if (params.outcome === "wrong_key_or_timeout") {
+    const count = Number(consent.wrongKeyRetryCount || 0);
+    if (count >= 2) return { shouldRetry: false, finishedReason: "max_wrong_key_retries" };
+    const baseDate = new Date();
+    if (count === 0) baseDate.setMinutes(baseDate.getMinutes() + 5);
+    if (count === 1) baseDate.setHours(baseDate.getHours() + 1);
+    return { shouldRetry: true, nextAttemptAt: alignToMadridBusinessSlot(baseDate).getTime() };
+  }
+
+  if (params.outcome === "hangup_before_consent") {
+    const count = Number(consent.hangupRetryCount || 0);
+    if (count >= 1) return { shouldRetry: false, finishedReason: "max_hangup_retries" };
+    const next = nextBusinessDaySameTimeFromReference(firstAttemptAt);
+    return { shouldRetry: true, nextAttemptAt: next.getTime() };
+  }
+
+  return { shouldRetry: false, finishedReason: "unsupported_outcome" };
+}
+
+async function scheduleOutboundRetry(params: {
+  orgId: string;
+  chatId: string;
+  phone: string;
+  listingCode: string;
+  leadName?: string;
+  nextAttemptAt: number;
+}): Promise<void> {
+  const delaySeconds = Math.max(0, Math.floor((params.nextAttemptAt - Date.now()) / 1000));
+  const retryUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/outboundCallRetryTask`;
+  await scheduleImmediateHttpTask({
+    url: retryUrl,
+    payload: {
+      orgId: params.orgId,
+      chatId: params.chatId,
+      phone: params.phone,
+      listingCode: params.listingCode,
+      leadName: params.leadName || "",
+    },
+    taskPrefix: "outbound-retry",
+    taskId: `${params.orgId}-${params.chatId}-${params.nextAttemptAt}`,
+    delaySeconds,
+  });
+}
+
+async function placeIdealistaOutboundConsentCall(params: {
+  orgId: string;
+  phone: string;
+  listingCode: string;
+  leadName?: string;
+}): Promise<{ chatId: string; callSid: string }> {
+  const normalizedPhone = normalizeE164Phone(params.phone);
+  if (!normalizedPhone) throw new Error("telefono is invalid");
+  const chatId = normalizeToCanonicalChatId(normalizedPhone);
+  const listingData = await fetchListingByCode(params.listingCode);
+  if (!listingData) throw new Error("Anuncio no encontrado");
+
+  await updateLeadChatInfo({
+    phone: normalizedPhone,
+    listingCode: params.listingCode,
+    chatId,
+    operationType: listingData.operationType,
+    name: params.leadName,
+    qualificationStatus: "not_qualified",
+    tags: ["lead", "idealista-call-outbound"],
+  });
+
+  const leadDoc = await getLeadDocByChatId(chatId);
+  if (leadDoc) {
+    await leadDoc.ref.set(
+      {
+        leadSource: "idealista_call_outbound",
+        listingResolutionStatus: "resolved",
+      },
+      { merge: true }
+    );
+  }
+
+  const existing = await getConversationByChatId(chatId);
+  const firstAttemptAt = existing?.outboundCallConsent?.firstAttemptAt || Date.now();
+  const firstAttemptDate = new Date(firstAttemptAt);
+  const firstAttemptParts = getMadridTimeParts(firstAttemptDate);
+  const audio = await ensureOutboundAudioForLead({
+    chatId,
+    leadName: params.leadName,
+    listingData,
+  });
+
+  await upsertConversation(chatId, {
+    phone: normalizedPhone,
+    listingCode: params.listingCode,
+    operationType: listingData.operationType,
+    name: params.leadName,
+    isFinished: false,
+    type: "lead",
+    tags: Array.from(new Set([...(existing?.tags || []), "lead", "idealista-call-outbound"])),
+    language: "es",
+    outboundCallConsent: {
+      attemptCount: Number(existing?.outboundCallConsent?.attemptCount || 0) + 1,
+      noAnswerRetryCount: Number(existing?.outboundCallConsent?.noAnswerRetryCount || 0),
+      wrongKeyRetryCount: Number(existing?.outboundCallConsent?.wrongKeyRetryCount || 0),
+      hangupRetryCount: Number(existing?.outboundCallConsent?.hangupRetryCount || 0),
+      consentCaptured: existing?.outboundCallConsent?.consentCaptured || false,
+      firstAttemptAt,
+      firstAttemptAtHourMadrid: firstAttemptParts.hour,
+      firstAttemptAtMinuteMadrid: firstAttemptParts.minute,
+      lastOutcome: "attempt_started",
+    },
+    outboundCallAudio: {
+      provider: "elevenlabs",
+      voiceId: audio.voiceId,
+      status: "ready",
+      audioUrl: audio.audioUrl,
+      generatedAt: Date.now(),
+      sourceText: audio.sourceText,
+    },
+  } as Partial<ConversationState>);
+
+  const callerFrom = OUTBOUND_CALLER_NUMBER.value() || OUTBOUND_CALLER_NUMBER_DEFAULT;
+  if (!callerFrom) {
+    throw new Error("OUTBOUND_CALLER_NUMBER is not configured");
+  }
+  const voiceWebhookUrl =
+    `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/outboundConsentVoiceWebhook` +
+    `?orgId=${encodeURIComponent(params.orgId)}` +
+    `&chatId=${encodeURIComponent(chatId)}` +
+    `&listingCode=${encodeURIComponent(params.listingCode)}`;
+  const statusCallbackUrl =
+    `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/outboundConsentStatusCallback` +
+    `?orgId=${encodeURIComponent(params.orgId)}` +
+    `&chatId=${encodeURIComponent(chatId)}` +
+    `&listingCode=${encodeURIComponent(params.listingCode)}` +
+    `&phone=${encodeURIComponent(normalizedPhone)}` +
+    `&leadName=${encodeURIComponent(params.leadName || "")}`;
+
+  const call = await createVoiceCall({
+    to: normalizedPhone,
+    from: callerFrom,
+    url: voiceWebhookUrl,
+    statusCallback: statusCallbackUrl,
+    statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
+  });
+
+  const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+  await db.doc(`organizations/${params.orgId}/calls/${call.callSid}`).set(
+    {
+      callSid: call.callSid,
+      orgId: params.orgId,
+      chatId,
+      phone: normalizedPhone,
+      listingCode: params.listingCode,
+      leadName: params.leadName || "",
+      outboundConsent: true,
+      consentCaptured: false,
+      gatherHandled: false,
+      retryScheduled: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await upsertConversation(chatId, {
+    outboundCallConsent: {
+      ...(await getConversationByChatId(chatId))?.outboundCallConsent,
+      lastCallSid: call.callSid,
+    },
+  } as Partial<ConversationState>);
+
+  return { chatId, callSid: call.callSid };
+}
+
+export const newLeadCallConsent = onRequest(
+  { cors: true, region: REGION, secrets: [TWILIO_AUTH_TOKEN, MAKE_WEBHOOK_SHARED_SECRET, ELEVENLABS_KEY] },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    try {
+      const providedSecret =
+        (typeof req.headers["x-make-secret"] === "string" ? req.headers["x-make-secret"] : "") ||
+        (typeof req.query.secret === "string" ? req.query.secret : "");
+      const expectedSecret = MAKE_WEBHOOK_SHARED_SECRET.value();
+      if (!expectedSecret || !secureCompare(providedSecret, expectedSecret)) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      if (!ELEVENLABS_KEY.value()) {
+        res.status(500).json({ error: "11LABS_KEY secret is missing or inaccessible" });
+        return;
+      }
+      const bucketName = getOutboundAudioBucketName();
+      await assertOutboundAudioBucketWritable(bucketName);
+
+      const phone = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
+      const listingCode = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
+      const orgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+      const leadName = typeof req.body?.nombre === "string" ? req.body.nombre.trim() : "";
+      if (!phone || !listingCode) {
+        res.status(400).json({ error: "telefono y anuncio son obligatorios" });
+        return;
+      }
+
+      let resolvedOrgId = orgId;
+      if (!resolvedOrgId) {
+        const global = await fetchListingGlobally(listingCode);
+        if (!global) {
+          res.status(404).json({ error: "Anuncio no encontrado" });
+          return;
+        }
+        resolvedOrgId = global.orgId;
+      }
+
+      await requestContext.run({ orgId: resolvedOrgId }, async () => {
+        const result = await placeIdealistaOutboundConsentCall({
+          orgId: resolvedOrgId,
+          phone,
+          listingCode,
+          leadName,
+        });
+        res.status(200).json({ success: true, chatId: result.chatId, callSid: result.callSid });
+      });
+    } catch (error) {
+      console.error("newLeadCallConsent error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+export const outboundCallRetryTask = onRequest(
+  { cors: true, region: REGION, secrets: [TWILIO_AUTH_TOKEN, ELEVENLABS_KEY] },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const orgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+      const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
+      const listingCode = typeof req.body?.listingCode === "string" ? req.body.listingCode.trim() : "";
+      const leadName = typeof req.body?.leadName === "string" ? req.body.leadName.trim() : "";
+      if (!orgId || !phone || !listingCode) {
+        res.status(400).json({ error: "orgId, phone and listingCode are required" });
+        return;
+      }
+      await requestContext.run({ orgId }, async () => {
+        const bucketName = getOutboundAudioBucketName();
+        await assertOutboundAudioBucketWritable(bucketName);
+        const result = await placeIdealistaOutboundConsentCall({
+          orgId,
+          phone,
+          listingCode,
+          leadName,
+        });
+        res.status(200).json({ ok: true, chatId: result.chatId, callSid: result.callSid });
+      });
+    } catch (error) {
+      console.error("outboundCallRetryTask error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+export const outboundConsentVoiceWebhook = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    try {
+      const orgId = typeof req.query.orgId === "string" ? req.query.orgId.trim() : "";
+      const chatId = typeof req.query.chatId === "string" ? req.query.chatId.trim() : "";
+      if (!orgId || !chatId) {
+        res.set("Content-Type", "text/xml");
+        res.status(200).send(buildTwiml("<Say>Error de configuración.</Say><Hangup/>"));
+        return;
+      }
+      await requestContext.run({ orgId }, async () => {
+        const state = await getConversationByChatId(chatId);
+        const audioUrl = state?.outboundCallAudio?.audioUrl;
+        const audioStatus = state?.outboundCallAudio?.status;
+        const gatherUrl =
+          `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/outboundConsentGatherCallback` +
+          `?orgId=${encodeURIComponent(orgId)}` +
+          `&chatId=${encodeURIComponent(chatId)}` +
+          `&listingCode=${encodeURIComponent(typeof req.query.listingCode === "string" ? req.query.listingCode : "")}`;
+        const body = audioUrl
+          ? [
+            `<Play>${twimlEscape(audioUrl)}</Play>`,
+            `<Gather numDigits="1" timeout="12" action="${twimlEscape(gatherUrl)}" method="POST">`,
+            `  <Say language="es-ES">Pulsa 1 para aceptar y continuar por WhatsApp.</Say>`,
+            `  <Pause length="4"/>`,
+            `  <Say language="es-ES">Por favor, pulsa 1 para continuar por WhatsApp.</Say>`,
+            `</Gather>`,
+            `<Hangup/>`,
+          ].join("\n")
+          : audioStatus === "failed_after_retries"
+            ? [
+              `<Say language="es-ES">Hola. Para continuar por WhatsApp y aceptar el contacto, pulsa 1.</Say>`,
+              `<Gather numDigits="1" timeout="12" action="${twimlEscape(gatherUrl)}" method="POST">`,
+              `  <Pause length="4"/>`,
+              `  <Say language="es-ES">Por favor, pulsa 1 para continuar por WhatsApp.</Say>`,
+              `</Gather>`,
+              `<Hangup/>`,
+            ].join("\n")
+          : [
+            `<Say language="es-ES">Estamos preparando tu llamada. Te contactaremos de nuevo en breve.</Say>`,
+            `<Hangup/>`,
+          ].join("\n");
+        console.log("[outbound-audio] webhook render", {
+          phase: "voice_webhook_render",
+          orgId,
+          chatId,
+          hasAudioUrl: Boolean(audioUrl),
+          audioStatus: audioStatus || "none",
+          fallback_used: !audioUrl && audioStatus === "failed_after_retries",
+        });
+        res.set("Content-Type", "text/xml");
+        res.status(200).send(buildTwiml(body));
+      });
+    } catch (error) {
+      console.error("outboundConsentVoiceWebhook error", error);
+      res.set("Content-Type", "text/xml");
+      res.status(200).send(buildTwiml("<Hangup/>"));
+    }
+  }
+);
+
+export const outboundConsentGatherCallback = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+    const digits = typeof body.Digits === "string" ? body.Digits.trim() : "";
+    const callSid = typeof body.CallSid === "string" ? body.CallSid : "";
+    const orgId = typeof req.query.orgId === "string" ? req.query.orgId.trim() : "";
+    const chatId = typeof req.query.chatId === "string" ? req.query.chatId.trim() : "";
+    const listingCode = typeof req.query.listingCode === "string" ? req.query.listingCode.trim() : "";
+    const leadPhoneFromTo = normalizeE164Phone(typeof body.To === "string" ? body.To : "");
+
+    res.set("Content-Type", "text/xml");
+    if (!orgId || !chatId) {
+      res.status(200).send(buildTwiml("<Hangup/>"));
+      return;
+    }
+
+    try {
+      await requestContext.run({ orgId }, async () => {
+        const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+        if (callSid) {
+          await db.doc(`organizations/${orgId}/calls/${callSid}`).set(
+            {
+              gatherHandled: true,
+              gatherDigits: digits || null,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+
+        const state = await getConversationByChatId(chatId);
+        if (digits === "1") {
+          const consentResult = await setLeadConsentByChatId({
+            chatId,
+            phone: leadPhoneFromTo || state?.phone || undefined,
+            listingCode: listingCode || undefined,
+            consent: {
+              capturedAt: admin.firestore.Timestamp.now(),
+              source: "phone_call",
+              language: "es",
+              proofUrl: callSid || undefined,
+              proofType: "twilio_call_sid",
+              consentScriptVersion: VOICE_CONSENT_SCRIPT_VERSION.value() || "v1",
+              dtmfDigit: "1",
+            },
+          });
+          if (consentResult?.leadId) {
+            await recordSystemAction("lead", consentResult.leadId, "consent_captured", {
+              source: "outbound_dtmf_call",
+              callSid,
+            });
+          }
+          if (callSid) {
+            await db.doc(`organizations/${orgId}/calls/${callSid}`).set(
+              {
+                consentCaptured: true,
+                finalOutcome: "consent_captured",
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+          await upsertConversation(chatId, {
+            outboundCallConsent: {
+              ...(state?.outboundCallConsent || {}),
+              consentCaptured: true,
+              lastOutcome: "consent_captured",
+              finishedReason: "consent_captured",
+            },
+          } as Partial<ConversationState>);
+
+          const listingData = listingCode ? await fetchListingByCode(listingCode) : null;
+          const destinationLeadPhone = leadPhoneFromTo || state?.phone || "";
+          if (listingData && destinationLeadPhone) {
+            const pipelineResult = await runNewLeadMessagingPipeline({
+              phone: destinationLeadPhone,
+              listingCode,
+              listingData,
+              leadTags: ["lead", "idealista-call-outbound", "consent-captured"],
+              leadName: (state?.name || "").trim() || undefined,
+            });
+            console.log("outboundConsentGatherCallback post-consent messaging result", {
+              orgId,
+              chatId,
+              callSid,
+              pipelineOk: pipelineResult.ok,
+              pipelineKind: pipelineResult.ok ? "ok" : pipelineResult.kind,
+              pipelineDetails: pipelineResult.ok ? undefined : pipelineResult.details,
+            });
+          } else {
+            console.warn("outboundConsentGatherCallback could not run post-consent pipeline", {
+              orgId,
+              chatId,
+              callSid,
+              hasListingData: Boolean(listingData),
+              hasFromPhone: Boolean(destinationLeadPhone),
+              listingCode,
+            });
+          }
+          res.status(200).send(buildTwiml(`<Say language="es-ES">Gracias. En unos momentos te escribiremos por WhatsApp.</Say><Hangup/>`));
+          return;
+        }
+
+        const policy = computeRetrySchedule({ outcome: "wrong_key_or_timeout", state: state || undefined });
+        const wrongCount = Number(state?.outboundCallConsent?.wrongKeyRetryCount || 0) + 1;
+        if (policy.shouldRetry && policy.nextAttemptAt && state?.phone && listingCode) {
+          await scheduleOutboundRetry({
+            orgId,
+            chatId,
+            phone: state.phone,
+            listingCode,
+            leadName: state.name,
+            nextAttemptAt: policy.nextAttemptAt,
+          });
+        }
+        await upsertConversation(chatId, {
+          outboundCallConsent: {
+            ...(state?.outboundCallConsent || {}),
+            wrongKeyRetryCount: wrongCount,
+            lastOutcome: "wrong_key_or_timeout",
+            nextAttemptAt: policy.nextAttemptAt,
+            finishedReason: policy.shouldRetry ? undefined : policy.finishedReason,
+          },
+        } as Partial<ConversationState>);
+        res.status(200).send(buildTwiml("<Hangup/>"));
+      });
+    } catch (error) {
+      console.error("outboundConsentGatherCallback error", error);
+      res.status(200).send(buildTwiml("<Hangup/>"));
+    }
+  }
+);
+
+export const outboundConsentStatusCallback = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+      const orgId = typeof req.query.orgId === "string" ? req.query.orgId.trim() : "";
+      const chatId = typeof req.query.chatId === "string" ? req.query.chatId.trim() : "";
+      const listingCode = typeof req.query.listingCode === "string" ? req.query.listingCode.trim() : "";
+      const callSid = typeof body.CallSid === "string" ? body.CallSid : "";
+      const status = typeof body.CallStatus === "string" ? body.CallStatus.trim().toLowerCase() : "";
+      const answeredBy = typeof body.AnsweredBy === "string" ? body.AnsweredBy.trim().toLowerCase() : "";
+      if (!orgId || !chatId) {
+        res.status(200).json({ ok: true, ignored: true });
+        return;
+      }
+
+      await requestContext.run({ orgId }, async () => {
+        const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+        const state = await getConversationByChatId(chatId);
+        const callDocRef = callSid ? db.doc(`organizations/${orgId}/calls/${callSid}`) : null;
+        const callDoc = callDocRef ? await callDocRef.get() : null;
+        const callData = (callDoc?.data() || {}) as {
+          consentCaptured?: boolean;
+          gatherHandled?: boolean;
+          retryScheduled?: boolean;
+        };
+
+        let outcome: OutboundCallOutcome | null = null;
+        if (status === "busy") outcome = "busy";
+        else if (status === "no-answer" || status === "failed" || status === "canceled") outcome = "no_answer";
+        else if (answeredBy.includes("machine")) outcome = "voicemail";
+        else if (status === "completed" && !callData.consentCaptured && callData.gatherHandled) outcome = "wrong_key_or_timeout";
+        else if (status === "completed" && !callData.consentCaptured) outcome = "hangup_before_consent";
+
+        if (!outcome || callData.consentCaptured || callData.retryScheduled) {
+          return;
+        }
+        const policy = computeRetrySchedule({ outcome, state: state || undefined });
+        if (policy.shouldRetry && policy.nextAttemptAt && state?.phone && listingCode) {
+          await scheduleOutboundRetry({
+            orgId,
+            chatId,
+            phone: state.phone,
+            listingCode,
+            leadName: state.name,
+            nextAttemptAt: policy.nextAttemptAt,
+          });
+        }
+
+        const next = {
+          ...(state?.outboundCallConsent || {}),
+          lastOutcome: outcome,
+          nextAttemptAt: policy.nextAttemptAt,
+          finishedReason: policy.shouldRetry ? undefined : policy.finishedReason,
+        };
+        if (outcome === "no_answer" || outcome === "busy" || outcome === "voicemail") {
+          next.noAnswerRetryCount = Number(state?.outboundCallConsent?.noAnswerRetryCount || 0) + 1;
+        } else if (outcome === "hangup_before_consent") {
+          next.hangupRetryCount = Number(state?.outboundCallConsent?.hangupRetryCount || 0) + 1;
+        }
+        await upsertConversation(chatId, { outboundCallConsent: next } as Partial<ConversationState>);
+        if (callDocRef) {
+          await callDocRef.set(
+            {
+              retryScheduled: policy.shouldRetry,
+              finalOutcome: outcome,
+              retryNextAttemptAt: policy.nextAttemptAt || null,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      });
+
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error("outboundConsentStatusCallback error", error);
+      res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
 
 export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
   if (req.method !== "POST") {
@@ -2649,6 +3951,7 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
         leadTags: ["lead"],
         leadName: leadName || undefined,
         language: (languageNorm as "es" | "en" | "") || undefined,
+        orgId,
       });
 
       if (!pipeline.ok) {
@@ -2667,6 +3970,132 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
     res.status(500).json({ 
       error: "Error interno procesando el lead", 
       details: error instanceof Error ? error.message : String(error) 
+    });
+  }
+});
+
+/**
+ * Legacy Idealista intake path that mirrors pre-opt-in behavior:
+ * sends the initial WhatsApp template first (Twilio/Cloud API),
+ * then continues normal chat flow on inbound replies.
+ */
+export const newLeadLegacy = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  const phone = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
+  const listingCode = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
+  const orgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+  const leadName = typeof req.body?.nombre === "string" ? req.body.nombre.trim() : "";
+
+  if (!phone || !listingCode) {
+    res.status(400).json({ error: "telefono y anuncio son obligatorios" });
+    return;
+  }
+
+  // 1. Resolve organization from listing code
+  let resolvedOrgId = orgId;
+  let listingData: ListingRow | null = null;
+
+  try {
+    if (resolvedOrgId) {
+      // If orgId is provided, fetch listing within that org context
+      await requestContext.run({ orgId: resolvedOrgId }, async () => {
+        listingData = await fetchListingByCode(listingCode);
+      });
+    } else {
+      // Fallback to global search if orgId is not provided
+      const globalResult = await fetchListingGlobally(listingCode);
+      if (globalResult) {
+        resolvedOrgId = globalResult.orgId;
+        listingData = globalResult.data;
+      }
+    }
+  } catch (error) {
+    console.error(`Error resolving listing ${listingCode} (orgId: ${resolvedOrgId || "global"}):`, error);
+    res.status(500).json({
+      error: "Error interno al buscar el anuncio",
+      details: error instanceof Error ? error.message : String(error),
+      listingCode,
+      orgId: resolvedOrgId || undefined,
+    });
+    return;
+  }
+
+  if (!listingData || !resolvedOrgId) {
+    console.warn(`Listing ${listingCode} not found in any organization.`);
+    res.status(404).json({ error: "Anuncio no encontrado" });
+    return;
+  }
+
+  // 2. Run legacy template-first logic with the correct organization context
+  try {
+    await requestContext.run({ orgId: resolvedOrgId }, async () => {
+      // Check if conversation already exists for this phone and listing and is still open
+      const existingConv = await getConversationByPhoneAndListing(phone, listingCode);
+      if (existingConv && !existingConv.isFinished) {
+        console.log(`Lead ${phone} already has an open conversation for ${listingCode} in org ${resolvedOrgId}. Sending returning message.`);
+
+        const isSpanish = isSpanishPhoneNumber(phone);
+        const returnMessage = isSpanish
+          ? "Has vuelto a contactar por Idealista en relación al anuncio mostrado arriba, ¿cómo te puedo ayudar?"
+          : "You have contacted us again through Idealista regarding the property shown above, how can I help you?";
+
+        try {
+          await sendTextMessage({ to: phone, body: returnMessage, chatId: existingConv.chatId });
+
+          // Update history
+          const updatedHistory = [...(existingConv.history || [])];
+          updatedHistory.push({
+            role: "assistant",
+            text: returnMessage,
+            timestamp: Date.now(),
+          });
+
+          await upsertConversation(existingConv.chatId, { history: updatedHistory, tags: ["lead"], type: "lead" });
+
+          // Also update lead info to mark recent activity
+          await updateLeadChatInfo({
+            phone,
+            listingCode,
+            chatId: existingConv.chatId,
+            operationType: existingConv.operationType as OperationType,
+          });
+
+          res.status(200).json({ chatId: existingConv.chatId, message: "Returning lead message sent" });
+          return;
+        } catch (error) {
+          console.error("Error handling returning lead:", error);
+        }
+      }
+
+      const pipeline = await runNewLeadMessagingPipeline({
+        phone,
+        listingCode,
+        listingData: listingData!,
+        leadTags: ["lead"],
+        leadName: leadName || undefined,
+        skipEligibilityGate: true,
+      });
+
+      if (!pipeline.ok) {
+        res.status(502).json({
+          error: "No se pudieron enviar los mensajes iniciales (pero el lead ha sido guardado)",
+          details: pipeline.details,
+          chatId: pipeline.chatId,
+        });
+        return;
+      }
+
+      res.status(200).json({ chatId: pipeline.chatId, success: true });
+    });
+  } catch (error) {
+    console.error("Fatal error in newLeadLegacy pipeline:", error);
+    res.status(500).json({
+      error: "Error interno procesando el lead",
+      details: error instanceof Error ? error.message : String(error),
     });
   }
 });
@@ -2791,7 +4220,7 @@ export const sendMassMessage = onRequest({ cors: true, region: REGION, secrets: 
 });
 
 /**
- * Utility endpoint to retry sending initial messages to leads stuck in the idealista_confirm state.
+ * Utility endpoint to retry sending opt-in SMS to leads missing onboarding conversation state.
  */
 export const retryMissingLeads = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   const authHeader = req.headers.authorization;
@@ -2820,9 +4249,9 @@ export const retryMissingLeads = onRequest({ cors: true, region: REGION, secrets
         }
 
         const conv = await getConversationByChatId(data.chatId);
-        // Case 1: Conv exists and is in confirm step with no messages
+        // Case 1: Conv exists and is in listing-collect step with no messages
         // Case 2: Conv doesn't exist at all (initialization failed)
-        const isStuck = !conv || (conv.flowStep === "idealista_confirm" && (!conv.history || conv.history.length === 0));
+        const isStuck = !conv || (conv.flowStep === "call_listing_collect" && (!conv.history || conv.history.length === 0));
         
         if (isStuck) {
           stuckLeads.push({ data, conv });
@@ -2847,6 +4276,7 @@ export const retryMissingLeads = onRequest({ cors: true, region: REGION, secrets
             listingData,
             leadTags: (conv && conv.tags) || ["lead"],
             leadName: data.name || undefined,
+            orgId,
           });
 
           if (pipeline.ok) {
@@ -2890,8 +4320,13 @@ export const syncMissedMessages = onRequest({
     const { getOrphanedMessages, reprocessOrphans } = await import("./services/recoveryService");
     const dryRun = req.query.dryRun !== "false"; // Default to true
     const hours = parseInt(req.query.hours as string) || 48;
+    const orgId = typeof req.query.orgId === "string" ? req.query.orgId.trim() : "";
+    if (!orgId) {
+      res.status(400).json({ error: "orgId query param is required in strict org routing mode" });
+      return;
+    }
 
-    const orphans = await getOrphanedMessages(hours);
+    const orphans = await getOrphanedMessages(hours, orgId);
 
     if (dryRun) {
       res.status(200).json({
@@ -2935,10 +4370,19 @@ export const createTwilioTemplates = onRequest({ cors: true, region: REGION, sec
   }
 
   try {
+    const targetOrgId = typeof req.query.orgId === "string"
+      ? req.query.orgId.trim()
+      : (typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "");
+    if (!targetOrgId) {
+      res.status(400).json({ error: "orgId is required (query or body)" });
+      return;
+    }
+
     const suffix = Date.now().toString();
     const idealistaConfirm = await createContentTemplate({
       friendlyName: `idealista_confirm_es_${suffix}`,
       language: "es",
+      orgId: targetOrgId,
       variables: {
         "1": "Carlos",
         "2": "Paco Granados",
@@ -2969,6 +4413,7 @@ export const createTwilioTemplates = onRequest({ cors: true, region: REGION, sec
     const idealistaConfirmEn = await createContentTemplate({
       friendlyName: `idealista_confirm_en_${suffix}`,
       language: "en",
+      orgId: targetOrgId,
       variables: {
         "1": "John",
         "2": "Paco Granados",
@@ -2999,6 +4444,7 @@ export const createTwilioTemplates = onRequest({ cors: true, region: REGION, sec
     const callInitialEs = await createContentTemplate({
       friendlyName: `call_initial_es_${suffix}`,
       language: "es",
+      orgId: targetOrgId,
       variables: { "1": "Paco Granados" },
       types: {
         "twilio/text": {
@@ -3014,11 +4460,85 @@ export const createTwilioTemplates = onRequest({ cors: true, region: REGION, sec
       },
     });
 
+    const callHandoffOrgEs = await createContentTemplate({
+      friendlyName: `call_handoff_org_es_${suffix}`,
+      language: "es",
+      orgId: targetOrgId,
+      variables: {
+        "1": "Carlos",
+        "2": "Marcos",
+        "3": "Paco Granados",
+        "4": "https://www.idealista.com/inmueble/110595991",
+        "5": "3 hab. | 85 m² | 2 baños",
+      },
+      types: {
+        "twilio/text": {
+          body:
+            "¡Hola {{1}}! Soy {{2}}, el asistente virtual de {{3}}. Entiendo que te has interesado en esta vivienda: {{4}}.\n\n" +
+            "¿Has visto las características?:\n{{5}}.\n\n" +
+            "*Si quieres dejar de recibir estos mensajes, escribe STOP en cualquier momento.",
+        },
+      },
+    });
+
+    const callHandoffOrgEn = await createContentTemplate({
+      friendlyName: `call_handoff_org_en_${suffix}`,
+      language: "en",
+      orgId: targetOrgId,
+      variables: {
+        "1": "John",
+        "2": "Marcos",
+        "3": "Paco Granados",
+        "4": "https://www.idealista.com/inmueble/110595991",
+        "5": "3 beds | 85 m² | 2 bathrooms",
+      },
+      types: {
+        "twilio/text": {
+          body:
+            "Hello {{1}}! I am {{2}}, the virtual assistant for {{3}}. I understand that you are interested in this property: {{4}}.\n\n" +
+            "Have you seen the features?:\n{{5}}.\n\n" +
+            "*If you want to stop receiving these messages, type STOP at any time.",
+        },
+      },
+    });
+
+    const voiceOptInConsent = await createContentTemplate({
+      friendlyName: `voice_optin_consent_es_${suffix}`,
+      language: "es",
+      orgId: targetOrgId,
+      variables: {},
+      types: {
+        "twilio/text": {
+          body:
+            "¡Hola! Gracias por confirmar por teléfono. Te contactamos por WhatsApp para ayudarte con la vivienda de tu interés.\n\n" +
+            "Si quieres dejar de recibir estos mensajes, escribe STOP en cualquier momento.",
+        },
+      },
+    });
+
+    await getFirestore(admin.app(), "realestate-whatsapp-bot")
+      .doc(`organizations/${targetOrgId}/botConfig/config`)
+      .set(
+        {
+          twilioTemplates: {
+            idealistaInitialEs: callInitialEs.contentSid,
+            callHandoffOrgEs: callHandoffOrgEs.contentSid,
+            callHandoffOrgEn: callHandoffOrgEn.contentSid,
+            voiceOptInConsent: voiceOptInConsent.contentSid,
+          },
+        },
+        { merge: true }
+      );
+
     res.status(200).json({
+      orgId: targetOrgId,
       idealistaConfirm: idealistaConfirm.contentSid,
       idealistaConfirmEn: idealistaConfirmEn.contentSid,
       callInitialEs: callInitialEs.contentSid,
-      note: "Configura TWILIO_TEMPLATE_SID_IDEALISTA_CONFIRM_ES / _EN / TWILIO_TEMPLATE_SID_CALL_INITIAL_ES con estos ContentSid tras aprobación de WhatsApp.",
+      callHandoffOrgEs: callHandoffOrgEs.contentSid,
+      callHandoffOrgEn: callHandoffOrgEn.contentSid,
+      voiceOptInConsent: voiceOptInConsent.contentSid,
+      note: "Templates persisted to organizations/{orgId}/botConfig/config.twilioTemplates. WhatsApp approval still required in Twilio.",
     });
   } catch (error) {
     console.error("createTwilioTemplates error", error);
@@ -3180,6 +4700,9 @@ export const createCloudApiTemplates = onRequest(
         await create(agentNotificationEnName, "en", "UTILITY", agentNotificationEnComponents);
 
         await updateCloudApiTemplates({
+          agentNotification: agentNotificationEsName,
+          callHandoffOrgEs: idealistaInitialEsName,
+          callHandoffOrgEn: idealistaInitialEnName,
           idealistaInitialEs: idealistaInitialEsName,
           idealistaInitialEn: idealistaInitialEnName,
           idealistaConfirmEs: idealistaConfirmEsName,
@@ -3191,6 +4714,9 @@ export const createCloudApiTemplates = onRequest(
         res.status(200).json({
           ok: true,
           templates: {
+            agentNotification: agentNotificationEsName,
+            callHandoffOrgEs: idealistaInitialEsName,
+            callHandoffOrgEn: idealistaInitialEnName,
             idealistaInitialEs: idealistaInitialEsName,
             idealistaInitialEn: idealistaInitialEnName,
             idealistaConfirmEs: idealistaConfirmEsName,
@@ -3248,6 +4774,339 @@ export const cloudApiHealthCheck = onRequest(
 );
 
 /**
+ * Readiness check for call handoff configuration.
+ * Super admins can pass ?orgId=... to inspect any org; others inspect their own org.
+ */
+async function evaluateCallHandoffReadiness(targetOrgId: string): Promise<{
+  targetOrgId: string;
+  provider: "twilio" | "cloud_api" | "whapi";
+  providerSource: "org" | "global" | "fallback";
+  checks: Array<{ key: string; ok: boolean; value?: string; note?: string }>;
+  missingRequiredKeys: string[];
+  eligible: boolean;
+}> {
+  const DATABASE_ID = "realestate-whatsapp-bot";
+  const db = getFirestore(admin.app(), DATABASE_ID);
+  const cfgSnap = await db.doc(`organizations/${targetOrgId}/botConfig/config`).get();
+  const cfg = (cfgSnap.data() || {}) as {
+    cloudApiConfig?: {
+      templates?: {
+        callHandoffOrgEs?: string;
+        callHandoffOrgEn?: string;
+        idealistaInitialEs?: string;
+        idealistaInitialEn?: string;
+        agentNotification?: string;
+        agentNotificationEs?: string;
+      };
+    };
+    twilioTemplates?: {
+      callHandoffOrgEs?: string;
+      callHandoffOrgEn?: string;
+      voiceOptInConsent?: string;
+      idealistaInitialEs?: string;
+      idealistaInitialEn?: string;
+      agentNotification?: string;
+    };
+    twilioConfig?: {
+      accountSid?: string;
+      whatsappNumber?: string;
+      smsSenderId?: string;
+      authTokenSecretName?: string;
+    };
+  };
+  const providerResolution = await getEffectiveProviderForOrg(targetOrgId);
+  const provider = providerResolution.provider;
+  const checks: Array<{ key: string; ok: boolean; value?: string; note?: string }> = [];
+  const add = (key: string, value: string | undefined, note?: string) => {
+    checks.push({ key, ok: Boolean(value && value.trim()), value: value || "", note });
+  };
+
+  add("PROPLEAD_INTAKE_ORG_ID", PROPLEAD_INTAKE_ORG_ID.value(), "Global intake org for call entry.");
+  add("VOICE_AUDIO_1_URL", VOICE_AUDIO_1_URL.value(), "First voice prompt.");
+  add("VOICE_AUDIO_2_OPTIN_URL", VOICE_AUDIO_2_OPTIN_URL.value(), "DTMF opt-in prompt.");
+  add("VOICE_CONSENT_SCRIPT_VERSION", VOICE_CONSENT_SCRIPT_VERSION.value(), "Consent script version for audits.");
+
+  if (provider === "cloud_api") {
+    add("cloudApiConfig.templates.callHandoffOrgEs", cfg.cloudApiConfig?.templates?.callHandoffOrgEs);
+    add("cloudApiConfig.templates.callHandoffOrgEn", cfg.cloudApiConfig?.templates?.callHandoffOrgEn);
+    add("cloudApiConfig.templates.idealistaInitialEs", cfg.cloudApiConfig?.templates?.idealistaInitialEs);
+    add("cloudApiConfig.templates.idealistaInitialEn", cfg.cloudApiConfig?.templates?.idealistaInitialEn);
+    add(
+      "cloudApiConfig.templates.agentNotification",
+      cfg.cloudApiConfig?.templates?.agentNotification || cfg.cloudApiConfig?.templates?.agentNotificationEs
+    );
+  } else if (provider === "twilio") {
+    add("twilioConfig.accountSid", cfg.twilioConfig?.accountSid);
+    add("twilioConfig.whatsappNumber", cfg.twilioConfig?.whatsappNumber);
+    add("twilioConfig.smsSenderId", cfg.twilioConfig?.smsSenderId);
+    add("twilioConfig.authTokenSecretName", cfg.twilioConfig?.authTokenSecretName);
+    add("twilioTemplates.voiceOptInConsent", cfg.twilioTemplates?.voiceOptInConsent);
+    add("twilioTemplates.callHandoffOrgEs", cfg.twilioTemplates?.callHandoffOrgEs);
+    add("twilioTemplates.callHandoffOrgEn", cfg.twilioTemplates?.callHandoffOrgEn);
+    add("twilioTemplates.idealistaInitialEs", cfg.twilioTemplates?.idealistaInitialEs);
+    add("twilioTemplates.idealistaInitialEn", cfg.twilioTemplates?.idealistaInitialEn);
+    add("twilioTemplates.agentNotification", cfg.twilioTemplates?.agentNotification);
+  }
+  const missingRequiredKeys = checks.filter((c) => !c.ok).map((c) => c.key);
+  return {
+    targetOrgId,
+    provider,
+    providerSource: providerResolution.source,
+    checks,
+    missingRequiredKeys,
+    eligible: missingRequiredKeys.length === 0,
+  };
+}
+
+export const callHandoffReadiness = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "GET") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { orgId: authOrgId, role } = await resolveUserContextFromToken(req.headers.authorization);
+      const queryOrgId = typeof req.query.orgId === "string" ? req.query.orgId.trim() : "";
+      const targetOrgId = role === "super_admin" && queryOrgId ? queryOrgId : authOrgId;
+
+      const result = await evaluateCallHandoffReadiness(targetOrgId);
+
+      res.status(200).json({
+        ok: result.eligible,
+        eligible: result.eligible,
+        missingRequiredKeys: result.missingRequiredKeys,
+        targetOrgId: result.targetOrgId,
+        provider: result.provider,
+        providerSource: result.providerSource,
+        checks: result.checks,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("callHandoffReadiness error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+export const botTestResolveListing = onRequest(
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY] },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    try {
+      const authHeader = req.headers.authorization;
+      const orgId = await resolveOrgIdFromToken(authHeader);
+      const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+      const operationTypeRaw = typeof req.body?.operationType === "string" ? req.body.operationType.trim() : "";
+      const operationType = operationTypeRaw === "Venta" || operationTypeRaw === "Alquiler" ? operationTypeRaw : undefined;
+      if (!text) {
+        res.status(400).json({ error: "text is required" });
+        return;
+      }
+
+      await requestContext.run({ orgId }, async () => {
+        const result = await resolveListingFromBufferedText({ text, operationType });
+        if (result.kind === "none") {
+          res.status(200).json({ kind: "none", candidates: [] });
+          return;
+        }
+        if (result.kind === "match") {
+          res.status(200).json({
+            kind: "match",
+            candidates: result.candidates && result.candidates.length > 0
+              ? result.candidates
+              : [result.candidate],
+          });
+          return;
+        }
+        res.status(200).json({
+          kind: "candidates",
+          candidates: result.candidates,
+        });
+      });
+    } catch (error) {
+      console.error("botTestResolveListing error", error);
+      const message = error instanceof Error ? error.message : "Internal server error";
+      res.status(500).json({ error: message });
+    }
+  }
+);
+
+/**
+ * Backfill strict per-org template eligibility and block unready orgs.
+ * Super admin only. Optional body.orgId to process a single org.
+ */
+export const backfillPerOrgTemplateEligibility = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const requestedOrgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+      const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+      const orgIds: string[] = requestedOrgId
+        ? [requestedOrgId]
+        : (await db.collection("organizations").limit(500).get()).docs.map((d) => d.id);
+
+      const rows: Array<{ orgId: string; eligible: boolean; missingRequiredKeys: string[] }> = [];
+      let updated = 0;
+      let blocked = 0;
+      for (const orgId of orgIds) {
+        const readiness = await evaluateCallHandoffReadiness(orgId);
+        const outboundTemplatesBlocked = !readiness.eligible;
+        if (outboundTemplatesBlocked) blocked += 1;
+        await db.doc(`organizations/${orgId}/botConfig/config`).set(
+          {
+            templateEligibility: {
+              outboundTemplatesBlocked,
+              missingRequiredKeys: readiness.missingRequiredKeys,
+              checkedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+          },
+          { merge: true }
+        );
+        updated += 1;
+        rows.push({
+          orgId,
+          eligible: readiness.eligible,
+          missingRequiredKeys: readiness.missingRequiredKeys,
+        });
+      }
+
+      res.status(200).json({
+        scanned: orgIds.length,
+        updated,
+        blocked,
+        rows,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("backfillPerOrgTemplateEligibility error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Migrate Twilio transport credentials into org-scoped twilioConfig.
+ * Super admin only. Defaults to org_paco_granados.
+ */
+export const migrateTwilioTransportToOrg = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+
+      const targetOrgId = typeof req.body?.orgId === "string" && req.body.orgId.trim()
+        ? req.body.orgId.trim()
+        : "org_paco_granados";
+      if (targetOrgId !== "org_paco_granados") {
+        res.status(400).json({ error: "This migration endpoint is restricted to org_paco_granados" });
+        return;
+      }
+
+      const accountSid = typeof req.body?.accountSid === "string" ? req.body.accountSid.trim() : "";
+      const whatsappNumber = typeof req.body?.whatsappNumber === "string" ? req.body.whatsappNumber.trim() : "";
+      const smsSenderId = typeof req.body?.smsSenderId === "string" ? req.body.smsSenderId.trim() : "";
+      const authToken = typeof req.body?.authToken === "string" ? req.body.authToken.trim() : "";
+
+      if (!accountSid || !whatsappNumber || !smsSenderId || !authToken) {
+        res.status(400).json({
+          error: "Missing request body values. Require accountSid, whatsappNumber, smsSenderId, authToken",
+        });
+        return;
+      }
+
+      const projectId = getGcpProjectId();
+      const sm = new SecretManagerServiceClient();
+      const secretId = `twilio_org_${targetOrgId}_auth_token`;
+      const secretPath = `projects/${projectId}/secrets/${secretId}`;
+      try {
+        await sm.createSecret({
+          parent: `projects/${projectId}`,
+          secretId,
+          secret: { replication: { automatic: {} } },
+        });
+      } catch (error) {
+        const code = (error as { code?: number }).code;
+        if (code !== 6) throw error; // ALREADY_EXISTS
+      }
+
+      let latestPayload = "";
+      try {
+        const [latest] = await sm.accessSecretVersion({ name: `${secretPath}/versions/latest` });
+        latestPayload = Buffer.from(latest.payload?.data || "").toString("utf8").trim();
+      } catch {
+        latestPayload = "";
+      }
+      if (latestPayload !== authToken) {
+        await sm.addSecretVersion({
+          parent: secretPath,
+          payload: { data: Buffer.from(authToken, "utf8") },
+        });
+      }
+
+      const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+      await db.doc(`organizations/${targetOrgId}/botConfig/config`).set(
+        {
+          twilioConfig: {
+            accountSid,
+            whatsappNumber,
+            smsSenderId,
+            authTokenSecretName: secretId,
+          },
+        },
+        { merge: true }
+      );
+
+      res.status(200).json({
+        ok: true,
+        orgId: targetOrgId,
+        twilioConfig: {
+          accountSid,
+          whatsappNumber,
+          smsSenderId,
+          authTokenSecretName: secretId,
+        },
+        secretUpdated: latestPayload !== authToken,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("migrateTwilioTransportToOrg error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
  * Embedded Signup: exchange the short-lived `code` from the FB JS SDK for a
  * long-lived business_integration_system_user_access_token, register the
  * phone number on Cloud API, subscribe our app to the WABA's webhooks, and
@@ -3260,7 +5119,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
   {
     cors: true,
     region: REGION,
-    secrets: [META_APP_ID, META_APP_SECRET],
+    secrets: [META_APP_ID, META_APP_SECRET, META_VERIFY_TOKEN],
   },
   async (req, res) => {
     if (req.method !== "POST") {
@@ -3275,10 +5134,15 @@ export const exchangeEmbeddedSignupCode = onRequest(
         code?: string;
         phoneNumberId?: string;
         wabaId?: string;
+        assistantAvatarId?: string;
+        assistantAvatarUrl?: string;
       };
       const code = typeof body.code === "string" ? body.code.trim() : "";
       const phoneNumberId = typeof body.phoneNumberId === "string" ? body.phoneNumberId.trim() : "";
       const wabaId = typeof body.wabaId === "string" ? body.wabaId.trim() : "";
+      const assistantAvatarId =
+        typeof body.assistantAvatarId === "string" ? body.assistantAvatarId.trim().toLowerCase() : "";
+      const assistantAvatarUrl = typeof body.assistantAvatarUrl === "string" ? body.assistantAvatarUrl.trim() : "";
       if (!code || !phoneNumberId || !wabaId) {
         res.status(400).json({ error: "code, phoneNumberId and wabaId are required" });
         return;
@@ -3292,6 +5156,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
       }
 
       const accessToken = await exchangeCodeForToken({ code, appId, appSecret });
+      const appSecretProof = crypto.createHmac("sha256", appSecret).update(accessToken).digest("hex");
 
       const accessTokenSecretName = await storeAccessTokenInSecretManager({
         orgId,
@@ -3300,7 +5165,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
 
       const pin = generateRegistrationPin();
       try {
-        await registerPhoneNumber({ phoneNumberId, accessToken, pin });
+        await registerPhoneNumber({ phoneNumberId, accessToken, pin, appSecretProof });
       } catch (error) {
         // Already-registered numbers raise an error; don't block onboarding if
         // the root cause is a prior registration. Surface other failures.
@@ -3322,7 +5187,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
       }
 
       try {
-        await subscribeAppToWaba({ wabaId, accessToken });
+        await subscribeAppToWaba({ wabaId, accessToken, appSecretProof });
       } catch (error) {
         const message =
           axios.isAxiosError(error)
@@ -3335,8 +5200,53 @@ export const exchangeEmbeddedSignupCode = onRequest(
         return;
       }
 
-      const verifyToken = generateVerifyToken();
-      const displayPhoneNumber = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken });
+      let selectedAvatarId: string | undefined;
+      let selectedAvatarName: string | undefined;
+      let selectedAvatarUrl: string | undefined;
+      if (assistantAvatarId) {
+        const selectedAvatar = getAssistantAvatarById(assistantAvatarId);
+        if (!selectedAvatar) {
+          res.status(400).json({ error: "assistantAvatarId is invalid" });
+          return;
+        }
+        const avatarFromClient = assistantAvatarUrl || "";
+        const avatarFromClientMatchesPath = avatarFromClient.endsWith(selectedAvatar.imagePath);
+        if (avatarFromClient && !avatarFromClientMatchesPath) {
+          res.status(400).json({ error: "assistantAvatarUrl does not match assistantAvatarId" });
+          return;
+        }
+        selectedAvatarId = selectedAvatar.id;
+        selectedAvatarName = selectedAvatar.name;
+        const inferredOrigin = avatarFromClient.replace(new RegExp(`${selectedAvatar.imagePath}$`), "");
+        const origin = inferredOrigin || "https://real-estate-idealista-bot.web.app";
+        selectedAvatarUrl = buildAvatarPublicUrl(origin, selectedAvatar.imagePath);
+
+        try {
+          await setWhatsAppProfilePhoto({
+            phoneNumberId,
+            accessToken,
+            profilePictureUrl: selectedAvatarUrl,
+            appSecretProof,
+          });
+        } catch (error) {
+          const message =
+            axios.isAxiosError(error)
+              ? error.response?.data?.error?.message || error.message
+              : error instanceof Error
+              ? error.message
+              : String(error);
+          console.error("[embeddedSignup] whatsapp_business_profile failed", message);
+          res.status(502).json({ error: `WABA profile update failed: ${message}` });
+          return;
+        }
+      }
+
+      const verifyToken = META_VERIFY_TOKEN.value();
+      if (!verifyToken) {
+        res.status(500).json({ error: "META_VERIFY_TOKEN is not configured on the server" });
+        return;
+      }
+      const displayPhoneNumber = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken, appSecretProof });
       await persistCloudApiConfigForOrg({
         orgId,
         phoneNumberId,
@@ -3344,6 +5254,9 @@ export const exchangeEmbeddedSignupCode = onRequest(
         accessTokenSecretName,
         verifyToken,
         displayPhoneNumber,
+        assistantAvatarId: selectedAvatarId,
+        assistantAvatarName: selectedAvatarName,
+        assistantAvatarUrl: selectedAvatarUrl,
       });
 
       invalidateCloudApiCredentialsCache(orgId);
@@ -3398,7 +5311,7 @@ export const getEmbeddedSignupConfig = onRequest(
  * This path is intentionally restricted to owner users in ADMIN_EMAILS.
  */
 export const setManualCloudApiConfig = onRequest(
-  { cors: true, region: REGION, secrets: [META_VERIFY_TOKEN] },
+  { cors: true, region: REGION, secrets: [META_VERIFY_TOKEN, META_APP_SECRET] },
   async (req, res) => {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
@@ -3430,13 +5343,22 @@ export const setManualCloudApiConfig = onRequest(
       }
 
       const accessTokenSecretName = await storeAccessTokenInSecretManager({ orgId, accessToken });
-      const displayPhoneNumber = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken });
+      const appSecret = META_APP_SECRET.value();
+      const appSecretProof = appSecret
+        ? crypto.createHmac("sha256", appSecret).update(accessToken).digest("hex")
+        : undefined;
+      const displayPhoneNumber = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken, appSecretProof });
+      const verifyToken = META_VERIFY_TOKEN.value();
+      if (!verifyToken) {
+        res.status(500).json({ error: "META_VERIFY_TOKEN is not configured on the server" });
+        return;
+      }
       await persistCloudApiConfigForOrg({
         orgId,
         phoneNumberId,
         wabaId,
         accessTokenSecretName,
-        verifyToken: META_VERIFY_TOKEN.value() || generateVerifyToken(),
+        verifyToken,
         displayPhoneNumber,
       });
       invalidateCloudApiCredentialsCache(orgId);
@@ -3453,6 +5375,475 @@ export const setManualCloudApiConfig = onRequest(
         return;
       }
       console.error("setManualCloudApiConfig error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * A6a - Explicit consent capture endpoint used by Leads UI.
+ */
+export const setLeadConsent = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { uid, orgId } = await resolveUserContextFromToken(req.headers.authorization);
+      const body = (req.body || {}) as {
+        leadId?: string;
+        source?: string;
+        language?: string;
+        proofUrl?: string;
+        capturedAtMs?: number;
+      };
+      const leadId = typeof body.leadId === "string" ? body.leadId.trim() : "";
+      const source = typeof body.source === "string" ? body.source.trim() : "";
+      const proofUrl = typeof body.proofUrl === "string" ? body.proofUrl.trim() : "";
+      const capturedAtMs = typeof body.capturedAtMs === "number" ? body.capturedAtMs : Date.now();
+      if (!leadId || !ALLOWED_CONSENT_SOURCES.has(source as "idealista_form" | "agency_website" | "phone_call" | "in_person" | "inbound_whatsapp")) {
+        res.status(400).json({ error: "leadId and valid source are required" });
+        return;
+      }
+
+      await requestContext.run({ orgId }, async () => {
+        await setLeadConsentByLeadId({
+          leadId,
+          consent: {
+            source: source as "idealista_form" | "agency_website" | "phone_call" | "in_person" | "inbound_whatsapp",
+            capturedAt: admin.firestore.Timestamp.fromMillis(Math.max(0, capturedAtMs)),
+            language: normalizeConsentLanguage(body.language),
+            collectedBy: uid,
+            proofUrl: proofUrl || undefined,
+          },
+        });
+        await recordSystemAction("lead", leadId, "consent_captured", {
+          source,
+          language: normalizeConsentLanguage(body.language),
+          proofUrl: proofUrl || null,
+        });
+      });
+
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("setLeadConsent error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Returns the platform-wide messaging policy (super admin only).
+ */
+export const getGlobalMessagingPolicyConfig = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "GET") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const policy = await getGlobalMessagingPolicy();
+      res.status(200).json({ policy });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("getGlobalMessagingPolicyConfig error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Updates platform-wide provider behavior settings (super admin only).
+ */
+export const setGlobalMessagingPolicyConfig = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { uid, role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const body = (req.body || {}) as {
+        cloudApi?: { templates?: Record<string, string | undefined> };
+        twilio?: { templates?: Record<string, string | undefined> };
+      };
+
+      const cleanTemplates = (input?: Record<string, string | undefined>): Record<string, string> | undefined => {
+        if (!input || typeof input !== "object") return undefined;
+        const entries = Object.entries(input)
+          .map(([k, v]) => [k, typeof v === "string" ? v.trim() : ""] as const)
+          .filter(([, v]) => Boolean(v));
+        if (entries.length === 0) return undefined;
+        return Object.fromEntries(entries);
+      };
+
+      const cloudTemplates = cleanTemplates(body.cloudApi?.templates);
+      const twilioTemplates = cleanTemplates(body.twilio?.templates);
+      if (!cloudTemplates && !twilioTemplates) {
+        res.status(400).json({ error: "At least one template update is required" });
+        return;
+      }
+
+      const patch: {
+        cloudApi?: { templates?: Record<string, string> };
+        twilio?: { templates?: Record<string, string> };
+      } = {};
+      if (cloudTemplates) patch.cloudApi = { templates: cloudTemplates };
+      if (twilioTemplates) patch.twilio = { templates: twilioTemplates };
+
+      const policy = await updateGlobalMessagingPolicy({
+        patch,
+        updatedBy: uid,
+      });
+      invalidateProviderCache();
+      res.status(200).json({ ok: true, policy });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("setGlobalMessagingPolicyConfig error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Updates only the platform default provider (super admin only).
+ */
+export const setPlatformDefaultProviderConfig = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { uid, role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const provider = typeof req.body?.provider === "string" ? req.body.provider.trim() : "";
+      const allowedProviders = new Set(["cloud_api", "twilio", "whapi"]);
+      if (!allowedProviders.has(provider)) {
+        res.status(400).json({ error: "provider must be cloud_api, twilio, or whapi" });
+        return;
+      }
+      const policy = await setPlatformDefaultProvider({
+        provider: provider as "cloud_api" | "twilio" | "whapi",
+        updatedBy: uid,
+      });
+      invalidateProviderCache();
+      res.status(200).json({ ok: true, policy });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("setPlatformDefaultProviderConfig error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Seeds (or refreshes) the global messaging policy with known defaults.
+ * Intended for controlled migration rollout by super admins.
+ */
+export const seedGlobalMessagingPolicy = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { uid, role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const body = (req.body || {}) as {
+        defaultProvider?: "cloud_api" | "twilio" | "whapi";
+      };
+      const defaultProvider = body.defaultProvider || "twilio";
+
+      const policy = await updateGlobalMessagingPolicy({
+        updatedBy: uid,
+        patch: {
+          defaultProvider,
+          cloudApi: {
+            templates: {
+              callHandoffOrgEs: "call_handoff_org_es_hx30e0ded0c2df0f6c43848b00ca01d978",
+              callHandoffOrgEn: "call_handoff_org_en_hx029df4498e7f291754fdb5eec601661e",
+              agentNotification: "proplead_agent_notification_v6_hx0f65d74044e27ae2f344b28eabad2776",
+            },
+          },
+          twilio: { templates: {} },
+        },
+      });
+      invalidateProviderCache();
+      res.status(200).json({ ok: true, policy });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("seedGlobalMessagingPolicy error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Internal-only provider switch.
+ * Only super_admin users can change an organization's messaging provider.
+ */
+export const setOrgMessagingProvider = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { uid, role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+
+      const body = (req.body || {}) as { orgId?: string; provider?: string };
+      const targetOrgId = typeof body.orgId === "string" ? body.orgId.trim() : "";
+      const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+      const allowedProviders = new Set(["cloud_api", "twilio", "whapi"]);
+      if (!targetOrgId || !allowedProviders.has(provider)) {
+        res.status(400).json({ error: "orgId and valid provider are required" });
+        return;
+      }
+
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+      await db.doc(`organizations/${targetOrgId}/botConfig/config`).set(
+        {
+          messagingProvider: provider,
+          providerUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          providerUpdatedBy: uid,
+        },
+        { merge: true }
+      );
+      invalidateProviderCache(targetOrgId);
+
+      res.status(200).json({ ok: true, orgId: targetOrgId, provider });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("setOrgMessagingProvider error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Clears org-level provider override so the org inherits platform default.
+ */
+export const clearOrgMessagingProviderOverride = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { uid, role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const targetOrgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+      if (!targetOrgId) {
+        res.status(400).json({ error: "orgId is required" });
+        return;
+      }
+      const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+      await db.doc(`organizations/${targetOrgId}/botConfig/config`).set(
+        {
+          messagingProvider: admin.firestore.FieldValue.delete(),
+          providerOverrideClearedAt: admin.firestore.FieldValue.serverTimestamp(),
+          providerOverrideClearedBy: uid,
+        },
+        { merge: true }
+      );
+      invalidateProviderCache(targetOrgId);
+      const effective = await getEffectiveProviderForOrg(targetOrgId);
+      res.status(200).json({ ok: true, orgId: targetOrgId, effectiveProvider: effective.provider, source: effective.source });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("clearOrgMessagingProviderOverride error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Returns all organizations for internal super_admin users.
+ */
+export const listOrganizationsForSuperAdmin = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "GET") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+      const globalPolicy = await getGlobalMessagingPolicy();
+      const snapshot = await db.collection("organizations").limit(500).get();
+      const organizations = await Promise.all(snapshot.docs.map(async (docSnap) => {
+        const data = docSnap.data() as { agencyName?: string };
+        const orgProvider = await getOrganizationMessagingProvider(docSnap.id);
+        const effective = await getEffectiveProviderForOrg(docSnap.id);
+        return {
+          id: docSnap.id,
+          agencyName: data.agencyName || docSnap.id,
+          providerOverride: orgProvider || null,
+          effectiveProvider: effective.provider,
+          providerSource: effective.source,
+          platformDefaultProvider: globalPolicy.defaultProvider,
+        };
+      }));
+
+      res.status(200).json({ organizations });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("listOrganizationsForSuperAdmin error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Creates (or resolves) the tenant context for an authenticated user.
+ * Idempotent: if the user already has orgId/role, returns existing context.
+ */
+export const bootstrapUserOrganization = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const token = authHeader.split("Bearer ")[1];
+      const decoded = await admin.auth().verifyIdToken(token);
+      const uid = decoded.uid;
+      const email = typeof decoded.email === "string" ? decoded.email : "";
+      const requestedName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+      const fallbackName = typeof decoded.name === "string" ? decoded.name : "";
+
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+      const userRef = db.collection("users").doc(uid);
+
+      const result = await db.runTransaction(async (tx) => {
+        const userSnap = await tx.get(userRef);
+        const userData = userSnap.data() as
+          | {
+              orgId?: unknown;
+              role?: unknown;
+              name?: unknown;
+              email?: unknown;
+              createdAt?: unknown;
+            }
+          | undefined;
+
+        const existingOrgId = typeof userData?.orgId === "string" ? userData.orgId.trim() : "";
+        const existingRole = typeof userData?.role === "string" ? userData.role.trim() : "";
+        if (existingOrgId) {
+          return {
+            orgId: existingOrgId,
+            role: existingRole || "member",
+            created: false,
+          };
+        }
+
+        const orgRef = db.collection("organizations").doc();
+        tx.set(orgRef, {
+          onboardingCompleted: false,
+          onboardingStep: 0,
+          plan: "free",
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        tx.set(
+          userRef,
+          {
+            email: typeof userData?.email === "string" ? userData.email : email,
+            name:
+              requestedName ||
+              (typeof userData?.name === "string" ? userData.name : "") ||
+              fallbackName ||
+              "Owner",
+            role: "owner",
+            orgId: orgRef.id,
+            createdAt: userData?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        return {
+          orgId: orgRef.id,
+          role: "owner",
+          created: true,
+        };
+      });
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("bootstrapUserOrganization error:", error);
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   }
@@ -3549,6 +5940,7 @@ export const deleteMyOrganization = onRequest(
         await axios
           .delete(`https://graph.facebook.com/${creds.graphApiVersion}/${creds.wabaId}/subscribed_apps`, {
             headers: { Authorization: `Bearer ${creds.accessToken}` },
+            params: { appsecret_proof: creds.appSecretProof },
             timeout: 10000,
           })
           .catch((err) => console.warn("subscribed_apps revoke failed:", err?.message || err));
@@ -3591,7 +5983,7 @@ export const deleteMyOrganization = onRequest(
 /**
  * A5 — Customer-facing data export (GDPR Art. 20 / DSAR).
  *
- * Gathers the org's Firestore footprint, writes a JSON snapshot to the default
+ * Gathers the org's Firestore footprint, writes a ZIP snapshot to the default
  * Storage bucket, generates a 7-day v4 signed URL, and emails it to the
  * requester via SendGrid.
  */
@@ -3619,11 +6011,22 @@ export const exportMyData = onRequest(
         data[name] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       }
 
+      const zip = new JSZip();
+      zip.file("export.json", JSON.stringify(data, null, 2));
+      const zipBuffer = await zip.generateAsync({
+        type: "nodebuffer",
+        compression: "DEFLATE",
+        compressionOptions: { level: 9 },
+      });
+
       const bucket = admin.storage().bucket();
-      const filePath = `dsar/${orgId}/${Date.now()}.json`;
+      const filePath = `dsar/${orgId}/${Date.now()}.zip`;
       const file = bucket.file(filePath);
-      await file.save(Buffer.from(JSON.stringify(data, null, 2), "utf8"), {
-        contentType: "application/json",
+      await file.save(zipBuffer, {
+        contentType: "application/zip",
+        metadata: {
+          contentDisposition: `attachment; filename="proplead-dsar-${orgId}.zip"`,
+        },
         resumable: false,
       });
       const [url] = await file.getSignedUrl({
@@ -3707,19 +6110,109 @@ export const waRedirect = onRequest(
 
       const DATABASE_ID = "realestate-whatsapp-bot";
       const db = getFirestore(admin.app(), DATABASE_ID);
-      // Listings live at organizations/{orgId}/listings/{listingCode}. Use collectionGroup.
-      const snap = await db
-        .collectionGroup("listings")
-        .where("listingCode", "==", listingCode)
-        .limit(1)
-        .get();
-      if (snap.empty) {
+      const orgIdFromQuery =
+        typeof req.query.o === "string" && /^[a-zA-Z0-9_-]{3,64}$/.test(req.query.o)
+          ? req.query.o
+          : "";
+      const leadId =
+        typeof req.query.l === "string" && /^[a-zA-Z0-9_-]{3,128}$/.test(req.query.l)
+          ? req.query.l
+          : "";
+
+      let orgId = orgIdFromQuery;
+      if (!orgId && leadId) {
+        const leadSnap = await db
+          .collectionGroup("leads")
+          .where(admin.firestore.FieldPath.documentId(), "==", leadId)
+          .limit(1)
+          .get();
+        if (!leadSnap.empty) {
+          orgId = leadSnap.docs[0].ref.path.split("/")[1];
+        }
+      }
+      if (!orgId) {
+        // Legacy links without org/lead metadata: fallback to global listing lookup.
+        try {
+          const snap = await db
+            .collectionGroup("listings")
+            .where("listingCode", "==", listingCode)
+            .limit(1)
+            .get();
+          if (!snap.empty) {
+            orgId = snap.docs[0].ref.path.split("/")[1];
+          }
+        } catch (error) {
+          const code = (error as { code?: number })?.code;
+          if (code !== 9) {
+            throw error;
+          }
+          console.warn(
+            `waRedirect fallback triggered: missing collectionGroup precondition for listingCode=${listingCode}`
+          );
+        }
+      }
+      if (!orgId) {
+        // Final fallback with no collectionGroup dependency: scan org subcollections.
+        const orgsSnap = await db.collection("organizations").limit(300).get();
+        for (const orgDoc of orgsSnap.docs) {
+          const listingSnap = await db
+            .collection(`organizations/${orgDoc.id}/listings`)
+            .where("listingCode", "==", listingCode)
+            .limit(1)
+            .get();
+          if (!listingSnap.empty) {
+            const data = listingSnap.docs[0].data() as { isActive?: boolean };
+            if (data.isActive !== false) {
+              orgId = orgDoc.id;
+              break;
+            }
+          }
+        }
+      }
+      if (!orgId) {
         res.status(404).send("Listing not found");
         return;
       }
-      const orgId = snap.docs[0].ref.path.split("/")[1];
-      const cfgDoc = await db.doc(`organizations/${orgId}/botConfig/config`).get();
-      const displayPhone = (cfgDoc.data()?.cloudApiConfig?.displayPhoneNumber as string | undefined) || "";
+
+      const listingInOrg = await db
+        .collection(`organizations/${orgId}/listings`)
+        .where("listingCode", "==", listingCode)
+        .where("isActive", "==", true)
+        .limit(1)
+        .get();
+      if (listingInOrg.empty) {
+        res.status(404).send("Listing not found");
+        return;
+      }
+
+      const cfgRef = db.doc(`organizations/${orgId}/botConfig/config`);
+      const cfgDoc = await cfgRef.get();
+      let displayPhone = (cfgDoc.data()?.cloudApiConfig?.displayPhoneNumber as string | undefined) || "";
+      if (!displayPhone) {
+        try {
+          const creds = await getCloudApiCredentials(orgId);
+          const fetched = await fetchDisplayPhoneNumber({
+            phoneNumberId: creds.phoneNumberId,
+            accessToken: creds.accessToken,
+            appSecretProof: creds.appSecretProof,
+          });
+          if (fetched) {
+            displayPhone = fetched;
+            await cfgRef.set(
+              { cloudApiConfig: { displayPhoneNumber: fetched } },
+              { merge: true }
+            );
+          }
+        } catch (error) {
+          console.warn(`waRedirect could not refresh displayPhoneNumber for org ${orgId}:`, error);
+        }
+      }
+      if (!displayPhone) {
+        const twilioNumber = (cfgDoc.data()?.twilioConfig?.whatsappNumber as string | undefined) || "";
+        if (twilioNumber) {
+          displayPhone = twilioNumber.replace(/[^0-9]/g, "");
+        }
+      }
       if (!displayPhone) {
         res.status(503).send("Phone number not configured for this organization");
         return;
@@ -5495,14 +7988,11 @@ export const getSystemUsers = onRequest({ cors: true, region: REGION }, async (r
   }
 
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
+    const { role } = await resolveUserContextFromToken(req.headers.authorization);
+    if (role !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
       return;
     }
-
-    const token = authHeader.split("Bearer ")[1];
-    await admin.auth().verifyIdToken(token); // Verify the requester is authenticated
 
     const listUsersResult = await admin.auth().listUsers(1000);
     const users = listUsersResult.users.map((userRecord) => ({
@@ -5647,7 +8137,7 @@ export const onLeadWritten = onDocumentWritten({
       `Nombre: ${after?.name || "Sin nombre"}`,
       after?.listingCode ? `Anuncio: ${after.listingCode}` : "",
     ]);
-  const templateSid = getAgentNotificationTemplateSid();
+  const templateSid = await getAgentNotificationTemplateSid(getActiveOrgId());
 
   for (const num of agentNums) {
     try {

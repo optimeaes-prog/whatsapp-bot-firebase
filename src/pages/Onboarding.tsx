@@ -11,6 +11,7 @@ import { CreditCard, AlertCircle } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button, PageLoading } from "../components/ui";
 import { getBotConfig } from "../services/botConfig";
+import { ASSISTANT_AVATARS, getAssistantAvatarById, type AssistantAvatarId } from "../constants/assistantAvatars";
 
 export function Onboarding() {
   const [loading, setLoading] = useState(true);
@@ -31,6 +32,7 @@ export function Onboarding() {
   const [agencyName, setAgencyName] = useState("");
   const [employeesCount, setEmployeesCount] = useState("");
   const [whatsappPhone, setWhatsappPhone] = useState("");
+  const [assistantAvatarId, setAssistantAvatarId] = useState<AssistantAvatarId | "">("");
   const [isEmployeesDropdownOpen, setIsEmployeesDropdownOpen] = useState(false);
   
   // Form state for step 3
@@ -51,6 +53,7 @@ export function Onboarding() {
       setAgencyName(s.agencyName || "");
       setEmployeesCount(s.employeesCount || "");
       setWhatsappPhone(s.whatsappSummariesPhone || "");
+      setAssistantAvatarId(getAssistantAvatarById(s.assistantAvatarId)?.id || "");
       setForwardingEmail(s.forwardingEmail || "");
       
       // Migration: if they had scheduled a call before the steps logic
@@ -152,6 +155,13 @@ export function Onboarding() {
       agencyName,
       employeesCount,
       whatsappSummariesPhone: whatsappPhone,
+      assistantAvatarId: assistantAvatarId || undefined,
+      assistantAvatarName: getAssistantAvatarById(assistantAvatarId)?.name,
+      assistantAvatarImagePath: getAssistantAvatarById(assistantAvatarId)?.imagePath,
+      assistantAvatarUrl:
+        typeof window !== "undefined" && assistantAvatarId
+          ? `${window.location.origin}${getAssistantAvatarById(assistantAvatarId)?.imagePath || ""}`
+          : undefined,
       onboardingStep: 2
     });
     analytics.trackOnboardingStepComplete(1, "agency_info");
@@ -277,6 +287,39 @@ export function Onboarding() {
                     placeholder="Ej. Inmobiliaria Granados"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Elige tu avatar de asistente</label>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {ASSISTANT_AVATARS.map((avatar) => {
+                      const isSelected = assistantAvatarId === avatar.id;
+                      return (
+                        <button
+                          key={avatar.id}
+                          type="button"
+                          onClick={() => setAssistantAvatarId(avatar.id)}
+                          disabled={currentStep > 1 && !saving}
+                          className={cn(
+                            "rounded-btn border p-2 text-center transition-all bg-white",
+                            isSelected ? "border-primary-500 ring-2 ring-primary-200" : "border-gray-200 hover:border-primary-300",
+                            currentStep > 1 && !saving && "cursor-not-allowed opacity-80 bg-gray-50"
+                          )}
+                        >
+                          <img
+                            src={avatar.imagePath}
+                            alt={`Avatar ${avatar.name}`}
+                            className="mx-auto h-16 w-16 rounded-full object-cover border border-gray-200"
+                            loading="lazy"
+                          />
+                          <p className="mt-2 text-xs font-medium text-gray-700">{avatar.name}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {!assistantAvatarId && currentStep === 1 && (
+                    <p className="text-xs text-orange-600 mt-2">Selecciona un avatar para continuar.</p>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Número de Trabajadores</label>
@@ -337,6 +380,7 @@ export function Onboarding() {
                 <Button
                   type="submit"
                   loading={saving}
+                  disabled={!assistantAvatarId}
                   className="w-full sm:w-auto flex items-center justify-center gap-2 mt-6"
                 >
                   Guardar y Continuar
