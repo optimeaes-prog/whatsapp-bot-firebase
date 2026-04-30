@@ -49,10 +49,37 @@ type TwilioResolvedCredentials = {
   smsSenderId: string;
 };
 
+export const TWILIO_WHATSAPP_CUSTOMER_CARE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Skew to reduce false-positives near the edge of the window (clock drift / Twilio delays).
+export const TWILIO_WHATSAPP_CUSTOMER_CARE_WINDOW_SKEW_MS = 60 * 1000;
+
 const DATABASE_ID = "realestate-whatsapp-bot";
 const CREDENTIALS_CACHE_TTL_MS = 5 * 60 * 1000;
 const credentialsCache: Record<string, TwilioResolvedCredentials & { expiry: number }> = {};
 let secretManagerClient: SecretManagerServiceClient | null = null;
+
+export function isCustomerCareWindowOpenFromLastInboundMs(lastInboundMs: number, nowMs: number = Date.now()): boolean {
+  if (!Number.isFinite(lastInboundMs) || lastInboundMs <= 0) return false;
+  if (!Number.isFinite(nowMs) || nowMs <= 0) return false;
+  const delta = nowMs - lastInboundMs;
+  if (!Number.isFinite(delta) || delta <= 0) return false;
+  return delta <= (TWILIO_WHATSAPP_CUSTOMER_CARE_WINDOW_MS - TWILIO_WHATSAPP_CUSTOMER_CARE_WINDOW_SKEW_MS);
+}
+
+export function normalizeWhatsappContentVariableStrings(variables: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(variables || {})) {
+    const raw = String(variables[key] ?? "");
+    const normalized = raw
+      .replace(/\r?\n+/g, " | ")
+      .replace(/\t+/g, " ")
+      .replace(/[ ]{5,}/g, " ")
+      .replace(/[ ]{2,}/g, " ")
+      .trim();
+    out[key] = normalized.length > 1600 ? `${normalized.slice(0, 1599)}\u2026` : normalized;
+  }
+  return out;
+}
 
 function getSecretManagerClient(): SecretManagerServiceClient {
   if (!secretManagerClient) secretManagerClient = new SecretManagerServiceClient();

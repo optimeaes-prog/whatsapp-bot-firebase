@@ -8,8 +8,8 @@ const PROJECT_ID = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || "";
 const LOCATION = "europe-west1";
 const QUEUE_NAME = "message-buffer-queue";
 
-// Buffer delay in seconds (90 seconds)
-export const BUFFER_DELAY_SECONDS = 90;
+// Buffer delay in seconds (50 seconds)
+export const BUFFER_DELAY_SECONDS = 50;
 
 /**
  * Get the full queue path for Cloud Tasks

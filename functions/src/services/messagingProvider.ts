@@ -235,11 +235,10 @@ export async function sendBinaryConfirmPrompt(params: SendBinaryConfirmPromptPar
       console.warn("[cloud_api] Failed to send interactive buttons, falling back to text", error);
     }
   }
-  const fallbackBody = `${params.body}\n\n${params.language === "en" ? "Reply: Yes / No" : "Responde: Si / No"}`;
   return sendTextMessage({
     to: params.to,
     chatId: params.chatId,
-    body: fallbackBody,
+    body: params.body,
   });
 }
 

@@ -582,6 +582,45 @@ function buildConfirmListingMessage(candidate: ListingCandidate, language: Initi
   ]);
 }
 
+function buildCallNamePrompt(language: "es" | "en", capturedName?: string): string {
+  const cleaned = (capturedName || "").trim();
+  if (cleaned) {
+    return language === "en"
+      ? `Quick check before passing you to the agent's assistant: is your name ${cleaned}?`
+      : `Antes de pasarte con el asistente del agente, ¿me confirmas si tu nombre es ${cleaned}?`;
+  }
+  return language === "en"
+    ? "Before connecting you with the agent's assistant, what's your name?"
+    : "Antes de conectarte con el asistente del agente, ¿cómo te llamas?";
+}
+
+// 3 hours in seconds. After this delay, if the lead hasn't replied to the
+// name prompt, processCallNameTimeout fires the cross-org handoff anyway
+// using the no-name template variant.
+const CALL_NAME_TIMEOUT_SECONDS = 3 * 60 * 60;
+
+function sanitizeLeadNameFromMessage(text: string): string | undefined {
+  const raw = (text || "").trim();
+  if (!raw) return undefined;
+  const stripped = raw
+    .replace(/^(me\s+llamo|soy|mi\s+nombre\s+es|i'?m|i\s+am|my\s+name\s+is)\s+/i, "")
+    .replace(/[.!?,]+$/g, "")
+    .trim();
+  if (!stripped) return undefined;
+  if (stripped.length > 60) return undefined;
+  if (!/[a-záéíóúñü]/i.test(stripped)) return undefined;
+  // Reject pure confirm/deny tokens
+  const lowered = stripped.toLowerCase();
+  if (["si", "sí", "yes", "y", "no", "nop", "none", "ninguno", "ninguna", "ok", "vale"].includes(lowered)) return undefined;
+  // Title-case each token
+  return stripped
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((tok) => tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase())
+    .join(" ");
+}
+
 async function resolveListingFromBufferedText(params: {
   operationType?: OperationType;
   text: string;
@@ -823,8 +862,23 @@ async function getFeaturesForLanguage(features: string, language: InitialLanguag
 
 type InitialLanguage = "es" | "en";
 
-// In-memory conversation state (for active conversations)
+// In-memory conversation state (for active conversations).
+// IMPORTANT: keys MUST be scoped by active orgId so two organizations sharing the
+// same canonical chatId (e.g. WABA shared between intake + owner orgs) don't leak
+// state across orgs.
 const conversationStates = new Map<string, ConversationState>();
+
+function conversationStateCacheKey(chatId: string): string {
+  return `${getActiveOrgId() || "__no_org__"}:${chatId}`;
+}
+
+function getCachedConversationState(chatId: string): ConversationState | undefined {
+  return conversationStates.get(conversationStateCacheKey(chatId));
+}
+
+function setCachedConversationState(chatId: string, state: ConversationState): void {
+  conversationStates.set(conversationStateCacheKey(chatId), state);
+}
 
 // Initial language resolving
 function resolveInitialLanguage(phone?: string): InitialLanguage {
@@ -1102,17 +1156,75 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
   return result;
 }
 
+/**
+ * Cross-org handoff (and older bugs) could persist qualification convos without
+ * listing-derived fields. Merge from the org listing row once and persist so
+ * the qualification prompt always has link/address/features/etc.
+ */
+async function hydrateConversationListingFieldsIfNeeded(conv: ConversationState): Promise<ConversationState> {
+  const listingCode = conv.listingCode;
+  if (!listingCode || listingCode === CALL_PENDING_LISTING_CODE) return conv;
+  const hasLink = Boolean(String(conv.link || "").trim());
+  const hasFeaturesField = conv.features !== undefined;
+  if (hasLink && hasFeaturesField) return conv;
+
+  const listing = await fetchListingByCode(listingCode);
+  if (!listing) return conv;
+
+  const language: InitialLanguage = conv.language === "en" ? "en" : "es";
+  const featuresText = await getFeaturesForLanguage(listing.features, language);
+
+  const merged: ConversationState = {
+    ...conv,
+    link: hasLink ? conv.link : listing.link,
+    address: conv.address || listing.address,
+    features: hasFeaturesField ? conv.features : featuresText,
+    idealistaDescription: conv.idealistaDescription ?? listing.idealistaDescription ?? "",
+    profitabilityReportAvailable: conv.profitabilityReportAvailable ?? listing.profitabilityReportAvailable ?? false,
+    profitabilityReport: conv.profitabilityReport ?? listing.profitabilityReport ?? "",
+    description: conv.description || listing.description,
+    operationType: conv.operationType || listing.operationType,
+  };
+
+  const changed =
+    merged.link !== conv.link ||
+    merged.address !== conv.address ||
+    merged.features !== conv.features ||
+    merged.idealistaDescription !== conv.idealistaDescription ||
+    merged.profitabilityReportAvailable !== conv.profitabilityReportAvailable ||
+    merged.profitabilityReport !== conv.profitabilityReport ||
+    merged.description !== conv.description ||
+    merged.operationType !== conv.operationType;
+
+  if (changed && merged.chatId) {
+    await upsertConversation(merged.chatId, {
+      link: merged.link,
+      address: merged.address,
+      features: merged.features,
+      idealistaDescription: merged.idealistaDescription,
+      profitabilityReportAvailable: merged.profitabilityReportAvailable,
+      profitabilityReport: merged.profitabilityReport,
+      description: merged.description,
+      operationType: merged.operationType,
+    });
+  }
+
+  return merged;
+}
+
 export async function ensureConversationState(chatId: string, phoneHint?: string): Promise<ConversationState | undefined> {
   // Get all possible chatId variants (handles @c.us vs @s.whatsapp.net)
   const chatIdVariants = getChatIdVariants(chatId);
 
   // Check in-memory first (try all variants)
   for (const variant of chatIdVariants) {
-    const existing = conversationStates.get(variant);
+    const existing = getCachedConversationState(variant);
     if (existing) {
+      const hydrated = await hydrateConversationListingFieldsIfNeeded(existing);
+      setCachedConversationState(variant, hydrated);
       // Also store under the incoming chatId for future lookups
-      if (variant !== chatId) conversationStates.set(chatId, existing);
-      return existing;
+      if (variant !== chatId) setCachedConversationState(chatId, hydrated);
+      return hydrated;
     }
   }
 
@@ -1134,8 +1246,9 @@ export async function ensureConversationState(chatId: string, phoneHint?: string
       if (!savedConv.language) {
         savedConv.language = resolveInitialLanguage(savedConv.phone);
       }
-      conversationStates.set(chatId, savedConv);
-      return savedConv;
+      const hydrated = await hydrateConversationListingFieldsIfNeeded(savedConv);
+      setCachedConversationState(chatId, hydrated);
+      return hydrated;
     }
   }
 
@@ -1166,7 +1279,7 @@ export async function ensureConversationState(chatId: string, phoneHint?: string
       tags: ["non-lead"],
       language: resolveInitialLanguage(phone),
     };
-    conversationStates.set(chatId, nonLeadState);
+    setCachedConversationState(chatId, nonLeadState);
     return nonLeadState;
   }
 
@@ -1183,12 +1296,13 @@ export async function ensureConversationState(chatId: string, phoneHint?: string
       isFinished: false,
       type: "lead",
       tags: ["lead", "call", "pending-listing"],
+      flowStep: "call_listing_collect",
       language: initialLanguage,
       botDisabled: false,
       name: lead.name,
     };
-    conversationStates.set(chatId, pendingState);
-    if (pendingState.chatId !== chatId) conversationStates.set(pendingState.chatId, pendingState);
+    setCachedConversationState(chatId, pendingState);
+    if (pendingState.chatId !== chatId) setCachedConversationState(pendingState.chatId, pendingState);
     return pendingState;
   }
 
@@ -1208,7 +1322,7 @@ export async function ensureConversationState(chatId: string, phoneHint?: string
       tags: ["non-lead", "missing-listing"],
       language: resolveInitialLanguage(phone),
     };
-    conversationStates.set(chatId, errorState);
+    setCachedConversationState(chatId, errorState);
     return errorState;
   }
 
@@ -1245,9 +1359,272 @@ export async function ensureConversationState(chatId: string, phoneHint?: string
   };
 
   // Cache under both the requested chatId and the canonical one
-  conversationStates.set(chatId, state);
-  if (state.chatId !== chatId) conversationStates.set(state.chatId, state);
+  setCachedConversationState(chatId, state);
+  if (state.chatId !== chatId) setCachedConversationState(state.chatId, state);
   return state;
+}
+
+/**
+ * Execute the cross-org call handoff against the target org.
+ * Lives at file scope so the 3h `processCallNameTimeout` task can call it
+ * without re-entering processBufferedMessages.
+ */
+async function executeCrossOrgCallHandoff(
+  state: ConversationState,
+  params: {
+    listing: ListingRow;
+    targetOrgId: string;
+    sourceOrgId: string;
+    correlationId: string;
+    initialLanguage: InitialLanguage;
+    leadName?: string;
+    useLeadName?: boolean;
+    reason: string;
+  }
+): Promise<void> {
+  const { listing, targetOrgId, sourceOrgId, correlationId, initialLanguage, reason } = params;
+  const useNameFlag = params.useLeadName !== false;
+  const candidateName = (params.leadName || state.name || "").trim();
+  const leadName: string | undefined = useNameFlag && candidateName ? candidateName : undefined;
+  const targetLanguage: "es" | "en" = initialLanguage === "en" ? "en" : "es";
+  const featuresForHandoff = state.features || (await getFeaturesForLanguage(listing.features, initialLanguage));
+  const formattedFeatures = formatFeaturesList(featuresForHandoff || "", targetLanguage)
+    .replace(/\s*\n\s*/g, " · ")
+    .slice(0, 900);
+
+  const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+  const inheritedConsent = async () => {
+    const sourceLeadSnap = await db
+      .collection(`organizations/${sourceOrgId}/leads`)
+      .where("chatId", "==", state.chatId)
+      .limit(1)
+      .get();
+    const sourceConsent = sourceLeadSnap.docs[0]?.data()?.consent as
+      | { source?: string; proofUrl?: string; proofType?: "twilio_call_sid" | "twilio_recording_sid" | "wa_inbound"; consentScriptVersion?: string; dtmfDigit?: "1" }
+      | undefined;
+    const proofUrl = sourceConsent?.proofUrl || undefined;
+    return {
+      capturedAt: admin.firestore.Timestamp.now(),
+      source: "phone_call" as const,
+      language: targetLanguage,
+      proofUrl,
+      proofType: sourceConsent?.proofType || "twilio_call_sid",
+      consentScriptVersion: sourceConsent?.consentScriptVersion || VOICE_CONSENT_SCRIPT_VERSION.value() || "v1",
+      dtmfDigit: sourceConsent?.dtmfDigit || "1",
+    };
+  };
+  const handoffConsent = await inheritedConsent();
+
+  const handoffTransitionMessage = targetLanguage === "en"
+    ? `Great. ${listing.agentName || "the agent"}'s assistant will message you now to help with any questions and, if you want, coordinate a viewing.`
+    : `Estupendo. El asistente de tu agente ${listing.agentName || ""} te escribirá ahora para ayudarte con cualquier duda y, si quieres, coordinar una visita.`;
+  try {
+    await sendTextMessage({
+      to: state.phone,
+      chatId: state.chatId,
+      body: handoffTransitionMessage.replace(/\s+/g, " ").trim(),
+    });
+  } catch (error) {
+    console.warn("Failed to send handoff transition message", error);
+  }
+
+  await recordCallHandoffEvent({
+    sourceOrgId,
+    correlationId,
+    chatId: state.chatId,
+    phone: state.phone,
+    language: initialLanguage,
+    status: "pending",
+    targetOrgId,
+    matchedListingCode: listing.listingCode,
+    reason,
+  });
+
+  await requestContext.run({ orgId: targetOrgId }, async () => {
+    const targetConfig = await getBotConfig();
+    const targetAvatarName =
+      (typeof targetConfig.assistantAvatarName === "string" && targetConfig.assistantAvatarName.trim())
+        ? targetConfig.assistantAvatarName.trim()
+        : (typeof targetConfig.cloudApiConfig?.assistantAvatarName === "string" && targetConfig.cloudApiConfig.assistantAvatarName.trim()
+          ? targetConfig.cloudApiConfig.assistantAvatarName.trim()
+          : (targetLanguage === "en" ? "the agent's assistant" : "el asistente"));
+    const targetOrgName =
+      (typeof targetConfig.orgName === "string" && targetConfig.orgName.trim())
+        ? targetConfig.orgName.trim()
+        : (targetLanguage === "en" ? "our team" : "nuestro equipo");
+    const targetListingLink = listing.link || "";
+
+    console.log("AGENT_DEBUG", JSON.stringify({
+      runId: "post-fix",
+      hypothesisId: "BFix",
+      location: "functions/src/index.ts:executeCrossOrgCallHandoff.context",
+      message: "cross-org handoff context resolved",
+      data: {
+        chatId: state.chatId,
+        targetOrgId,
+        sourceOrgId,
+        targetLanguage,
+        hasLeadName: Boolean(leadName),
+        targetAvatarName,
+        targetOrgName,
+        listingCode: listing.listingCode,
+      },
+      timestamp: Date.now(),
+    }));
+
+    await updateLeadChatInfo({
+      phone: state.phone,
+      listingCode: listing.listingCode,
+      chatId: state.chatId,
+      operationType: listing.operationType,
+      name: leadName,
+      tags: ["lead", "call", "handoff"],
+      qualificationStatus: "not_qualified",
+    });
+    await setLeadConsentByChatId({
+      chatId: state.chatId,
+      phone: state.phone,
+      listingCode: listing.listingCode,
+      operationType: listing.operationType,
+      consent: handoffConsent,
+    });
+    const targetLeadSnap = await db
+      .collection(`organizations/${targetOrgId}/leads`)
+      .where("chatId", "==", state.chatId)
+      .limit(1)
+      .get();
+    if (!targetLeadSnap.empty) {
+      await targetLeadSnap.docs[0].ref.set(
+        { leadSource: "call", listingResolutionStatus: "resolved" },
+        { merge: true }
+      );
+    }
+
+    const provider = await getActiveProviderFn();
+    if (provider === "twilio") {
+      const { twilioTemplates } = await getOrgTemplateSnapshot(targetOrgId);
+      const templateSid = targetLanguage === "en"
+        ? requireTemplate(
+          leadName ? twilioTemplates.callHandoffOrgEn : twilioTemplates.callHandoffOrgNoNameEn,
+          "Twilio call handoff template missing for org (callHandoffOrgEn / callHandoffOrgNoNameEn)"
+        )
+        : requireTemplate(
+          leadName ? twilioTemplates.callHandoffOrgEs : twilioTemplates.callHandoffOrgNoNameEs,
+          "Twilio call handoff template missing for org (callHandoffOrgEs / callHandoffOrgNoNameEs)"
+        );
+      const variables: Record<string, string> = leadName
+        ? {
+          "1": leadName,
+          "2": targetAvatarName,
+          "3": targetOrgName,
+          "4": targetListingLink,
+          "5": formattedFeatures,
+        }
+        : {
+          "2": targetAvatarName,
+          "3": targetOrgName,
+          "4": targetListingLink,
+          "5": formattedFeatures,
+        };
+      await sendInitialTemplateMessage({
+        to: state.phone,
+        chatId: state.chatId,
+        language: targetLanguage,
+        variables,
+        templateSid,
+        skipEligibilityGate: true,
+      });
+    } else if (provider === "cloud_api") {
+      const creds = await getCloudApiCredentials();
+      const namedKey = targetLanguage === "en" ? creds.templates?.callHandoffOrgEn : creds.templates?.callHandoffOrgEs;
+      const noNameKey = targetLanguage === "en"
+        ? (creds.templates as { callHandoffOrgNoNameEn?: string })?.callHandoffOrgNoNameEn
+        : (creds.templates as { callHandoffOrgNoNameEs?: string })?.callHandoffOrgNoNameEs;
+      const templateName = requireTemplate(
+        leadName ? namedKey : noNameKey,
+        `Cloud API handoff template missing for org (${leadName ? "named" : "no-name"} ${targetLanguage})`
+      );
+      const variables: Record<string, string> = leadName
+        ? { "1": leadName, "2": targetAvatarName, "3": targetOrgName, "4": targetListingLink, "5": formattedFeatures }
+        : { "2": targetAvatarName, "3": targetOrgName, "4": targetListingLink, "5": formattedFeatures };
+      await sendInitialTemplateMessage({
+        to: state.phone,
+        chatId: state.chatId,
+        language: targetLanguage,
+        variables,
+        templateName,
+        skipEligibilityGate: true,
+      });
+    } else {
+      await sendTextMessage({
+        to: state.phone,
+        chatId: state.chatId,
+        body: compactMessage([
+          `Hola${leadName ? `, ${leadName}` : ""}.`,
+          `Soy ${targetAvatarName}, el asistente virtual de ${targetOrgName}.`,
+          "Entiendo que te has interesado en esta vivienda:",
+          targetListingLink,
+          "",
+          "¿Has visto las características?",
+          formattedFeatures,
+          "",
+          "Si quieres dejar de recibir estos mensajes, escribe STOP en cualquier momento.",
+        ]),
+      });
+    }
+
+    // Keep the owner-org conversation open in qualification so subsequent replies
+    // are processed by the owner-org bot, not the source intake.
+    // Hydrate listing-derived fields so the qualification prompt has full
+    // context (link/address/features/description/profitability) and does not
+    // regress to generic discovery questions.
+    await upsertConversation(state.chatId, {
+      phone: state.phone,
+      chatId: state.chatId,
+      listingCode: listing.listingCode,
+      operationType: listing.operationType,
+      link: listing.link,
+      address: listing.address,
+      features: featuresForHandoff,
+      idealistaDescription: listing.idealistaDescription || "",
+      profitabilityReportAvailable: listing.profitabilityReportAvailable,
+      profitabilityReport: listing.profitabilityReport,
+      type: "lead",
+      isFinished: false,
+      tags: ["lead", "call", "handoff"],
+      flowStep: "qualification",
+      language: targetLanguage,
+      name: leadName ?? undefined,
+    });
+  });
+
+  if (state.name === undefined && leadName) state.name = leadName;
+  state.isFinished = true;
+  state.tags = Array.from(new Set([...(state.tags || []), "handoff-transferred"]));
+  if (state.handoff) {
+    state.handoff = { ...state.handoff, status: "transferred" };
+  }
+  await upsertConversation(state.chatId, {
+    isFinished: true,
+    flowStep: "closed",
+    tags: state.tags,
+    name: leadName ?? undefined,
+    pendingNameConfirmation: undefined,
+    handoff: state.handoff
+      ? ({ ...state.handoff, transferredAt: admin.firestore.FieldValue.serverTimestamp() } as ConversationState["handoff"])
+      : undefined,
+  });
+  await recordCallHandoffEvent({
+    sourceOrgId,
+    correlationId,
+    chatId: state.chatId,
+    phone: state.phone,
+    language: initialLanguage,
+    status: "transferred",
+    targetOrgId,
+    matchedListingCode: listing.listingCode,
+    reason,
+  });
 }
 
 /**
@@ -1278,14 +1655,17 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
   // Sort messages by timestamp to maintain order
   const sortedMessages = [...messages].sort((a, b) => a.timestamp - b.timestamp);
 
-  // Add all user messages to history
+  // Add only missing user messages to history (webhooks may have already persisted them)
+  const existingUserKeys = new Set(
+    (state.history || [])
+      .filter((h) => h?.role === "user")
+      .map((h) => `${h.timestamp}:${h.text}`)
+  );
   for (const msg of sortedMessages) {
-    const userHistoryItem: HistoryItem = {
-      role: "user",
-      text: msg.text,
-      timestamp: msg.timestamp,
-    };
-    state.history.push(userHistoryItem);
+    const key = `${msg.timestamp}:${msg.text}`;
+    if (existingUserKeys.has(key)) continue;
+    state.history.push({ role: "user", text: msg.text, timestamp: msg.timestamp });
+    existingUserKeys.add(key);
   }
 
   console.log(`Processing ${sortedMessages.length} buffered message(s) for ${state.chatId}`);
@@ -1337,6 +1717,9 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     }
   }
 
+  const sendCrossOrgCallHandoff = (params: Parameters<typeof executeCrossOrgCallHandoff>[1]) =>
+    executeCrossOrgCallHandoff(state, params);
+
   const applyListingToStateAndPersist = async (listing: ListingRow, targetOrgId: string): Promise<void> => {
     const sourceOrgId = getActiveOrgId();
     const isCrossOrgCallHandoff = targetOrgId !== sourceOrgId || (state.tags || []).includes("call");
@@ -1370,6 +1753,10 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       state.handoff = undefined;
     }
 
+    const nextFlowStep: ConversationState["flowStep"] = isCrossOrgCallHandoff
+      ? (state.name && state.name.trim() ? "call_name_confirm" : "call_name_collect")
+      : "qualification";
+
     await upsertConversation(state.chatId, {
       listingCode: listing.listingCode,
       operationType: listing.operationType,
@@ -1383,7 +1770,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       tags: state.tags,
       type: "lead",
       language: initialLanguage,
-      flowStep: "qualification",
+      flowStep: nextFlowStep,
       pendingListingCandidate: undefined,
       pendingListingCandidates: undefined,
       listingResolveAttempts: state.listingResolveAttempts || 0,
@@ -1436,20 +1823,19 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       return;
     }
 
-    await recordCallHandoffEvent({
-      sourceOrgId,
-      correlationId,
-      chatId: state.chatId,
-      phone: state.phone,
-      language: initialLanguage,
-      status: "pending",
-      targetOrgId,
-      matchedListingCode: listing.listingCode,
-      reason: "listing_confirmed_user",
-    });
-
-    // Quick qualification toggle: if enabled, notify agent immediately and hand off.
+    // Quick qualification toggle: if enabled, notify agent immediately and stop (no name flow).
     if (listing.quickQualificationEnabled) {
+      await recordCallHandoffEvent({
+        sourceOrgId,
+        correlationId,
+        chatId: state.chatId,
+        phone: state.phone,
+        language: initialLanguage,
+        status: "pending",
+        targetOrgId,
+        matchedListingCode: listing.listingCode,
+        reason: "listing_confirmed_user",
+      });
       const notificationNumberRaw = NOTIFICATION_NUMBER.value();
       const agentNums = notificationNumberRaw
         ? notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean)
@@ -1500,232 +1886,209 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       return;
     }
 
-    const targetLanguage: "es" | "en" = initialLanguage === "en" ? "en" : "es";
-    const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
-    const inheritedPhoneCallConsent = async () => {
-      const sourceLeadSnap = await db
-        .collection(`organizations/${sourceOrgId}/leads`)
-        .where("chatId", "==", state.chatId)
-        .limit(1)
-        .get();
-      const sourceConsent = sourceLeadSnap.docs[0]?.data()?.consent as
-        | {
-            source?: string;
-            proofUrl?: string;
-            proofType?: "twilio_call_sid" | "twilio_recording_sid" | "wa_inbound";
-            consentScriptVersion?: string;
-            dtmfDigit?: "1";
-          }
-        | undefined;
-      const proofUrl = sourceConsent?.proofUrl || undefined;
-      return {
-        capturedAt: admin.firestore.Timestamp.now(),
-        source: "phone_call" as const,
-        language: targetLanguage,
-        proofUrl,
-        proofType: sourceConsent?.proofType || "twilio_call_sid",
-        consentScriptVersion: sourceConsent?.consentScriptVersion || VOICE_CONSENT_SCRIPT_VERSION.value() || "v1",
-        dtmfDigit: sourceConsent?.dtmfDigit || "1",
-      };
-    };
-    const handoffConsent = await inheritedPhoneCallConsent();
-
-    const handoffTransitionMessage = targetLanguage === "en"
-      ? `Great. ${listing.agentName || "the agent"}'s assistant will message you now to help with any questions and, if you want, coordinate a viewing.`
-      : `Estupendo. El asistente de tu agente ${listing.agentName || ""} te escribirá ahora para ayudarte con cualquier duda y, si quieres, coordinar una visita.`;
+    // Cross-org call handoff: pause to confirm/collect lead name before sending the
+    // owner-org template. Schedule a 3h timeout to proceed without a name if the lead
+    // never replies.
+    const capturedName = (state.name || "").trim();
+    const deadlineAtMs = Date.now() + CALL_NAME_TIMEOUT_SECONDS * 1000;
+    let timeoutTaskName: string | undefined;
     try {
-      await sendTextMessage({
-        to: state.phone,
-        chatId: state.chatId,
-        body: handoffTransitionMessage.replace(/\s+/g, " ").trim(),
+      const processCallNameTimeoutUrl = `https://${REGION}-${process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT}.cloudfunctions.net/processCallNameTimeout`;
+      const scheduled = await scheduleImmediateHttpTask({
+        url: processCallNameTimeoutUrl,
+        payload: { chatId: state.chatId, orgId: sourceOrgId, deadlineAtMs },
+        taskPrefix: "call-name-timeout",
+        taskId: state.chatId,
+        delaySeconds: CALL_NAME_TIMEOUT_SECONDS,
       });
+      timeoutTaskName = scheduled.taskName;
     } catch (error) {
-      console.warn("Failed to send handoff transition message", error);
+      console.warn("Failed to schedule call-name timeout task", error);
     }
 
-    await requestContext.run({ orgId: targetOrgId }, async () => {
-      // Ensure lead + inherited phone-call consent exist in target org before template send gate.
-      const targetConfig = await getBotConfig();
-      const targetAvatarName =
-        typeof targetConfig.orgName === "string" && targetConfig.orgName.trim()
-          ? targetConfig.orgName.trim()
-          : "el asistente virtual";
-      const targetAgentName = listing.agentName || targetAvatarName || "nuestro equipo";
-      const targetListingLink = listing.link || "";
-      const formattedFeatures = formatFeaturesList(state.features || "", targetLanguage).slice(0, 900);
-      const leadName = state.name || "Hola";
-
-      await updateLeadChatInfo({
-        phone: state.phone,
-        listingCode: listing.listingCode,
-        chatId: state.chatId,
-        operationType: listing.operationType,
-        name: state.name,
-        tags: ["lead", "call", "handoff"],
-        qualificationStatus: "not_qualified",
-      });
-      await setLeadConsentByChatId({
-        chatId: state.chatId,
-        phone: state.phone,
-        listingCode: listing.listingCode,
-        operationType: listing.operationType,
-        consent: handoffConsent,
-      });
-      const targetLeadSnap = await db
-        .collection(`organizations/${targetOrgId}/leads`)
-        .where("chatId", "==", state.chatId)
-        .limit(1)
-        .get();
-      if (!targetLeadSnap.empty) {
-        await targetLeadSnap.docs[0].ref.set(
-          {
-            leadSource: "call",
-            listingResolutionStatus: "resolved",
-          },
-          { merge: true }
-        );
-      }
-
-      const provider = await getActiveProviderFn();
-      if (provider === "twilio") {
-        const { twilioTemplates } = await getOrgTemplateSnapshot(targetOrgId);
-        const templateSid = targetLanguage === "en"
-          ? requireTemplate(
-            twilioTemplates.callHandoffOrgEn,
-            "Twilio call handoff template missing for org (callHandoffOrgEn)"
-          )
-          : requireTemplate(
-            twilioTemplates.callHandoffOrgEs,
-            "Twilio call handoff template missing for org (callHandoffOrgEs)"
-          );
-        await sendInitialTemplateMessage({
-          to: state.phone,
-          chatId: state.chatId,
-          language: targetLanguage,
-          variables: {
-            "1": leadName,
-            "2": targetAvatarName,
-            "3": targetAgentName,
-            "4": targetListingLink,
-            "5": formattedFeatures,
-          },
-          templateSid,
-        });
-      } else if (provider === "cloud_api") {
-        const creds = await getCloudApiCredentials();
-        const templateName = targetLanguage === "en"
-          ? requireTemplate(
-            creds.templates?.callHandoffOrgEn,
-            "Cloud API handoff template missing for org (callHandoffOrgEn)"
-          )
-          : requireTemplate(
-            creds.templates?.callHandoffOrgEs,
-            "Cloud API handoff template missing for org (callHandoffOrgEs)"
-          );
-        await sendInitialTemplateMessage({
-          to: state.phone,
-          chatId: state.chatId,
-          language: targetLanguage,
-          variables: {
-            "1": leadName,
-            "2": targetAgentName,
-            "3": targetListingLink,
-          },
-          templateName,
-        });
-      } else {
-        await sendTextMessage({
-          to: state.phone,
-          chatId: state.chatId,
-          body: compactMessage([
-            `Hola${state.name ? `, ${state.name}` : ""}.`,
-            `Soy ${targetAvatarName}, el asistente virtual de ${targetAgentName}.`,
-            "Entiendo que te has interesado en esta vivienda:",
-            targetListingLink,
-            "",
-            "¿Has visto las características?",
-            formattedFeatures,
-            "",
-            "Si quieres dejar de recibir estos mensajes, escribe STOP en cualquier momento.",
-          ]),
-        });
-      }
-    });
-
-    state.isFinished = true;
-    state.tags = Array.from(new Set([...(state.tags || []), "handoff-transferred"]));
-    if (state.handoff) {
-      state.handoff = {
-        ...state.handoff,
-        status: "transferred",
-      };
-    }
+    state.flowStep = capturedName ? "call_name_confirm" : "call_name_collect";
+    state.pendingNameConfirmation = {
+      capturedName: capturedName || undefined,
+      listingCode: listing.listingCode,
+      targetOrgId,
+      sourceOrgId,
+      correlationId,
+      deadlineAtMs,
+      timeoutTaskName,
+    };
     await upsertConversation(state.chatId, {
-      isFinished: true,
-      flowStep: "closed",
-      tags: state.tags,
-      handoff: state.handoff
-        ? ({
-          ...state.handoff,
-          transferredAt: admin.firestore.FieldValue.serverTimestamp(),
-        } as ConversationState["handoff"])
-        : undefined,
+      flowStep: state.flowStep,
+      pendingNameConfirmation: state.pendingNameConfirmation,
     });
+
+    const namePrompt = buildCallNamePrompt(initialLanguage, capturedName);
+    await sendTextMessage({ to: state.phone, chatId: state.chatId, body: namePrompt });
+    state.history.push({ role: "assistant", text: namePrompt, timestamp: Date.now() });
+    await upsertConversation(state.chatId, { history: state.history });
+
+    console.log("AGENT_DEBUG", JSON.stringify({
+      runId: "post-fix",
+      hypothesisId: "BFix",
+      location: "functions/src/index.ts:applyListingToStateAndPersist.nameFlowStarted",
+      message: "name confirmation flow initiated",
+      data: {
+        chatId: state.chatId,
+        flowStep: state.flowStep,
+        capturedName: capturedName || null,
+        targetOrgId,
+        sourceOrgId,
+        timeoutTaskName: timeoutTaskName || null,
+      },
+      timestamp: Date.now(),
+    }));
+
     await recordCallHandoffEvent({
       sourceOrgId,
       correlationId,
       chatId: state.chatId,
       phone: state.phone,
       language: initialLanguage,
-      status: "transferred",
+      status: "pending",
       targetOrgId,
       matchedListingCode: listing.listingCode,
-      reason: "org_intro_sent",
+      reason: capturedName ? "awaiting_name_confirmation" : "awaiting_name_collection",
     });
   };
 
-  const sendListingResolutionIntroIfNeeded = async (
-    language: InitialLanguage,
-    candidate?: ListingCandidate
-  ): Promise<void> => {
-    if ((state.tags || []).includes("listing-resolution-intro-sent")) return;
-    const config = await getBotConfig();
-    const avatarName = resolveConfiguredAssistantName(config);
-    let candidateAgentName = "";
-    if (candidate?.listingCode) {
-      try {
-        const listing = await fetchListingGlobally(candidate.listingCode);
-        candidateAgentName = listing?.data?.agentName || "";
-      } catch (error) {
-        console.warn("Failed to load listing for intro agent name", error);
-      }
-    }
-    const agentName = candidateAgentName || config.orgName || (language === "en" ? "our team" : "nuestro equipo");
-    const intro = language === "en"
-      ? compactMessage([
-        `Hello${state.name ? ` ${state.name}` : ""}.`,
-        `I'm ${avatarName}, the virtual assistant for ${agentName}. It's a pleasure to help you.`,
-      ])
-      : compactMessage([
-        `Hola${state.name ? ` ${state.name}` : ""}.`,
-        `Soy ${avatarName}, el asistente virtual de ${agentName}, un placer ayudarte.`,
-      ]);
-    await sendTextMessage({
-      to: state.phone,
-      chatId: state.chatId,
-      body: intro,
-    });
-    state.history.push({ role: "assistant", text: intro, timestamp: Date.now() });
-    state.tags = Array.from(new Set([...(state.tags || []), "listing-resolution-intro-sent"]));
-    await upsertConversation(state.chatId, { history: state.history, tags: state.tags });
-  };
-
-  // Deterministic listing resolution & confirmation before enabling AI flow.
+  // Cross-org call name-confirmation flow: runs after listing is confirmed and before
+  // the owner-org template is sent. The user sees a prompt asking to confirm the
+  // captured name (or to provide one) so the handoff template can address them properly.
   if (
-    state.flowStep === "call_listing_collect" ||
-    state.flowStep === "call_listing_confirm" ||
-    state.listingCode === CALL_PENDING_LISTING_CODE ||
-    !state.listingCode
+    (state.flowStep === "call_name_confirm" || state.flowStep === "call_name_collect") &&
+    state.pendingNameConfirmation &&
+    state.handoff?.targetOrgId
+  ) {
+    const lastUserText = sortedMessages.length > 0 ? sortedMessages[sortedMessages.length - 1].text : "";
+    const language: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
+    const pending = state.pendingNameConfirmation;
+    const captured = (pending.capturedName || "").trim();
+
+    const failHandoff = async (reason: string, error: unknown) => {
+      console.error("AGENT_DEBUG", JSON.stringify({
+        runId: "post-fix",
+        hypothesisId: "BFix",
+        location: "functions/src/index.ts:processBufferedMessages.callNameFlow.failure",
+        message: "cross-org handoff failed during name flow",
+        data: { chatId: state.chatId, reason, error: error instanceof Error ? error.message : String(error) },
+        timestamp: Date.now(),
+      }));
+      try {
+        await sendAlert(
+          "Cross-org call handoff failed",
+          `Cross-org call handoff failed during ${reason} for chatId ${state.chatId}`,
+          { chatId: state.chatId, sourceOrgId: pending.sourceOrgId, targetOrgId: pending.targetOrgId, listingCode: pending.listingCode }
+        );
+      } catch {}
+    };
+
+    const runHandoff = async (leadName?: string): Promise<boolean> => {
+      try {
+        const listing = await fetchListingGlobally(pending.listingCode);
+        if (!listing) {
+          await failHandoff("listing_lookup", new Error(`Listing ${pending.listingCode} not found at handoff time`));
+          return false;
+        }
+        await sendCrossOrgCallHandoff({
+          listing: listing.data,
+          targetOrgId: pending.targetOrgId,
+          sourceOrgId: pending.sourceOrgId,
+          correlationId: pending.correlationId,
+          initialLanguage: language,
+          leadName,
+          reason: leadName ? "name_confirmed" : "name_timeout_or_skipped",
+        });
+        return true;
+      } catch (error) {
+        await failHandoff("handoff_send", error);
+        return false;
+      }
+    };
+
+    if (state.flowStep === "call_name_confirm") {
+      const normalized = normalizeForSearch(lastUserText);
+      const isYes = ["confirm_yes", "si", "sí", "yes", "y", "ok", "vale"].includes(normalized);
+      const isNo = ["confirm_no", "no", "nop", "none", "ninguno", "ninguna"].includes(normalized);
+      const providedName = sanitizeLeadNameFromMessage(lastUserText);
+
+      if (isYes && captured) {
+        const ok = await runHandoff(captured);
+        if (!ok) {
+          await sendTextMessage({ to: state.phone, chatId: state.chatId, body: language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve." });
+        }
+        return;
+      }
+
+      if (providedName && providedName.toLowerCase() !== captured.toLowerCase()) {
+        const ok = await runHandoff(providedName);
+        if (!ok) {
+          await sendTextMessage({ to: state.phone, chatId: state.chatId, body: language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve." });
+        }
+        return;
+      }
+
+      if (isNo) {
+        state.flowStep = "call_name_collect";
+        state.pendingNameConfirmation = { ...pending, capturedName: undefined };
+        await upsertConversation(state.chatId, {
+          flowStep: "call_name_collect",
+          pendingNameConfirmation: state.pendingNameConfirmation,
+        });
+        await sendTextMessage({ to: state.phone, chatId: state.chatId, body: buildCallNamePrompt(language, undefined) });
+        return;
+      }
+
+      // Unclear → ask again.
+      await sendTextMessage({ to: state.phone, chatId: state.chatId, body: buildCallNamePrompt(language, captured) });
+      return;
+    }
+
+    if (state.flowStep === "call_name_collect") {
+      const providedName = sanitizeLeadNameFromMessage(lastUserText);
+      if (providedName) {
+        const ok = await runHandoff(providedName);
+        if (!ok) {
+          await sendTextMessage({ to: state.phone, chatId: state.chatId, body: language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve." });
+        }
+        return;
+      }
+      // Could not extract a name; ask again succinctly.
+      await sendTextMessage({ to: state.phone, chatId: state.chatId, body: buildCallNamePrompt(language, undefined) });
+      return;
+    }
+  }
+
+  // Deterministic listing resolution & confirmation before enabling AI flow. Scoped to
+  // call-tagged conversations only: missing listingCode for non-call leads must NOT
+  // route through this branch, otherwise unrelated conversations get pulled into the
+  // call resolution path and may cross orgs. The very first inbound after voice opt-in
+  // arrives with `flowStep` undefined and `listingCode === CALL_PENDING_LISTING_CODE`,
+  // so we treat that case as the implicit "collect" entry point.
+  // #region agent log
+  console.error("AGENT_DEBUG", JSON.stringify({
+    runId: "post-fix",
+    hypothesisId: "D",
+    location: "functions/src/index.ts:processBufferedMessages.callGate",
+    message: "evaluating deterministic call flow gate",
+    data: {
+      chatId: state.chatId,
+      tags: state.tags || null,
+      flowStep: state.flowStep || null,
+      listingCode: state.listingCode || null,
+      handoffStatus: state.handoff?.status || null,
+    },
+    timestamp: Date.now(),
+  }));
+  // #endregion
+  if (
+    (state.tags || []).includes("call") &&
+    (state.flowStep === "call_listing_collect" ||
+      state.flowStep === "call_listing_confirm" ||
+      state.listingCode === CALL_PENDING_LISTING_CODE)
   ) {
     const callFlowLanguage: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
     const currentStep = state.flowStep || "call_listing_collect";
@@ -1844,7 +2207,6 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
               pendingListingCandidate: nextCandidate,
               rejectedListingCodes: state.rejectedListingCodes,
             });
-            await sendListingResolutionIntroIfNeeded(callFlowLanguage, nextCandidate);
             await sendBinaryConfirmPrompt({
               to: state.phone,
               chatId: state.chatId,
@@ -1869,15 +2231,14 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           return;
         }
 
-          await sendListingResolutionIntroIfNeeded(callFlowLanguage, candidate);
           await sendBinaryConfirmPrompt({
-          to: state.phone,
-          chatId: state.chatId,
+            to: state.phone,
+            chatId: state.chatId,
             language: callFlowLanguage,
             body: callFlowLanguage === "en"
               ? "Is this the correct property?"
               : "¿Es correcta esta vivienda?",
-        });
+          });
         return;
       }
 
@@ -1913,7 +2274,6 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
             pendingListingCandidates: undefined,
             listingResolveAttempts: attempt,
           });
-          await sendListingResolutionIntroIfNeeded(callFlowLanguage, candidate);
           await sendBinaryConfirmPrompt({
             to: state.phone,
             chatId: state.chatId,
@@ -1948,7 +2308,6 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
             pendingListingCandidates: undefined,
             listingResolveAttempts: attempt,
           });
-          await sendListingResolutionIntroIfNeeded(callFlowLanguage, firstCandidate);
           await sendBinaryConfirmPrompt({
             to: state.phone,
             chatId: state.chatId,
@@ -1965,7 +2324,6 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           flowStep: "call_listing_collect",
           listingResolveAttempts: nextAttempt,
         });
-        await sendListingResolutionIntroIfNeeded(callFlowLanguage);
         if (nextAttempt <= 2) {
           await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt, callFlowLanguage), chatId: state.chatId });
           return;
@@ -1987,7 +2345,26 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         return;
       }
     } catch (error) {
-      console.warn("Call listing resolution flow failed", error);
+      console.error("Call listing resolution flow failed", error);
+      console.error("AGENT_DEBUG", JSON.stringify({
+        runId: "post-fix",
+        hypothesisId: "BFix",
+        location: "functions/src/index.ts:processBufferedMessages.callFlow.catch",
+        message: "deterministic call flow failed; aborting to avoid AI fallback",
+        data: {
+          chatId: state.chatId,
+          flowStep: state.flowStep || null,
+          listingCode: state.listingCode || null,
+          handoffStatus: state.handoff?.status || null,
+          targetOrgId: state.handoff?.targetOrgId || null,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        timestamp: Date.now(),
+      }));
+      try {
+        await sendAlert("Call handoff flow failed", `Deterministic call/listing/name flow failed for chatId ${state.chatId}; aborting to avoid AI fallback.`, { chatId: state.chatId, flowStep: state.flowStep || null, listingCode: state.listingCode || null, error: error instanceof Error ? error.message : String(error) });
+      } catch {}
+      return;
     }
   }
 
@@ -2188,22 +2565,25 @@ export const webhook = onRequest(
         try {
           // Tiered organization resolution:
           // 1. Explicit query parameter/body orgId (highest priority)
-          // 2. Recency-based lookup by chatId across all organizations
+          // 2. Twilio destination number (`To`) — owns the inbound for that org
+          // 3. Recency-based lookup by chatId across all organizations
           const orgQueryId = req.query.orgId as string | undefined;
           const orgBodyId = typeof req.body?.orgId === "string" ? req.body.orgId : undefined;
           let orgId = orgQueryId || orgBodyId;
+          const twilioToOrgId = orgId ? undefined : await resolveOrgIdByTwilioToNumber(req.body?.To);
+          if (!orgId && twilioToOrgId) orgId = twilioToOrgId;
           if (!orgId) {
             orgId = await findOrgIdByChatId(chatId) || undefined;
           }
-          
+
           if (orgQueryId) {
             console.log(`Using explicit orgId from query: ${orgQueryId} for chatId ${chatId}`);
           } else if (orgBodyId) {
             console.log(`Using explicit orgId from body: ${orgBodyId} for chatId ${chatId}`);
+          } else if (twilioToOrgId) {
+            console.log(`Resolved orgId via Twilio To=${req.body?.To} for chatId ${chatId}: ${twilioToOrgId}`);
           } else if (orgId) {
-            console.log(`Resolved explicit orgId for chatId ${chatId}: ${orgId}`);
-          } else if (orgId) {
-            console.log(`Resolved orgId via chat lookup for chatId ${chatId}: ${orgId}`);
+            console.log(`Resolved orgId via chatId lookup for chatId ${chatId}: ${orgId}`);
           } else {
             console.warn(`Could not resolve organization for chatId ${chatId}`);
           }
@@ -2251,6 +2631,40 @@ export const webhook = onRequest(
                 text: msg.text,
                 timestamp: msg.timestamp,
               });
+            }
+
+            // Persist inbound messages to conversation history immediately (UI realtime),
+            // while still keeping the buffer for delayed bot processing.
+            const sorted = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+            const existingKeys = new Set(
+              (state.history || [])
+                .filter((h) => h?.role === "user")
+                .map((h) => `${h.timestamp}:${h.text}`)
+            );
+            for (const msg of sorted) {
+              const key = `${msg.timestamp}:${msg.text}`;
+              if (existingKeys.has(key)) continue;
+              state.history.push({ role: "user", text: msg.text, timestamp: msg.timestamp });
+              existingKeys.add(key);
+            }
+            await upsertConversation(canonicalChatId, { history: state.history });
+
+            // Mirror inbound on lead metadata immediately (hasResponse + implicit consent).
+            if (sorted.length > 0) {
+              await markLeadAsResponded(canonicalChatId);
+              const firstInbound = sorted[0];
+              const created = await ensureInboundWhatsAppConsentByChatId({
+                chatId: canonicalChatId,
+                language: state.language || "es",
+                proofUrl: `wa_inbound:${canonicalChatId}:${firstInbound.timestamp}`,
+              });
+              if (created) {
+                await recordSystemAction("lead", created.leadId, "consent_auto_captured", {
+                  source: "inbound_whatsapp",
+                  chatId: canonicalChatId,
+                  timestamp: firstInbound.timestamp,
+                });
+              }
             }
 
             const processUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`;
@@ -2347,24 +2761,108 @@ export const whatsappWebhook = onRequest(
 
       const DATABASE_ID = "realestate-whatsapp-bot";
       const db = getFirestore(admin.app(), DATABASE_ID);
-      const body = req.body as { entry?: Array<{ id?: string }> } | undefined;
+      const body = req.body as
+        | { entry?: Array<{ id?: string; changes?: Array<{ field?: string; value?: { metadata?: { phone_number_id?: string } } }> }> }
+        | undefined;
       const entries = Array.isArray(body?.entry) ? body!.entry! : [];
       if (entries.length === 0) {
         res.status(200).json({ received: true, buffered: false });
         return;
       }
 
-      // Resolve orgId per entry via wabaIndex/{wabaId}, then reuse per-org buffering path.
+      // Group changes by Cloud API phone_number_id. Two orgs may share a single
+      // wabaId but each owns its own phone_number_id; routing only by wabaId would
+      // pick the wrong org. We therefore prefer phoneNumberIndex/{phoneNumberId}
+      // first and only fall back to wabaIndex/{wabaId} for older payloads where
+      // metadata.phone_number_id is missing.
+      const changesByPhoneNumberId = new Map<
+        string,
+        { wabaId?: string; entry: { id?: string; changes: NonNullable<NonNullable<typeof entries[number]["changes"]>> } }
+      >();
+      const entriesWithoutPhoneId: Array<typeof entries[number]> = [];
+      for (const entry of entries) {
+        const wabaId = entry?.id;
+        const changes = Array.isArray(entry?.changes) ? entry!.changes! : [];
+        let matched = false;
+        for (const change of changes) {
+          const phoneNumberId = change?.value?.metadata?.phone_number_id;
+          if (!phoneNumberId) continue;
+          matched = true;
+          const existing = changesByPhoneNumberId.get(phoneNumberId);
+          if (existing) {
+            existing.entry.changes.push(change);
+          } else {
+            changesByPhoneNumberId.set(phoneNumberId, {
+              wabaId,
+              entry: { id: wabaId, changes: [change] },
+            });
+          }
+        }
+        if (!matched) entriesWithoutPhoneId.push(entry);
+      }
+
+      const resolveOrgFromIndices = async (phoneNumberId: string | undefined, wabaId: string | undefined): Promise<string | undefined> => {
+        if (phoneNumberId) {
+          const phoneIdx = await db.doc(`phoneNumberIndex/${phoneNumberId}`).get();
+          const orgFromPhone = phoneIdx.exists ? (phoneIdx.data()?.orgId as string | undefined) : undefined;
+          if (orgFromPhone) return orgFromPhone;
+        }
+        if (wabaId) {
+          const wabaIdx = await db.doc(`wabaIndex/${wabaId}`).get();
+          const orgFromWaba = wabaIdx.exists ? (wabaIdx.data()?.orgId as string | undefined) : undefined;
+          if (orgFromWaba) return orgFromWaba;
+        }
+        return undefined;
+      };
+
+      const groupedDispatch = await Promise.all(
+        Array.from(changesByPhoneNumberId.entries()).map(async ([phoneNumberId, group]) => {
+          const orgId = await resolveOrgFromIndices(phoneNumberId, group.wabaId);
+          if (!orgId) {
+            console.error(
+              `whatsappWebhook: no org mapping for phoneNumberId=${phoneNumberId} (wabaId=${group.wabaId || "?"}). ` +
+              "Ensure Embedded Signup/manual Cloud API config has persisted phoneNumberIndex/wabaIndex."
+            );
+            return;
+          }
+          const effective = await getEffectiveProviderForOrg(orgId);
+          if (effective.provider !== "cloud_api") {
+            console.log(
+              `whatsappWebhook: ignoring inbound for org ${orgId} (provider=${effective.provider}, source=${effective.source})`
+            );
+            return;
+          }
+          const inboundMessages = parseCloudApiWebhook(
+            { entry: [group.entry] },
+            normalizeToCanonicalChatId,
+            ensureTimestampMillis
+          );
+          if (inboundMessages.length === 0) return;
+          await dispatchCloudApiInbound(orgId, inboundMessages);
+        })
+      );
+      void groupedDispatch;
+
+      // Legacy path: entries without metadata.phone_number_id fall back to wabaIndex.
       await Promise.all(
-        entries.map(async (entry) => {
+        entriesWithoutPhoneId.map(async (entry) => {
           const wabaId = entry?.id;
           if (!wabaId) return;
-          const idx = await db.doc(`wabaIndex/${wabaId}`).get();
-          const orgId = idx.exists ? (idx.data()?.orgId as string | undefined) : undefined;
+          const orgId = await resolveOrgFromIndices(undefined, wabaId);
           if (!orgId) {
             console.error(
               `whatsappWebhook: no org mapping for wabaId=${wabaId}. ` +
-                "Ensure Embedded Signup/manual Cloud API config has persisted wabaIndex."
+              "Ensure Embedded Signup/manual Cloud API config has persisted wabaIndex."
+            );
+            return;
+          }
+
+          // Hybrid model: keep Meta subscription active, but only process Cloud API inbound
+          // when the org's effective provider is Cloud API. This avoids cross-provider routing.
+          const effective = await getEffectiveProviderForOrg(orgId);
+          if (effective.provider !== "cloud_api") {
+            console.log(
+              `whatsappWebhook: ignoring inbound for org ${orgId} (provider=${effective.provider}, source=${effective.source})`
             );
             return;
           }
@@ -2375,47 +2873,7 @@ export const whatsappWebhook = onRequest(
             ensureTimestampMillis
           );
           if (inboundMessages.length === 0) return;
-
-          const messagesByChatId = new Map<string, InboundMessage[]>();
-          for (const msg of inboundMessages) {
-            const existing = messagesByChatId.get(msg.chatId) || [];
-            existing.push({ chatId: msg.chatId, phone: msg.phone, text: msg.text, timestamp: msg.timestamp });
-            messagesByChatId.set(msg.chatId, existing);
-          }
-
-          await requestContext.run({ orgId }, async () => {
-            await Promise.all(
-              Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
-                try {
-                  if (await isChatIgnored(chatId)) return;
-                  if (messages.some((m) => isOptOutMessage(m.text))) {
-                    await applyOptOut({ orgId, chatId, phone: messages[0].phone });
-                    return;
-                  }
-                  const state = await ensureConversationState(chatId, messages[0].phone);
-                  if (!state) {
-                    console.warn("whatsappWebhook: could not reconstruct state for", chatId, "org", orgId);
-                    return;
-                  }
-                  if (state.isFinished) return;
-                  const canonicalChatId = state.chatId;
-                  for (const msg of messages) {
-                    await addPendingMessage(canonicalChatId, { text: msg.text, timestamp: msg.timestamp });
-                  }
-                  const processUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`;
-                  const { taskName, scheduledTime } = await scheduleBufferTask(
-                    canonicalChatId,
-                    processUrl,
-                    state.pendingTaskName,
-                    orgId
-                  );
-                  await updateBufferTask(canonicalChatId, taskName, scheduledTime);
-                } catch (err) {
-                  console.error("whatsappWebhook buffering error", chatId, err);
-                }
-              })
-            );
-          });
+          await dispatchCloudApiInbound(orgId, inboundMessages);
         })
       );
 
@@ -2426,6 +2884,109 @@ export const whatsappWebhook = onRequest(
     }
   }
 );
+
+async function resolveOrgIdByTwilioToNumber(toRaw: unknown): Promise<string | undefined> {
+  if (typeof toRaw !== "string" || !toRaw.trim()) return undefined;
+  const normalized = toRaw.trim().toLowerCase();
+  const variants = new Set<string>([normalized]);
+  // Twilio sends `whatsapp:+34686076497`; also try the bare E.164 form for robustness.
+  const bare = normalized.replace(/^whatsapp:/, "");
+  variants.add(bare);
+  variants.add(`whatsapp:${bare}`);
+
+  const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+  const orgsSnap = await db.collection("organizations").get();
+  for (const orgDoc of orgsSnap.docs) {
+    const cfgSnap = await db.doc(`organizations/${orgDoc.id}/botConfig/config`).get();
+    if (!cfgSnap.exists) continue;
+    const cfg = cfgSnap.data() as Partial<BotConfig> | undefined;
+    const candidates = [
+      cfg?.twilioConfig?.whatsappNumber,
+      // Also accept bare digits if someone stored them without the `whatsapp:` prefix.
+    ].filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+     .map((v) => v.trim().toLowerCase());
+    for (const candidate of candidates) {
+      if (variants.has(candidate)) return orgDoc.id;
+      if (variants.has(candidate.replace(/^whatsapp:/, ""))) return orgDoc.id;
+    }
+  }
+  return undefined;
+}
+
+async function dispatchCloudApiInbound(orgId: string, inboundMessages: Array<{ chatId: string; phone: string; text: string; timestamp: number }>): Promise<void> {
+  const messagesByChatId = new Map<string, InboundMessage[]>();
+  for (const msg of inboundMessages) {
+    const existing = messagesByChatId.get(msg.chatId) || [];
+    existing.push({ chatId: msg.chatId, phone: msg.phone, text: msg.text, timestamp: msg.timestamp });
+    messagesByChatId.set(msg.chatId, existing);
+  }
+
+  await requestContext.run({ orgId }, async () => {
+    await Promise.all(
+      Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
+        try {
+          if (await isChatIgnored(chatId)) return;
+          if (messages.some((m) => isOptOutMessage(m.text))) {
+            await applyOptOut({ orgId, chatId, phone: messages[0].phone });
+            return;
+          }
+          const state = await ensureConversationState(chatId, messages[0].phone);
+          if (!state) {
+            console.warn("whatsappWebhook: could not reconstruct state for", chatId, "org", orgId);
+            return;
+          }
+          if (state.isFinished) return;
+          const canonicalChatId = state.chatId;
+          for (const msg of messages) {
+            await addPendingMessage(canonicalChatId, { text: msg.text, timestamp: msg.timestamp });
+          }
+
+          const sorted = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+          const existingKeys = new Set(
+            (state.history || [])
+              .filter((h) => h?.role === "user")
+              .map((h) => `${h.timestamp}:${h.text}`)
+          );
+          for (const msg of sorted) {
+            const key = `${msg.timestamp}:${msg.text}`;
+            if (existingKeys.has(key)) continue;
+            state.history.push({ role: "user", text: msg.text, timestamp: msg.timestamp });
+            existingKeys.add(key);
+          }
+          await upsertConversation(canonicalChatId, { history: state.history });
+
+          if (sorted.length > 0) {
+            await markLeadAsResponded(canonicalChatId);
+            const firstInbound = sorted[0];
+            const created = await ensureInboundWhatsAppConsentByChatId({
+              chatId: canonicalChatId,
+              language: state.language || "es",
+              proofUrl: `wa_inbound:${canonicalChatId}:${firstInbound.timestamp}`,
+            });
+            if (created) {
+              await recordSystemAction("lead", created.leadId, "consent_auto_captured", {
+                source: "inbound_whatsapp",
+                chatId: canonicalChatId,
+                timestamp: firstInbound.timestamp,
+              });
+            }
+          }
+
+          const processUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`;
+          const { taskName, scheduledTime } = await scheduleBufferTask(
+            canonicalChatId,
+            processUrl,
+            state.pendingTaskName,
+            orgId
+          );
+          await updateBufferTask(canonicalChatId, taskName, scheduledTime);
+        } catch (err) {
+          console.error("whatsappWebhook buffering error", chatId, err);
+        }
+      })
+    );
+  });
+}
 
 /**
  * Twilio Voice webhook for call→WhatsApp handoff (A6d — DTMF opt-in gate).
@@ -2746,8 +3307,8 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
       // Process all buffered messages at once
       await processBufferedMessages(state, pendingMessages);
 
-      // Update in-memory cache
-      conversationStates.set(chatId, state);
+      // Update in-memory cache (org-scoped)
+      setCachedConversationState(chatId, state);
 
       console.log(`Successfully processed ${pendingMessages.length} message(s) for ${chatId}`);
 
@@ -2769,6 +3330,108 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
     });
   }
 });
+
+/**
+ * 3h timeout handler for the cross-org call handoff name flow.
+ * Cloud Task created in applyListingToStateAndPersist invokes this after the delay.
+ * If the lead never replied to the name prompt, fire the cross-org handoff anyway
+ * using the no-name template variant.
+ */
+export const processCallNameTimeout = onRequest(
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const { chatId, orgId } = (req.body || {}) as { chatId?: string; orgId?: string };
+      if (!chatId || !orgId) {
+        console.warn("processCallNameTimeout missing chatId/orgId", req.body);
+        res.status(400).json({ error: "chatId and orgId required" });
+        return;
+      }
+
+      console.log(`processCallNameTimeout invoked for chatId=${chatId} org=${orgId}`);
+
+      await requestContext.run({ orgId }, async () => {
+        const state = await ensureConversationState(chatId);
+        if (!state) {
+          console.log("processCallNameTimeout: state not found, skipping", chatId);
+          res.status(200).json({ skipped: true, reason: "state_not_found" });
+          return;
+        }
+        // Idempotency: only proceed if still in name-pending state.
+        const stillPending =
+          (state.flowStep === "call_name_confirm" || state.flowStep === "call_name_collect") &&
+          !!state.pendingNameConfirmation &&
+          state.handoff?.status === "pending";
+        if (!stillPending) {
+          console.log("processCallNameTimeout: not pending anymore, skipping", {
+            chatId,
+            flowStep: state.flowStep,
+            handoffStatus: state.handoff?.status,
+          });
+          res.status(200).json({ skipped: true, reason: "no_longer_pending" });
+          return;
+        }
+
+        const pending = state.pendingNameConfirmation!;
+        const listing = await fetchListingGlobally(pending.listingCode);
+        if (!listing) {
+          console.warn("processCallNameTimeout: listing not found", pending.listingCode);
+          await sendAlert(
+            "Call handoff timeout failed",
+            `Listing ${pending.listingCode} not found at timeout for chatId ${chatId}`,
+            { chatId, listingCode: pending.listingCode }
+          );
+          res.status(200).json({ skipped: true, reason: "listing_missing" });
+          return;
+        }
+
+        try {
+          await sendCrossOrgCallHandoff(state, {
+            listing: listing.data,
+            targetOrgId: pending.targetOrgId,
+            sourceOrgId: pending.sourceOrgId,
+            correlationId: pending.correlationId,
+            initialLanguage: state.language || resolveInitialLanguage(state.phone),
+            useLeadName: false,
+            reason: "name_timeout_3h",
+          });
+          console.log("AGENT_DEBUG", JSON.stringify({
+            runId: "post-fix",
+            hypothesisId: "BFix",
+            location: "functions/src/index.ts:processCallNameTimeout.handoffSent",
+            message: "no-name handoff sent after 3h timeout",
+            data: { chatId, sourceOrgId: pending.sourceOrgId, targetOrgId: pending.targetOrgId, listingCode: pending.listingCode },
+            timestamp: Date.now(),
+          }));
+          res.status(200).json({ ok: true });
+        } catch (error) {
+          console.error("processCallNameTimeout handoff failed", error);
+          await sendAlert(
+            "Call handoff timeout failed",
+            `Cross-org handoff failed at 3h timeout for chatId ${chatId}`,
+            { chatId, error: error instanceof Error ? error.message : String(error) }
+          );
+          res.status(500).json({ error: "handoff_failed" });
+        }
+      });
+    } catch (error) {
+      console.error("processCallNameTimeout error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+// File-scope alias so callers outside processBufferedMessages can invoke the helper.
+async function sendCrossOrgCallHandoff(
+  state: ConversationState,
+  params: Parameters<typeof executeCrossOrgCallHandoff>[1]
+): Promise<void> {
+  return executeCrossOrgCallHandoff(state, params);
+}
 
 /**
  * Shared WhatsApp onboarding after a listing is resolved (Idealista webhook / newLead).
@@ -2978,7 +3641,7 @@ export async function runNewLeadMessagingPipeline(params: {
     };
 
     await upsertConversation(chatId, { ...state, type: "lead" });
-    conversationStates.set(chatId, state);
+    setCachedConversationState(chatId, state);
 
     return { ok: false, kind: "send_failed", chatId, details, initialHistory, featuresText };
   }
@@ -3014,7 +3677,7 @@ export async function runNewLeadMessagingPipeline(params: {
     recordings: [],
   };
 
-  conversationStates.set(chatId, { ...state, type: "lead" });
+  setCachedConversationState(chatId, { ...state, type: "lead" });
   await upsertConversation(chatId, { ...state, tags: leadTags, type: "lead" });
 
   return { ok: true, chatId, initialHistory, featuresText };
@@ -3079,7 +3742,7 @@ async function runIdealistaConfirmPipeline(params: {
     botDisabled: false,
     name: leadName,
   };
-  conversationStates.set(chatId, { ...state, type: "lead" });
+  setCachedConversationState(chatId, { ...state, type: "lead" });
   await upsertConversation(chatId, {
     ...state,
     type: "lead",
@@ -4135,7 +4798,7 @@ export const sendMessage = onRequest({ cors: true, region: REGION, secrets: [WHA
       });
 
       await upsertConversation(chatId, { history: updatedHistory });
-      conversationStates.set(chatId, { ...state, history: updatedHistory });
+      setCachedConversationState(chatId, { ...state, history: updatedHistory });
 
       res.status(200).json({ success: true });
     });
@@ -4192,7 +4855,7 @@ export const sendMassMessage = onRequest({ cors: true, region: REGION, secrets: 
             });
 
             await upsertConversation(chatId, { history: updatedHistory });
-            conversationStates.set(chatId, { ...state, history: updatedHistory });
+            setCachedConversationState(chatId, { ...state, history: updatedHistory });
 
             results.success++;
           } catch (error) {

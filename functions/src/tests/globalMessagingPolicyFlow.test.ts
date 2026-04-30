@@ -22,12 +22,12 @@ test("provider resolution uses org override then global default", () => {
   );
 });
 
-test("cloud api credentials merge global templates with org templates", () => {
+test("cloud api credentials attach org template map from config", () => {
   const source = readRepoFile("src/services/cloudApiClient.ts");
   assert.match(
     source,
-    /const globalPolicy = await getGlobalMessagingPolicy\(\);[\s\S]*?const mergedTemplates:[\s\S]*?\{\s*\.\.\.globalTemplates,[\s\S]*?\.\.\.\(config\.templates \|\| \{\}\)/,
-    "cloudApi credentials should use global templates with org override precedence"
+    /const orgTemplates:\s*CloudApiTemplateNames\s*=\s*\{[\s\S]*?\.\.\.\(config\.templates\s*\|\|\s*\{\}\)/,
+    "cloudApi credentials should carry org-level templates from cloudApiConfig"
   );
 });
 

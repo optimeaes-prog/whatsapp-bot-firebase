@@ -1,0 +1,54 @@
+# Rename this file to: .cursorignore
+
+# ---- Secrets (never send to AI) ----
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+**/credentials*.json
+**/*secret*
+
+# ---- Dependencies / caches ----
+**/node_modules/
+**/.pnp/
+**/.yarn/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.cache/
+**/.turbo/
+**/.next/
+**/.svelte-kit/
+**/.nuxt/
+**/.angular/
+**/.expo/
+**/coverage/
+
+# ---- Build output ----
+**/dist/
+**/build/
+**/out/
+**/*.min.*
+
+# ---- Large / binary token sinks ----
+**/*.map
+**/*.log
+**/*.zip
+**/*.tar
+**/*.gz
+**/*.pdf
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.webp
+**/*.mp4
+**/*.mov
+**/*.webm
+**/*.sqlite
+**/*.db

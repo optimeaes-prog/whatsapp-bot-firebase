@@ -9,9 +9,11 @@ import {
   orderBy,
   where,
   Timestamp,
+  onSnapshot,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import type { Conversation, HistoryItem } from "../types";
+import { auth } from "../lib/firebase";
 
 import { getOrganizationBasePath } from "../lib/organization";
 
@@ -78,6 +80,44 @@ export async function getConversations(): Promise<Conversation[]> {
 
   // Deduplicate by phone number to handle legacy @c.us vs @s.whatsapp.net duplicates
   return deduplicateByPhone(rawConversations);
+}
+
+export function subscribeConversations(
+  onChange: (conversations: Conversation[]) => void,
+  onError?: (error: unknown) => void
+): () => void {
+  const q = query(collection(db, getConversationsCollection()), orderBy("lastMessage", "desc"));
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const raw = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Conversation[];
+      onChange(deduplicateByPhone(raw));
+    },
+    (err) => {
+      onError?.(err);
+    }
+  );
+}
+
+export function subscribeConversationById(
+  id: string,
+  onChange: (conversation: Conversation | null) => void,
+  onError?: (error: unknown) => void
+): () => void {
+  const docRef = doc(db, getConversationsCollection(), id);
+  return onSnapshot(
+    docRef,
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onChange(null);
+        return;
+      }
+      onChange({ id: snapshot.id, ...snapshot.data() } as Conversation);
+    },
+    (err) => {
+      onError?.(err);
+    }
+  );
 }
 
 
@@ -180,10 +220,15 @@ export async function deleteConversationByChatId(chatId: string): Promise<void> 
 const FUNCTIONS_BASE_URL = "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
 
 export async function sendMessageToWhatsApp(chatId: string, text: string): Promise<void> {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) {
+    throw new Error("Unauthorized");
+  }
   const response = await fetch(`${FUNCTIONS_BASE_URL}/sendMessage`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
     },
     body: JSON.stringify({ chatId, text }),
   });
@@ -195,10 +240,15 @@ export async function sendMessageToWhatsApp(chatId: string, text: string): Promi
 }
 
 export async function sendMassMessageToWhatsApp(chatIds: string[], text: string): Promise<any> {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) {
+    throw new Error("Unauthorized");
+  }
   const response = await fetch(`${FUNCTIONS_BASE_URL}/sendMassMessage`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
     },
     body: JSON.stringify({ chatIds, text }),
   });
@@ -212,10 +262,15 @@ export async function sendMassMessageToWhatsApp(chatIds: string[], text: string)
 }
 
 export async function triggerAssistantResponse(chatId: string): Promise<void> {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) {
+    throw new Error("Unauthorized");
+  }
   const response = await fetch(`${FUNCTIONS_BASE_URL}/triggerBot`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
     },
     body: JSON.stringify({ chatId }),
   });

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { MessageSquare, Search, ArrowLeft, Trash2, Send, Bot, BotOff, Download, ChevronDown, ChevronUp, CheckCircle, Megaphone, Activity, Calendar, CheckSquare, Square } from "lucide-react";
 import type { Conversation } from "../types";
@@ -8,7 +8,9 @@ import {
   updateConversation,
   sendMessageToWhatsApp,
   triggerAssistantResponse,
-  getConversationById
+  getConversationById,
+  subscribeConversations,
+  subscribeConversationById
 } from "../services/conversations";
 import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn } from "../lib/utils";
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
@@ -38,6 +40,11 @@ export function Conversations() {
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [showDetailsMobile, setShowDetailsMobile] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollMessagesToBottom = (behavior: ScrollBehavior = "smooth") => {
+    messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
+  };
 
   // Dropdown open states
   const [isDateDropdownOpen, setIsDateDropdownOpen] = useState(false);
@@ -48,8 +55,67 @@ export function Conversations() {
   const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
 
   useEffect(() => {
-    loadConversations();
+    if (!organizationId) return;
+    setLoading(true);
+
+    const unsub = subscribeConversations(
+      (data) => {
+        setConversations(data);
+        setSelectedConversation((prev) => {
+          if (prev) {
+            const updated = data.find((c) => c.id === prev.id);
+            return updated || prev;
+          }
+          if (!prev && data.length > 0 && window.innerWidth >= 768) {
+            return data[0];
+          }
+          return prev;
+        });
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Error loading conversations (realtime):", err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsub();
   }, [organizationId]);
+
+  useEffect(() => {
+    if (!organizationId) return;
+    getListings()
+      .then(setListings)
+      .catch((error) => {
+        console.error("Error loading listings:", error);
+      });
+  }, [organizationId]);
+
+  useEffect(() => {
+    if (!selectedConversation?.id || !organizationId) return;
+    const unsub = subscribeConversationById(
+      selectedConversation.id,
+      (conv) => {
+        if (!conv) return;
+        setSelectedConversation(conv);
+      },
+      (err) => {
+        console.error("Error loading selected conversation (realtime):", err);
+      }
+    );
+    return () => unsub();
+  }, [selectedConversation?.id, organizationId]);
+
+  useEffect(() => {
+    if (!selectedConversation?.id) return;
+    scrollMessagesToBottom("auto");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedConversation?.id]);
+
+  useEffect(() => {
+    scrollMessagesToBottom("smooth");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedConversation?.history?.length]);
 
   async function loadConversations() {
     if (!organizationId) return;
@@ -922,6 +988,7 @@ export function Conversations() {
                   <p className="text-sm">No hay mensajes en esta conversación</p>
                 </div>
               )}
+              <div ref={messagesEndRef} />
             </div>
           </div>
 
@@ -930,13 +997,20 @@ export function Conversations() {
             selectedConversation.botDisabled && !selectedConversation.isFinished && (
               <div className="p-3 bg-white border-t border-gray-200">
                 <form onSubmit={handleSendMessage} className="flex gap-2">
-                  <input
-                    type="text"
+                  <textarea
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
                     placeholder="Escribe un mensaje manual..."
-                    className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-btn focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+                    className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-btn focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none resize-none"
                     disabled={sending || selectedConversation.optedOut}
+                    rows={1}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      if (e.shiftKey) return; // newline
+                      // Enter sends
+                      e.preventDefault();
+                      void handleSendMessage(e as unknown as React.FormEvent);
+                    }}
                   />
                   <Button
                     type="submit"

@@ -1,4 +1,5 @@
 import * as admin from "firebase-admin";
+import crypto from "crypto";
 import { getFirestore } from "firebase-admin/firestore";
 import {
   ListingRow,
@@ -38,6 +39,28 @@ import { getActiveOrgId } from "./requestContext";
 const getOrgDb = () => {
   return getDb().collection("organizations").doc(getActiveOrgId());
 };
+
+function agentDebugHash(value: unknown): string {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 12);
+}
+
+function agentDebugLog(
+  runId: string,
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>
+): void {
+  // #region agent log
+  const payload = { sessionId: "831ae5", runId, hypothesisId, location, message, data, timestamp: Date.now() };
+  console.log("AGENT_DEBUG", JSON.stringify(payload));
+  fetch("http://127.0.0.1:7405/ingest/96d0f620-6747-4d94-83ba-426698967f63", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "831ae5" },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+  // #endregion
+}
 
 const GLOBAL_CONFIG_COLLECTION = "globalConfig";
 const GLOBAL_MESSAGING_POLICY_DOC = "messagingPolicy";
@@ -313,7 +336,7 @@ export async function findOrgIdByChatId(chatId: string): Promise<string | null> 
     .get();
 
   if (!activeConversationSnapshot.empty) {
-    const bestConversation = activeConversationSnapshot.docs
+    const conversationCandidates = activeConversationSnapshot.docs
       .map((doc) => {
         const data = doc.data();
         const isFinished = data?.isFinished === true;
@@ -325,13 +348,31 @@ export async function findOrgIdByChatId(chatId: string): Promise<string | null> 
           orgId: doc.ref.path.split("/")[1],
           isFinished,
           lastMessage,
+          flowStep: data?.flowStep || null,
+          tags: Array.isArray(data?.tags) ? data.tags : [],
         };
       })
       .sort((a, b) => {
         // Prefer open conversations; then newest activity.
         if (a.isFinished !== b.isFinished) return a.isFinished ? 1 : -1;
         return b.lastMessage - a.lastMessage;
-      })[0];
+      });
+    const bestConversation = conversationCandidates[0];
+
+    // #region agent log
+    agentDebugLog("pre-fix", "H1,H3", "functions/src/services/firestore.ts:findOrgIdByChatId.conversations", "org resolution conversation candidates", {
+      chatHash: agentDebugHash(chatId),
+      candidateCount: conversationCandidates.length,
+      candidates: conversationCandidates.slice(0, 5).map((candidate) => ({
+        orgId: candidate.orgId,
+        isFinished: candidate.isFinished,
+        flowStep: candidate.flowStep,
+        tags: candidate.tags,
+        lastMessageAgeMs: candidate.lastMessage ? Date.now() - candidate.lastMessage : null,
+      })),
+      selectedOrgId: bestConversation.orgId,
+    });
+    // #endregion
 
     console.log(`Resolved orgId ${bestConversation.orgId} for chatId ${chatId} via active conversation routing`);
     return bestConversation.orgId;
@@ -346,6 +387,11 @@ export async function findOrgIdByChatId(chatId: string): Promise<string | null> 
   const allDocs = [...variantsSnapshot.docs, ...phoneSnapshot.docs];
   
   if (allDocs.length === 0) {
+    // #region agent log
+    agentDebugLog("pre-fix", "H1", "functions/src/services/firestore.ts:findOrgIdByChatId.noMatch", "org resolution no lead match", {
+      chatHash: agentDebugHash(chatId),
+    });
+    // #endregion
     return null;
   }
 
@@ -363,6 +409,17 @@ export async function findOrgIdByChatId(chatId: string): Promise<string | null> 
     });
 
   const bestMatch = sortedMatches[0];
+  // #region agent log
+  agentDebugLog("pre-fix", "H1,H3", "functions/src/services/firestore.ts:findOrgIdByChatId.leads", "org resolution lead candidates", {
+    chatHash: agentDebugHash(chatId),
+    candidateCount: sortedMatches.length,
+    candidates: sortedMatches.slice(0, 5).map((candidate) => ({
+      orgId: candidate.orgId,
+      lastMessageDateMs: candidate.lastMessageDate?.toMillis() || 0,
+    })),
+    selectedOrgId: bestMatch.orgId,
+  });
+  // #endregion
   console.log(`Resolved orgId ${bestMatch.orgId} for chatId ${chatId} (Matches: ${allDocs.length}, Recency: ${bestMatch.lastMessageDate?.toDate().toISOString()})`);
   
   return bestMatch.orgId;
@@ -573,7 +630,7 @@ export async function updateLeadChatInfo(params: {
     updateData.tags = params.tags;
   }
 
-  if (params.recordings !== undefined) {
+  if (params.recordings !== undefined && params.recordings.length > 0) {
     updateData.recordings = admin.firestore.FieldValue.arrayUnion(...params.recordings);
   }
 
@@ -934,6 +991,7 @@ export async function updateLeadStatus(params: {
   pets?: boolean;
   income?: number;
   paymentMethod?: "Contado" | "Hipoteca";
+  visitAvailability?: string;
   notes?: string;
   conversationSummary?: string;
 }): Promise<void> {
@@ -969,6 +1027,10 @@ export async function updateLeadStatus(params: {
     updateData.paymentMethod = params.paymentMethod;
   }
 
+  if (params.visitAvailability !== undefined) {
+    updateData.visitAvailability = params.visitAvailability;
+  }
+
   if (params.notes !== undefined) {
     updateData.notes = params.notes;
   }
@@ -981,6 +1043,7 @@ export async function updateLeadStatus(params: {
     params.pets !== undefined ||
     params.income !== undefined ||
     params.paymentMethod !== undefined ||
+    params.visitAvailability !== undefined ||
     params.notes !== undefined ||
     params.conversationSummary !== undefined;
   if (hasConversationAnalysisFields) {

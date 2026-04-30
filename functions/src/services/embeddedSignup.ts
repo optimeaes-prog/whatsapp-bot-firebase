@@ -184,13 +184,23 @@ export async function persistCloudApiConfigForOrg(params: {
   };
   if (displayPhoneNumber) cloudApiConfig.displayPhoneNumber = displayPhoneNumber;
   if (assistantAvatarId) cloudApiConfig.assistantAvatarId = assistantAvatarId;
-  if (assistantAvatarName) cloudApiConfig.assistantAvatarName = assistantAvatarName;
   if (assistantAvatarUrl) cloudApiConfig.assistantAvatarUrl = assistantAvatarUrl;
-  await ref.set({ messagingProvider: "cloud_api", cloudApiConfig }, { merge: true });
+  await ref.set(
+    {
+      messagingProvider: "cloud_api",
+      cloudApiConfig,
+      ...(assistantAvatarName ? { assistantAvatarName } : {}),
+    },
+    { merge: true }
+  );
   // Reverse-lookup index so the app-wide webhook can resolve org from entry[].id (= wabaId)
   // with a single doc read, no collectionGroup query needed.
   await db.doc(`wabaIndex/${wabaId}`).set(
     { orgId, phoneNumberId, updatedAt: new Date() },
+    { merge: true }
+  );
+  await db.doc(`phoneNumberIndex/${phoneNumberId}`).set(
+    { orgId, wabaId, updatedAt: new Date() },
     { merge: true }
   );
 }

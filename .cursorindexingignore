@@ -1,0 +1,22 @@
+# Rename this file to: .cursorindexingignore
+
+# ---- Lockfiles / vendor noise ----
+**/*-lock.json
+**/yarn.lock
+**/pnpm-lock.yaml
+**/poetry.lock
+
+# ---- Generated / snapshots / fixtures ----
+**/*.snap
+**/fixtures/**
+**/tmp/**
+**/.storybook-static/**
+
+# ---- Generated docs / specs / big json ----
+**/docs/generated/**
+**/openapi/**
+**/swagger/**
+**/*generated*
+**/*.generated.*
+**/locales/**/*.json
+**/translations/**/*.json

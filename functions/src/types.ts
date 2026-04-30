@@ -34,6 +34,8 @@ export type ConversationState = {
     | "call_listing_collect"
     | "call_listing_pick"
     | "call_listing_confirm"
+    | "call_name_confirm"
+    | "call_name_collect"
     | "qualification"
     | "closed";
   pendingListingCandidate?: { listingCode: string; orgId?: string; link?: string; description?: string; address?: string; price?: number | string; confidence?: number };
@@ -42,6 +44,15 @@ export type ConversationState = {
   pendingListingQueueIndex?: number;
   rejectedListingCodes?: string[];
   listingResolveAttempts?: number;
+  pendingNameConfirmation?: {
+    capturedName?: string;
+    listingCode: string;
+    targetOrgId: string;
+    sourceOrgId: string;
+    correlationId: string;
+    deadlineAtMs: number;
+    timeoutTaskName?: string;
+  };
   history: HistoryItem[];
   pendingUserMessages: PendingItem[];
   isFinished: boolean;
@@ -54,6 +65,10 @@ export type ConversationState = {
   type?: ConversationType;
   tags?: string[];
   language?: "es" | "en";
+  /** Stable outbound language target for assistant replies. */
+  targetLanguage?: "es" | "en";
+  /** Why current outbound language lock is set. */
+  languageLockSource?: "initial" | "user_confirmed" | "agent_override";
   recordings?: string[];
   /** Detailed error information if the pipeline failed */
   errorDetails?: string;
@@ -129,6 +144,8 @@ export type LeadRow = {
   pets?: boolean;
   income?: number;
   paymentMethod?: "Contado" | "Hipoteca";
+  /** Visit preference when extracted by qualification / analysis */
+  visitAvailability?: string;
   notes?: string;
   lastAnalyzedAt?: FirebaseFirestore.Timestamp;
   /**
@@ -228,8 +245,12 @@ export type CloudApiTemplateNames = {
 
 export type TwilioTemplateNames = {
   agentNotification?: string;
+  /** Optional single-body ({{1}}) template for quick-qual / call-flow when `agentNotification` is a multi-variable template */
+  agentNotificationLegacy?: string;
   callHandoffOrgEs?: string;
   callHandoffOrgEn?: string;
+  callHandoffOrgNoNameEs?: string;
+  callHandoffOrgNoNameEn?: string;
   voiceOptInConsent?: string;
   idealistaInitialEs?: string;
   idealistaInitialEn?: string;
@@ -280,6 +301,7 @@ export type BotConfig = {
   messagingProvider?: MessagingProvider;
   orgName?: string;
   notificationNumbers?: string;
+  assistantAvatarName?: string;
   cloudApiConfig?: CloudApiConfig;
   /** Twilio ContentSid mappings owned by this org (no global fallback). */
   twilioTemplates?: TwilioTemplateNames;

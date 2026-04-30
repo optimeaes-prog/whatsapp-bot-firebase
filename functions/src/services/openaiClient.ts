@@ -30,7 +30,44 @@ function resolveModel(): string {
   return OPENAI_MODEL.value() || "gpt-5.2";
 }
 
-function buildBasePrompt(styleModifier: string, language: "es" | "en" = "es"): string {
+function normalizeStyleModifier(styleModifier: string, language: "es" | "en"): string {
+  const baseRulesEn = [
+    "- Keep messages short and direct (max 2-3 lines when possible).",
+    "- Group related questions in one message when possible.",
+    "- Do not repeat information the user just provided.",
+    "- Avoid empty filler phrases; stay professional and efficient.",
+  ];
+  const baseRulesEs = [
+    "- Mantén mensajes cortos y directos (máximo 2-3 líneas cuando sea posible).",
+    "- Agrupa preguntas relacionadas en un único mensaje cuando sea posible.",
+    "- No repitas información que el usuario acaba de dar.",
+    "- Evita frases vacías de relleno; sé profesional y eficiente.",
+  ];
+  const trimmed = (styleModifier || "").trim();
+  const selectedBaseRules = language === "en" ? baseRulesEn : baseRulesEs;
+  if (!trimmed) return selectedBaseRules.join("\n");
+  return `${selectedBaseRules.join("\n")}\n${trimmed}`;
+}
+
+function buildLanguagePolicyPrompt(language: "es" | "en"): string {
+  if (language === "en") {
+    return [
+      "LANGUAGE POLICY (STRICT):",
+      "- Produce the final reply in English.",
+      "- Use natural British English spelling and phrasing.",
+      "- Never switch to another language unless the user explicitly asks to continue in that language.",
+    ].join("\n");
+  }
+  return [
+    "POLÍTICA DE IDIOMA (ESTRICTA):",
+    "- La respuesta final debe estar en español.",
+    "- Usa español natural y profesional.",
+    "- No cambies a otro idioma salvo petición explícita del usuario.",
+  ].join("\n");
+}
+
+function buildQualificationPrompt(styleModifier: string, language: "es" | "en" = "es"): string {
+  const normalizedStyle = normalizeStyleModifier(styleModifier, language);
   if (language === "en") {
     return `
 You are a virtual assistant for a Real Estate Agent. You qualify leads DIRECTLY and EFFICIENTLY.
@@ -38,8 +75,7 @@ You are a virtual assistant for a Real Estate Agent. You qualify leads DIRECTLY 
 ========================
 COMMUNICATION STYLE (VERY IMPORTANT)
 ========================
-${styleModifier}
-- ALWAYS respond in the exact same language the user uses in their messages. If they write in English, use natural British English. If they write in another language, adapt to it. Use a professional yet friendly tone.
+${normalizedStyle}
 
 Tools and Scope:
 - Do not use external tools.
@@ -149,8 +185,7 @@ Eres un asistente virtual de un Agente Inmobiliario. Cualificas leads de forma D
 ========================
 ESTILO DE COMUNICACIÓN (MUY IMPORTANTE)
 ========================
-${styleModifier}
-- RESPONDE SIEMPRE en el mismo idioma en el que te escriba el usuario. Si te habla en español, usa tuteo respetuoso. Si te habla en inglés, inglés británico, etc. Es una regla estricta adaptarte a su idioma.
+${normalizedStyle}
 
 Herramientas y Alcance:
 - No uses herramientas externas.
@@ -255,17 +290,20 @@ PROHIBIDO
 }
 
 function buildInstructions(state: ConversationState, style: BotStyle): string {
-  const language = state.language || "es";
-  const basePrompt = buildBasePrompt(style.promptModifier, language);
+  const language = state.targetLanguage || state.language || "es";
+  const qualificationPrompt = buildQualificationPrompt(style.promptModifier, language);
+  const languagePolicyPrompt = buildLanguagePolicyPrompt(language);
 
   let operationTypeLabel: string = state.operationType || "Venta";
   if (language === "en") {
     operationTypeLabel = state.operationType === "Alquiler" ? "Rental" : "Sale";
   }
 
-  const template = basePrompt.replace(/\{\{TIPO_OPERACION\}\}/g, operationTypeLabel);
+  const template = qualificationPrompt.replace(/\{\{TIPO_OPERACION\}\}/g, operationTypeLabel);
   const parts: string[] = [
     template,
+    "========================",
+    languagePolicyPrompt,
     "========================",
     language === "en" ? "SPECIFIC DATA FOR THIS CONVERSATION" : "DATOS ESPECÍFICOS DE ESTA CONVERSACIÓN",
     "========================",
@@ -322,6 +360,67 @@ export async function generateAssistantResponse(
   }
 
   return output.trim();
+}
+
+function looksSpanish(text: string): boolean {
+  const lowered = text.toLowerCase();
+  if (!/[a-záéíóúñü]/i.test(lowered)) return false;
+  if (/[¿¡ñáéíóúü]/i.test(lowered)) return true;
+  const tokens = lowered.match(/[a-záéíóúñü]+/gi) || [];
+  const strongSpanish = new Set(["vale", "gracias", "mañana", "tarde", "vivienda", "ingresos", "mascota", "comercial"]);
+  let score = 0;
+  for (const token of tokens) {
+    if (strongSpanish.has(token)) score += 1;
+  }
+  return score >= 1;
+}
+
+function looksEnglish(text: string): boolean {
+  const lowered = text.toLowerCase();
+  if (!/[a-z]/i.test(lowered)) return false;
+  const tokens = lowered.match(/[a-z]+/gi) || [];
+  const strongEnglish = new Set(["thanks", "listing", "property", "income", "move", "visit", "call", "great", "understood"]);
+  let score = 0;
+  for (const token of tokens) {
+    if (strongEnglish.has(token)) score += 1;
+  }
+  return score >= 1;
+}
+
+export function detectLikelyLanguage(text: string, fallback: "es" | "en"): "es" | "en" {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return fallback;
+  const es = looksSpanish(trimmed);
+  const en = looksEnglish(trimmed);
+  if (es && !en) return "es";
+  if (en && !es) return "en";
+  return fallback;
+}
+
+export async function enforceOutboundLanguage(params: {
+  text: string;
+  targetLanguage: "es" | "en";
+}): Promise<{ text: string; action: "none" | "translate"; detectedLanguage: "es" | "en" }> {
+  const detectedLanguage = detectLikelyLanguage(params.text, params.targetLanguage);
+  if (detectedLanguage === params.targetLanguage) {
+    return { text: params.text.trim(), action: "none", detectedLanguage };
+  }
+
+  const instructions = params.targetLanguage === "en"
+    ? "Translate the assistant message to natural British English. Preserve intent, details, and structure. Keep any status marker token such as [LEAD_CUALIFICADO] or [LEAD_NO_INTERESADO] exactly unchanged. Respond only with the translated message."
+    : "Traduce el mensaje del asistente a español natural. Conserva intención, detalles y estructura. Mantén cualquier marcador de estado como [LEAD_CUALIFICADO] o [LEAD_NO_INTERESADO] exactamente igual. Responde solo con el mensaje traducido.";
+  const response = await getClient().responses.create({
+    model: resolveModel(),
+    instructions,
+    input: params.text,
+    store: false,
+    text: { format: { type: "text" } },
+  });
+  const output = response.output_text?.trim();
+  if (!output) {
+    return { text: params.text.trim(), action: "none", detectedLanguage };
+  }
+  return { text: output, action: "translate", detectedLanguage };
 }
 
 const LEAD_SUMMARY_PROMPT = `
