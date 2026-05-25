@@ -20,8 +20,8 @@ export function ConnectWhatsApp() {
     try {
       const settings = await getOrganizationSettings();
       const currentStep = settings.onboardingStep || 1;
-      if (currentStep <= 2) {
-        await updateOrganizationSettings({ onboardingStep: 3 });
+      if (currentStep <= 3) {
+        await updateOrganizationSettings({ onboardingStep: 4 });
       }
     } catch (error) {
       console.error("Could not update onboarding step after connection:", error);
@@ -70,7 +70,7 @@ export function ConnectWhatsApp() {
 
       <div className="max-w-2xl">
         {connected ? (
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6">
             <div className="flex items-center gap-3 mb-3">
               <CheckCircle className="text-emerald-600" size={24} />
               <h2 className="text-lg font-bold text-emerald-900">Cuenta conectada</h2>
@@ -89,7 +89,7 @@ export function ConnectWhatsApp() {
             </div>
           </div>
         ) : (
-          <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-6">
+          <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-6">
             <div className="flex items-center gap-3 mb-3">
               <MessageCircle className="text-primary-600" size={24} />
               <h2 className="text-lg font-bold text-gray-900">Inicia sesión con Facebook</h2>

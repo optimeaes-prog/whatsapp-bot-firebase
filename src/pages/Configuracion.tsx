@@ -24,7 +24,7 @@ async function callAuthed(path: string): Promise<Response> {
 }
 
 export function Configuracion() {
-  const { organizationId, role } = useAuth();
+  const { organizationId, effectiveRole, isImpersonationReadOnly } = useAuth();
   const [config, setConfig] = useState<BotConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -37,6 +37,10 @@ export function Configuracion() {
   const [deleting, setDeleting] = useState(false);
 
   async function handleExportData() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setExporting(true);
     try {
       const res = await callAuthed("exportMyData");
@@ -50,6 +54,10 @@ export function Configuracion() {
   }
 
   async function handleDeleteOrganization() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     const confirmed = window.confirm(
       "¿Seguro que quieres eliminar tu organización? Se desconectará WhatsApp y tus datos se borrarán de forma definitiva en 30 días."
     );
@@ -91,6 +99,10 @@ export function Configuracion() {
   }
 
   async function handleSelectStyle(styleId: string) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!config) return;
     setSaving(true);
 
@@ -107,6 +119,10 @@ export function Configuracion() {
   }
 
   async function handleUpdateOrgName() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!config || orgName === config.orgName) return;
     setSavingOrg(true);
 
@@ -124,6 +140,10 @@ export function Configuracion() {
   }
 
   async function handleUpdateNotifications() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!config || notificationNumbers === config.notificationNumbers) return;
     setSavingNotifications(true);
 
@@ -165,6 +185,7 @@ export function Configuracion() {
               type="text"
               value={orgName}
               onChange={(e) => setOrgName(e.target.value)}
+              disabled={isImpersonationReadOnly}
               className="input"
               placeholder="Ej: Atlas Capital Group"
             />
@@ -172,7 +193,7 @@ export function Configuracion() {
           <div className="flex items-end">
             <Button
               onClick={handleUpdateOrgName}
-              disabled={role === "member" || orgName === config?.orgName}
+              disabled={effectiveRole === "member" || isImpersonationReadOnly || orgName === config?.orgName}
               loading={savingOrg}
             >
               Guardar
@@ -189,19 +210,21 @@ export function Configuracion() {
         </div>
 
         <p className="text-gray-600 mb-4 text-sm">
-          Introduce los números de WhatsApp que recibirán un resumen cuando un lead sea 
-          <strong> cualificado</strong>. Separa varios números con comas.
+          Estos números de la organización <strong>siempre</strong> reciben el resumen cuando un lead es{" "}
+          <strong>cualificado</strong>. Además, si el anuncio tiene un agente asignado en Listados con otro número
+          configurado en Equipo, también se notifica allí (sin duplicar si es el mismo número). Separa varios números con comas.
         </p>
 
         <div className="flex flex-col sm:flex-row gap-4">
           <div className="flex-1">
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Números de WhatsApp (formato internacional, ej: 34696000111)
+              Números centrales de WhatsApp (formato internacional, ej: 34696000111)
             </label>
             <input
               type="text"
               value={notificationNumbers}
               onChange={(e) => setNotificationNumbers(e.target.value)}
+              disabled={isImpersonationReadOnly}
               className="input"
               placeholder="34696000111, 34600112233"
             />
@@ -209,7 +232,9 @@ export function Configuracion() {
           <div className="flex items-end">
             <Button
               onClick={handleUpdateNotifications}
-              disabled={role === "member" || notificationNumbers === config?.notificationNumbers}
+              disabled={
+                effectiveRole === "member" || isImpersonationReadOnly || notificationNumbers === config?.notificationNumbers
+              }
               loading={savingNotifications}
               variant="outline"
             >
@@ -240,7 +265,7 @@ export function Configuracion() {
                   onClick={() => handleSelectStyle(style.id)}
                   onMouseEnter={() => setPreviewStyle(style)}
                   onMouseLeave={() => setPreviewStyle(null)}
-                  disabled={role === "member" || saving}
+                  disabled={effectiveRole === "member" || isImpersonationReadOnly || saving}
                   className={cn(
                     "w-full text-left p-4 rounded-btn border-2 transition-all",
                     config?.activeStyleId === style.id
@@ -318,7 +343,7 @@ export function Configuracion() {
         </div>
       </div>
 
-      {role === "owner" && (
+      {effectiveRole === "owner" && (
         <div className="mt-8 bg-white rounded-xl border border-gray-200 p-6">
           <h3 className="text-lg font-bold text-gray-900 mb-1 font-heading">Privacidad y datos</h3>
           <p className="text-sm text-gray-600 mb-4">
@@ -327,10 +352,14 @@ export function Configuracion() {
             <a href="/legal/data-deletion" className="underline">eliminación de datos</a>.
           </p>
           <div className="flex flex-col sm:flex-row gap-3">
-            <Button onClick={handleExportData} disabled={exporting} variant="secondary">
+            <Button onClick={handleExportData} disabled={exporting || isImpersonationReadOnly} variant="secondary">
               {exporting ? "Preparando exportación..." : "Exportar mis datos"}
             </Button>
-            <Button onClick={handleDeleteOrganization} disabled={deleting} variant="secondary">
+            <Button
+              onClick={handleDeleteOrganization}
+              disabled={deleting || isImpersonationReadOnly}
+              variant="secondary"
+            >
               {deleting ? "Procesando..." : "Eliminar mi organización"}
             </Button>
           </div>

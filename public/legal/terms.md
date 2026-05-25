@@ -1,144 +1,279 @@
-# Términos y Condiciones (B2B) — Talmate Limited
+# Términos y Condiciones (B2B) — Talmate Limited / Proplead
 
-**Última actualización:** 2026-04-23
+**Fecha de entrada en vigor:** 25 de mayo de 2026
+**Versión:** 1.0
 
-Estos Términos y Condiciones (los “**Términos**”) regulan el acceso y uso de la plataforma de software de Talmate (la “**Plataforma**”), que incluye la aplicación web, APIs y funcionalidades relacionadas (conversaciones de WhatsApp/voz, gestión de leads, anuncios, créditos/suscripciones, alertas, etc.).
+---
+
+Estos Términos y Condiciones (los "**Términos**") constituyen un contrato jurídicamente vinculante entre **Talmate Limited** ("**Talmate**", "**nosotros**", "**nos**") y el Cliente que accede o utiliza la Plataforma Proplead (el "**Cliente**", "**usted**"). Al crear una cuenta, acceder o utilizar la Plataforma, el Cliente acepta quedar vinculado por estos Términos.
+
+---
 
 ## 1. Identidad del proveedor
-El servicio es provisto por **Talmate Limited** (“**Talmate**”, “**nosotros**”), sociedad registrada en Reino Unido (Companies House nº **16733027**) con domicilio social en **191 King's Cross Road, Flat 2, London, WC1X 9DB, United Kingdom**.
 
-## 2. Ámbito: servicio B2B
-La Plataforma está destinada **exclusivamente a usos profesionales o empresariales** (p. ej., freelancers, agencias e inmobiliarias) (el “**Cliente**”).  
-No está diseñada para consumidores. Si accedes como consumidor, no podrás usar la Plataforma y deberás abstenerte de crear una cuenta.
+El servicio es prestado por:
 
-## 3. Definiciones (resumen)
-- **Cuenta**: credenciales de acceso del usuario autorizado por el Cliente.
-- **Contenido del Cliente**: datos e información cargados o gestionados por el Cliente mediante la Plataforma (incluye conversaciones, leads y listados).
-- **Créditos**: unidad de consumo dentro de la Plataforma (p. ej., para mensajes/automatizaciones), según planes vigentes.
-- **Subprocesadores**: terceros que procesan datos por cuenta de Talmate o del Cliente (p. ej., proveedores cloud, mensajería, IA, pagos).
+**Talmate Limited** ("Talmate")
+Sociedad registrada en Reino Unido
+Companies House n.º **16733027**
+Domicilio social: **191 King's Cross Road, Flat 2, London, WC1X 9DB, United Kingdom**
+Correo electrónico: **soporte@proplead.io**
+Sitio web: **www.proplead.io**
 
-## 4. Registro, acceso y seguridad
-- **Elegibilidad**: debes tener capacidad para obligar al Cliente y usar la Plataforma de acuerdo con la ley aplicable.
-- **Usuarios autorizados**: el Cliente es responsable de la actividad realizada desde sus cuentas y de mantener la confidencialidad de credenciales.
-- **Seguridad**: el Cliente debe usar contraseñas seguras y notificarnos sin demora accesos no autorizados o incidentes de seguridad.
+Talmate presta servicios a clientes situados en España y otros países de la Unión Europea. En consecuencia, y sin perjuicio del Derecho de Inglaterra y Gales como ley rectora del presente contrato, serán igualmente de aplicación las disposiciones imperativas del Reglamento (UE) 2016/679 del Parlamento Europeo y del Consejo (RGPD), en particular su artículo 3.2, dado que Talmate ofrece bienes o servicios a personas ubicadas en la Unión Europea. Asimismo, la Ley 34/2002 (LSSI-CE) resulta de aplicación a los servicios de la sociedad de la información prestados en España.
 
-## 5. Uso permitido y restricciones
-### 5.1 Uso permitido
-Puedes usar la Plataforma para:
-- gestionar conversaciones con contactos/leads (WhatsApp/voz) vinculadas a tus listados/anuncios
-- automatizar respuestas y cualificación de leads
-- gestionar leads, etiquetas, estados y tareas operativas
-- comprar créditos y/o suscribirte (si está disponible) para habilitar consumo en la Plataforma
+---
 
-La Plataforma incluye flujos automatizados de cualificación mediante IA **diseñados y mantenidos por Talmate**. El Cliente reconoce que, en general, **no controla ni personaliza** la lógica interna de cualificación (más allá de las configuraciones que la Plataforma permita en cada momento), y se compromete a supervisar su uso y a aplicar criterios propios cuando sea necesario.
+## 2. Ámbito: contrato exclusivamente B2B
 
-### 5.2 Restricciones y cumplimiento
-No debes (ni permitir que terceros):
-- enviar **spam**, comunicaciones no solicitadas o mensajes que infrinjan las políticas de WhatsApp/Twilio/Whapi u otros proveedores
-- suplantar identidades o engañar a destinatarios
-- tratar **categorías especiales** de datos (salud, ideología, etc.) salvo que sea estrictamente necesario y con base legal y garantías adecuadas
-- introducir secretos o credenciales en campos de conversación
-- usar la Plataforma para actividades ilegales o infractoras de derechos de terceros
+La Plataforma está destinada **exclusivamente a empresas y profesionales** que actúan en el ejercicio de su actividad comercial, empresarial o profesional. El Cliente declara y garantiza que:
 
-El Cliente es responsable de:
-- contar con **base legal** para contactar a leads y tratar sus datos
-- proporcionar avisos de privacidad y cumplir obligaciones de información y derechos
-- cumplir normativa aplicable de marketing y comunicaciones electrónicas
+(a) actúa como empresa, agencia inmobiliaria, agente freelance u otro tipo de operador profesional, y no como consumidor;
 
-## 6. IA y resultados generados
-La Plataforma puede utilizar modelos de IA para generar respuestas y resúmenes.  
-**No garantizamos** que el contenido generado sea exacto, completo o adecuado para un propósito particular. El Cliente debe:
-- revisar y supervisar el uso de respuestas automatizadas
-- no tratar los resultados como asesoramiento legal/financiero
-- validar la información crítica antes de actuar
+(b) tiene plena capacidad jurídica y de obrar para celebrar este contrato;
 
-## 7. Integraciones con terceros
-La Plataforma integra servicios de terceros (por ejemplo, **Twilio/Whapi** para mensajería/voz, **OpenAI** para IA, **Stripe** para pagos, **Calendly** para onboarding, y servicios de **Google/Firebase** para infraestructura).  
-El uso de dichas integraciones puede estar sujeto a términos de terceros. Talmate no es responsable por interrupciones o fallos atribuibles a dichos terceros.
+(c) la persona física que acepta estos Términos tiene autoridad para obligar al Cliente.
 
-## 7 bis. WhatsApp Business Platform y Meta/Facebook
-Cuando el Cliente habilita mensajería por WhatsApp, la Plataforma utiliza la **WhatsApp Business Platform** y servicios relacionados de **Meta/Facebook**.  
-Meta/Facebook puede actuar como proveedor de infraestructura y subprocesador en el flujo de mensajes y metadatos de entrega, conforme a sus propias condiciones y políticas.
+Los derechos de desistimiento y las protecciones propias de los contratos con consumidores **no son aplicables** a este contrato B2B.
 
-## 8. Precios, créditos y suscripciones
-### 8.1 Créditos
-La Plataforma puede ofrecer paquetes de créditos. Al comprar créditos:
-- el pago se procesa mediante **Stripe**
-- el Cliente es responsable de verificar el paquete, cantidades y precio antes de confirmar
-- salvo obligación legal en contrario, los créditos **no son reembolsables** una vez consumidos
+---
 
-### 8.2 Suscripciones (si aplica)
-Si el Cliente contrata una suscripción:
-- las renovaciones y cobros recurrentes se gestionan mediante Stripe
-- los créditos/beneficios incluidos se asignan según el plan vigente
-- el Cliente puede cancelar conforme a la configuración/periodicidad del plan; la cancelación será efectiva al final del período ya pagado, salvo que se indique lo contrario
+## 3. Definiciones
 
-### 8.3 Impagos y suspensión
-En caso de impago, fraude o uso abusivo, podemos suspender o limitar el acceso de forma inmediata para proteger la Plataforma y a terceros.
+- **"Acuerdo"**: estos Términos, junto con el DPA, política de privacidad y cualquier otro documento incorporado por referencia.
+- **"Contenido del Cliente"**: cualquier dato, información, texto, imagen, grabación de voz, conversación de WhatsApp, información de leads inmobiliarios u otro material que el Cliente cargue o procese a través de la Plataforma.
+- **"Créditos"**: unidades de consumo dentro de la Plataforma para habilitar funcionalidades como mensajes automatizados, resúmenes de leads u otras funciones de IA.
+- **"DPA"**: el acuerdo de encargado de tratamiento entre Talmate y el Cliente.
+- **"Output de IA"**: cualquier texto, resumen, respuesta u otro contenido generado automáticamente por los modelos de inteligencia artificial integrados en la Plataforma.
+- **"Período de Suscripción"**: el período de tiempo (mensual o anual) por el que el Cliente ha pagado el acceso.
+- **"Plataforma"**: la aplicación web Proplead, incluyendo sus APIs, integraciones, funcionalidades de automatización, IA, CRM y gestión de conversaciones.
+- **"Usuarios Autorizados"**: los empleados, agentes o colaboradores del Cliente habilitados para acceder a la Plataforma.
 
-## 9. Propiedad intelectual
-Talmate conserva todos los derechos sobre la Plataforma (software, marca, interfaz, documentación).  
-El Cliente conserva los derechos sobre su Contenido del Cliente. El Cliente nos concede una licencia limitada para alojar, procesar y mostrar dicho contenido únicamente para prestar el servicio.
+---
 
-## 10. Confidencialidad
-Cada parte protegerá la información confidencial de la otra y la usará solo para cumplir el contrato, salvo obligación legal.
+## 4. Licencia de uso
 
-## 11. Protección de datos
-### 11.1 Roles
-- Para datos de **cuenta, facturación y marketing propio**, Talmate actúa como **Responsable**.
-- Para datos de **leads, conversaciones y recordings** procesados para el Cliente, Talmate actúa normalmente como **Encargado**.
+4.1 **Concesión de licencia.** Sujeto al cumplimiento de estos Términos y al pago de las cantidades aplicables, Talmate concede al Cliente una licencia no exclusiva, intransferible, no sublicenciable y revocable para acceder y utilizar la Plataforma durante el Período de Suscripción vigente, exclusivamente para los fines legítimos del negocio inmobiliario del Cliente.
 
-### 11.2 DPA
-El tratamiento de datos por cuenta del Cliente se rige por el **Acuerdo de Encargo / DPA** disponible con la Plataforma (ver `legal/dpa.es.md` / `legal/dpa.en.md`).
+4.2 **Usuarios Autorizados.** El Cliente es responsable de asegurarse de que todos los Usuarios Autorizados conocen y cumplen estos Términos. El acceso a la Plataforma es personal e intransferible.
 
-### 11.3 Categorías de datos tratadas en la Plataforma
-Según el uso del Cliente, la Plataforma puede procesar:
-- datos de cuenta y usuarios autorizados
-- datos de leads/contactos y conversaciones de mensajería
-- metadatos operativos (estado de envío, identificadores de conversación, timestamps)
-- datos de facturación y suscripción
-- datos técnicos y de seguridad (logs, IP y trazas de auditoría)
+4.3 **Actualizaciones.** Talmate puede, a su discreción, actualizar, mejorar o modificar la Plataforma. Las actualizaciones sustanciales se comunicarán conforme a la cláusula 18.
 
-### 11.4 Conservación y supresión
-Los datos se conservan durante el tiempo necesario para la prestación del servicio, seguridad, prevención de fraude y cumplimiento legal aplicable.  
-Cuando el Cliente solicita baja/eliminación, se aplica el proceso de supresión definido en la política de privacidad y en la página pública de eliminación de datos.
+---
 
-### 11.5 Derechos y solicitudes de privacidad
-Las personas pueden ejercer derechos de protección de datos de acuerdo con la ley aplicable (acceso, rectificación, supresión, oposición y otros cuando correspondan).  
-Canal de contacto: **dpo@proplead.io**.
+## 5. Restricciones
 
-Para instrucciones operativas de eliminación/exportación:
-- `https://proplead.io/legal/data-deletion`
-- estado de solicitudes iniciadas desde Meta: `/legal/deletion-status?code=<confirmation_code>`
+5.1 El Cliente no podrá, ni permitirá que ningún tercero:
 
-## 12. Disponibilidad, mantenimiento y cambios
-Podemos modificar, mejorar o actualizar la Plataforma. Procuraremos minimizar interrupciones, pero no garantizamos disponibilidad ininterrumpida.
+(a) copiar, reproducir, modificar, adaptar, crear obras derivadas, descompilar, aplicar ingeniería inversa o desensamblar la Plataforma, salvo en la medida permitida por la ley;
 
-## 13. Terminación
-El Cliente puede dejar de usar la Plataforma y cancelar su suscripción (si aplica).  
-Podemos terminar o suspender el acceso por incumplimiento material, uso ilegal o riesgo de seguridad.
+(b) vender, revender, sublicenciar, arrendar o transferir la Plataforma sin el previo consentimiento escrito de Talmate;
 
-Tras la terminación, podremos eliminar o anonimizar datos conforme a la política de retención y al DPA, salvo obligación legal o instrucciones del Cliente (cuando aplique).
+(c) eliminar, ocultar o alterar avisos de derechos de propiedad intelectual o marcas de Talmate;
 
-## 14. Limitación de responsabilidad (B2B)
-En la medida máxima permitida por la ley:
-- la Plataforma se ofrece “tal cual”
-- Talmate no será responsable por daños indirectos, pérdida de beneficios, pérdida de datos, o interrupción de negocio derivados del uso
-- la responsabilidad total agregada de Talmate, por cualquier reclamación, se limitará a las cantidades pagadas por el Cliente a Talmate en los **3 meses** anteriores al hecho que dio lugar a la reclamación (salvo que la ley exija otro mínimo)
+(d) acceder a la Plataforma mediante medios automatizados distintos de las APIs oficiales de Talmate;
 
-Nada en estos Términos limita la responsabilidad por dolo, fraude o cuando la ley no permita limitarla.
+(e) intentar vulnerar o eludir las medidas de seguridad de la Plataforma;
 
-## 15. Indemnidad
-El Cliente indemnizará a Talmate frente a reclamaciones de terceros derivadas de:
-- Contenido del Cliente
-- incumplimientos legales del Cliente (marketing, privacidad, consentimiento, comunicaciones)
-- uso indebido de WhatsApp/voz o violación de términos de terceros
+(f) usar la Plataforma para enviar spam, mensajes de phishing, comunicaciones masivas no solicitadas, o contenido que infrinja las políticas de Meta/WhatsApp o Twilio;
 
-## 16. Ley aplicable y jurisdicción
-Salvo que la normativa aplicable imponga lo contrario, estos Términos se rigen por la **ley de Inglaterra y Gales**, y las partes se someten a los tribunales competentes de **Inglaterra y Gales**.
+(g) usar la Plataforma para procesar categorías especiales de datos personales (artículo 9 RGPD), salvo que el Cliente disponga de base legal adecuada;
 
-## 17. Contacto
-**Email legal / privacidad:** e.perezreyes@proplead.io  
+(h) utilizar la Plataforma para actividades ilegales, fraudulentas o que vulneren derechos de terceros;
+
+(i) sobrecargar, dañar o interferir en la infraestructura de la Plataforma.
+
+5.2 El incumplimiento constituye un incumplimiento material y puede dar lugar a la suspensión o terminación inmediata del acceso.
+
+---
+
+## 6. Obligaciones del Cliente
+
+6.1 **Cumplimiento normativo.** El Cliente es el único responsable de asegurar que su uso de la Plataforma cumple con toda la legislación aplicable, incluyendo el RGPD, la LOPDGDD, la LSSI-CE, y las políticas de WhatsApp Business Platform de Meta.
+
+6.2 **Base legal para contactar a leads.** El Cliente garantiza que, antes de utilizar la Plataforma para contactar a personas físicas, cuenta con base legal suficiente conforme al RGPD y ha cumplido con las obligaciones de información de los artículos 13 o 14 RGPD.
+
+6.3 **Exactitud de datos.** El Cliente es responsable de la exactitud, integridad y licitud del Contenido del Cliente.
+
+6.4 **Seguridad de credenciales.** El Cliente debe mantener la confidencialidad de las credenciales de acceso e implementar autenticación multifactor cuando esté disponible.
+
+6.5 **Supervisión de outputs de IA.** El Cliente reconoce que los Outputs de IA pueden contener inexactitudes y asume la responsabilidad de revisarlos y supervisarlos. Talmate no asume responsabilidad por decisiones adoptadas sin la debida supervisión.
+
+6.6 **Grabaciones de voz.** Si el Cliente utiliza la funcionalidad de grabación de llamadas, es responsable de informar a los interlocutores y obtener los consentimientos necesarios.
+
+---
+
+## 7. Funcionalidades de inteligencia artificial
+
+7.1 Los modelos y flujos de IA son diseñados y mantenidos por Talmate. El Cliente no controla la lógica interna más allá de las opciones de configuración disponibles.
+
+7.2 Talmate no garantiza que los Outputs de IA sean exactos, completos o adecuados para ningún propósito concreto. El Cliente no debe basar decisiones empresariales exclusivamente en los Outputs de IA sin supervisión humana.
+
+7.3 Talmate puede actualizar, sustituir o retirar los modelos de IA integrados. Las actualizaciones materiales se comunicarán conforme a la cláusula 18.
+
+7.4 Talmate puede utilizar APIs de terceros proveedores de modelos de IA (actualmente, OpenAI). El Contenido del Cliente puede ser transmitido a dichos proveedores sujeto a las garantías establecidas en el DPA.
+
+---
+
+## 8. Integraciones con terceros
+
+8.1 La Plataforma se integra con:
+
+- **Twilio, Inc.**: mensajería WhatsApp y servicios de voz. El uso de WhatsApp está sujeto a las Políticas de WhatsApp Business Platform de Meta.
+- **OpenAI**: modelos de IA para cualificación de leads y generación de respuestas.
+- **Stripe, Inc.**: procesamiento de pagos y gestión de suscripciones.
+- **Calendly, LLC**: programación de reuniones de onboarding.
+- **Google LLC / Firebase**: infraestructura cloud, base de datos, autenticación y funciones serverless.
+
+8.2 Talmate no asume responsabilidad por interrupciones, fallos o pérdidas de datos atribuibles a los proveedores terceros.
+
+---
+
+## 9. Precios, créditos y suscripciones
+
+### 9.1 Precios y tarifas
+
+Los precios están publicados en www.proplead.io. Todos los precios se expresan sin impuestos salvo indicación contraria. El pago se realiza por anticipado mediante los métodos de pago admitidos por Stripe.
+
+### 9.2 Créditos
+
+**No reembolsabilidad de créditos consumidos.** Los Créditos consumidos **no son reembolsables** en ningún caso, salvo obligación legal imperativa.
+
+**Reembolso de créditos no consumidos.** Los Créditos no consumidos podrán ser reembolsados si el Cliente lo solicita por escrito a soporte@proplead.io dentro de los **14 días naturales** siguientes a la fecha de compra. Transcurrido dicho plazo, los Créditos no consumidos tampoco serán reembolsables.
+
+**Caducidad.** Los Créditos no consumidos caducan según los términos del plan o paquete adquirido, o a los 12 meses desde su compra para créditos de pago único.
+
+### 9.3 Suscripciones
+
+**Renovación automática.** Las suscripciones se renuevan automáticamente al final de cada Período de Suscripción, salvo que el Cliente cancele antes del vencimiento.
+
+**Cancelación por el Cliente.** El Cliente puede cancelar en cualquier momento desde el panel de administración o escribiendo a soporte@proplead.io. La cancelación tiene efecto al final del Período de Suscripción en curso; no se reembolsa el tiempo restante.
+
+**Sin reembolso proporcional.** Las cuotas de suscripción pagadas no son reembolsables, salvo lo dispuesto expresamente en estos Términos o exigido por ley.
+
+**Terminación por Talmate.** Si Talmate termina la suscripción por motivos distintos al incumplimiento del Cliente, reembolsará la parte proporcional del período restante como único remedio.
+
+### 9.4 Actualización de precios
+
+Talmate podrá modificar sus precios con un preaviso de **60 días naturales**. Si el Cliente no acepta los nuevos precios, podrá cancelar antes de que entren en vigor.
+
+### 9.5 Impago e intereses de demora
+
+En caso de impago, Talmate podrá suspender el acceso, dar por vencida anticipadamente la suscripción o resolver el Acuerdo. Los importes impagados devengarán intereses conforme a la *Late Payment of Commercial Debts (Interest) Act 1998*.
+
+---
+
+## 10. Propiedad intelectual
+
+10.1 Talmate es titular de todos los derechos de propiedad intelectual sobre la Plataforma. Estos Términos no confieren al Cliente ningún derecho de propiedad más allá de la licencia limitada de la cláusula 4.
+
+10.2 El Cliente conserva todos los derechos sobre su Contenido del Cliente y concede a Talmate la licencia limitada necesaria para prestar los servicios.
+
+10.3 Talmate puede utilizar datos agregados y anonimizados para mejorar sus servicios, siempre que no permitan identificar al Cliente ni a ninguna persona física.
+
+---
+
+## 11. Confidencialidad
+
+11.1 Cada parte protegerá la Información Confidencial de la otra y la usará solo para el cumplimiento de este Acuerdo. Las obligaciones de confidencialidad permanecerán en vigor durante el Acuerdo y los **3 años** siguientes a su terminación.
+
+---
+
+## 12. Protección de datos y privacidad
+
+12.1 El tratamiento de datos personales de leads, contactos y conversaciones realizado por Talmate en nombre del Cliente se rige por el **DPA** disponible en legal/dpa.es.md, que forma parte integrante de este Acuerdo.
+
+12.2 Para los datos de cuenta y facturación, Talmate actúa como **Responsable del Tratamiento**. Para los datos de leads y contactos del Cliente, Talmate actúa como **Encargado del Tratamiento**.
+
+12.3 El Cliente es el Responsable del Tratamiento de los datos de sus leads y contactos y el único responsable de disponer de base legal, cumplir obligaciones de información y gestionar los derechos de los interesados.
+
+---
+
+## 13. Disponibilidad y niveles de servicio
+
+13.1 Talmate procurará que la Plataforma esté disponible de forma continua, pero no garantiza disponibilidad ininterrumpida del 100%.
+
+13.2 **Sin SLA garantizado.** A menos que se acuerde expresamente en un Formulario de Pedido, Talmate no ofrece ningún acuerdo de nivel de servicio con compromisos de tiempo de actividad garantizados.
+
+13.3 Talmate no será responsable por interrupciones causadas por eventos fuera de su control razonable (fuerza mayor, fallos de terceros, decisiones regulatorias, etc.).
+
+---
+
+## 14. Terminación
+
+14.1 El Cliente puede cancelar su suscripción conforme a la cláusula 9.3. Talmate puede terminar el Acuerdo con **30 días de preaviso** sin causa justificada.
+
+14.2 Cualquier parte puede terminar el Acuerdo de forma inmediata si la otra incurre en un incumplimiento material no subsanado en **15 días hábiles** desde la notificación, o si es objeto de procedimiento de insolvencia.
+
+14.3 **Suspensión cautelar.** Talmate puede suspender el acceso inmediatamente ante riesgo de seguridad, uso ilegal o abusivo, impago de más de 7 días o requerimiento de autoridad.
+
+14.4 **Efectos.** Tras la terminación cesan todos los derechos de acceso. Talmate conservará el Contenido del Cliente durante **90 días** para permitir la exportación; transcurrido ese plazo procederá a su eliminación o anonimización.
+
+---
+
+## 15. Garantías limitadas
+
+15.1 La Plataforma se proporciona **"tal cual"** y **"según disponibilidad"**. Talmate excluye, en la medida legalmente posible, cualquier garantía implícita de comerciabilidad, idoneidad para un fin determinado o continuidad del servicio.
+
+15.2 Talmate no garantiza ningún resultado comercial específico derivado del uso de la Plataforma.
+
+---
+
+## 16. Limitación de responsabilidad
+
+16.1 En la máxima medida permitida por el Derecho de Inglaterra y Gales, Talmate no será responsable por pérdida de beneficios, pérdida de datos, daños indirectos o consecuenciales, incluso si hubiera sido advertida de su posibilidad.
+
+16.2 **Límite máximo.** La responsabilidad total de Talmate se limita a **la suma de las cuotas pagadas durante los 3 meses anteriores** al evento generador de la reclamación.
+
+16.3 Nada en estos Términos excluye la responsabilidad de Talmate por muerte o lesiones causadas por negligencia, fraude, o cualquier otra responsabilidad no excluible por ley.
+
+---
+
+## 17. Indemnidad
+
+El Cliente indemnizará a Talmate frente a reclamaciones de terceros que surjan de: (a) el Contenido del Cliente; (b) incumplimientos legales del Cliente en materia de protección de datos, marketing o comunicaciones electrónicas; (c) incumplimiento de políticas de Meta/WhatsApp, Twilio u otros proveedores; (d) declaraciones falsas del Cliente; (e) uso de la Plataforma contrario a estos Términos o a la normativa aplicable.
+
+---
+
+## 18. Modificaciones de los Términos
+
+18.1 Talmate puede modificar estos Términos. Para modificaciones materiales, proporcionará un preaviso de al menos **30 días naturales** (o **60 días** para cambios de precio) antes de su entrada en vigor.
+
+18.2 Si el Cliente continúa utilizando la Plataforma tras la entrada en vigor de la modificación, se entenderá que la ha aceptado. Si no la acepta, puede cancelar sin penalización por cancelación anticipada.
+
+---
+
+## 19. Ley aplicable y jurisdicción
+
+19.1 Este Acuerdo se rige por el **Derecho de Inglaterra y Gales**, sin perjuicio de las disposiciones imperativas del RGPD, el Derecho de la UE y la LSSI-CE.
+
+19.2 Las partes se someten a la **jurisdicción exclusiva de los tribunales de Inglaterra y Gales**. Antes de iniciar procedimientos, las partes intentarán resolver el conflicto de buena fe durante al menos **30 días**.
+
+---
+
+## 20. Disposiciones generales
+
+20.1 **Acuerdo completo.** Este Acuerdo, junto con el DPA y la Política de Privacidad, constituye el acuerdo completo entre las partes y sustituye a cualquier acuerdo previo.
+
+20.2 **Divisibilidad.** Si alguna disposición es declarada nula o inaplicable, las restantes continuarán en plena vigencia.
+
+20.3 **Cesión.** El Cliente no puede ceder sus derechos sin el consentimiento escrito de Talmate.
+
+20.4 **Notificaciones.** Las notificaciones formales se realizarán por escrito a soporte@proplead.io (para Talmate) o a la dirección registrada del Cliente.
+
+---
+
+## 21. Contacto
+
+**Talmate Limited**
+191 King's Cross Road, Flat 2
+London, WC1X 9DB
+United Kingdom
+
+**Correo electrónico:** soporte@proplead.io
 **Sitio web:** www.proplead.io
 
+---
 
+*Fecha de entrada en vigor: 25 de mayo de 2026 — Versión 1.0*
+*© 2026 Talmate Limited. Todos los derechos reservados.*

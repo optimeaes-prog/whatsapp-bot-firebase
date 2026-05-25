@@ -9,7 +9,9 @@ import {
   Clock,
   Info,
   Minus,
-  Plus
+  Plus,
+  Instagram,
+  Linkedin
 } from "lucide-react";
 
 import idealistaLogo from "../../idealista.png";
@@ -28,6 +30,7 @@ import { cn } from "../lib/utils";
 import { analytics } from "../lib/analytics";
 import whiteLogo from "../../proplead-high-resolution-logo-white.png";
 import { BreakdownModal, type CheckoutBreakdownData } from "../components/BreakdownModal";
+import { CalEuInlineEmbed } from "../components/CalEuInlineEmbed";
 
 const TITLE = "#402e32";
 const BODY = "#ab8b67";
@@ -277,16 +280,16 @@ function PricingSection() {
             return (
               <div key={plan.id} className="relative flex flex-col h-full">
                 {isRecommended && (
-                  <div className="absolute -top-8 left-0 right-0 bg-primary-500 text-white text-[10px] font-black h-8 flex items-center justify-center rounded-t-2xl uppercase tracking-widest border-2 border-primary-500 border-b-0 font-heading">
+                  <div className="absolute -top-8 left-0 right-0 bg-primary-500 text-white text-[10px] font-black h-8 flex items-center justify-center rounded-t-xl uppercase tracking-widest border-2 border-primary-500 border-b-0 font-heading">
                     Recomendado
                   </div>
                 )}
                 <div 
                   className={cn(
                     "flex-1 flex flex-col p-4 transition-all duration-300 border-2",
-                    isRecommended 
-                      ? "border-primary-500 rounded-b-2xl bg-white" 
-                      : "border-gray-100 rounded-2xl bg-white hover:border-gray-200"
+                    isRecommended
+                      ? "border-primary-500 rounded-b-xl bg-white"
+                      : "border-gray-100 rounded-xl bg-white hover:border-gray-200"
                   )}
                 >
                   <div className="flex-1 flex flex-col">
@@ -501,7 +504,7 @@ function FAQSectionContent() {
 
         <div className="space-y-4">
           {faqs.map((faq, i) => (
-            <div key={i} className={cn("border border-slate-200 rounded-2xl overflow-hidden transition-all duration-300 bg-white", openIndex === i ? "ring-1 ring-primary-200 border-primary-200 shadow-md" : "hover:border-slate-300")}>
+            <div key={i} className={cn("border border-slate-200 rounded-xl overflow-hidden transition-all duration-300 bg-white", openIndex === i ? "ring-1 ring-primary-200 border-primary-200 shadow-md" : "hover:border-slate-300")}>
               <button className="w-full px-6 py-5 text-left flex justify-between items-center gap-4 focus:outline-none" onClick={() => { const next = openIndex !== i; setOpenIndex(next ? i : null); analytics.trackFaqToggle(i, next); }}>
                 <span className="font-bold text-lg leading-tight" style={{ color: TITLE }}>{faq.q}</span>
                 <ChevronDown className={cn("w-5 h-5 shrink-0 transition-transform duration-500", openIndex === i && "rotate-180")} style={{ color: BODY }} />
@@ -950,6 +953,13 @@ export function MarketingLandingV2() {
               <a href="#solucion" className="hover:text-primary-600 transition-colors">Solución</a>
               <a href="#precios" className="hover:text-primary-600 transition-colors">Precios</a>
               <a href="#faq" className="hover:text-primary-600 transition-colors">FAQs</a>
+              <a
+                href="#solicita-demo"
+                onClick={() => analytics.trackSolicitaDemoClick("nav")}
+                className="text-primary-500 hover:text-primary-600 transition-colors"
+              >
+                Solicita Demo
+              </a>
             </div>
             <div className="flex items-center gap-2">
               <Link to="/login" className="bg-white hover:bg-slate-50 text-slate-900 border border-slate-200 px-6 py-3 rounded-btn text-sm font-bold font-heading transition-all active:scale-95">
@@ -972,8 +982,18 @@ export function MarketingLandingV2() {
               <p className="text-base sm:text-lg mb-8 leading-relaxed max-w-2xl mx-auto" style={{ color: BODY }}>
                 Proplead es la plataforma definitiva para agentes inmobiliarios que cualifica leads 24/7 vía WhatsApp y llamadas de voz, permitiéndote cerrar más ventas y enfocarte en lo que te importa.
               </p>
-              <div className="flex justify-center">
-                <Link to="/login" className="inline-flex px-7 py-2.5 bg-primary-500 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base transition-all items-center justify-center gap-1.5 group">
+              <div className="flex flex-col sm:flex-row justify-center items-center gap-3">
+                <a
+                  href="#solicita-demo"
+                  onClick={() => analytics.trackSolicitaDemoClick("hero")}
+                  className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base transition-all items-center justify-center box-border"
+                >
+                  Solicita Demo
+                </a>
+                <Link
+                  to="/login"
+                  className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 bg-primary-500 hover:border-primary-600 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base transition-all items-center justify-center gap-1.5 group box-border"
+                >
                   Empezar ahora <ArrowRight className="h-4 w-4 shrink-0 group-hover:translate-x-0.5 transition-transform" />
                 </Link>
               </div>
@@ -1040,11 +1060,23 @@ export function MarketingLandingV2() {
                     goToStorySlide(idx);
                   }}
                 />
-                <div className="mt-8">
-                  <Link to="/login" className="inline-flex px-7 py-2.5 bg-primary-500 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base transition-all items-center justify-center gap-1.5 group">
-                    Empezar ahora <ArrowRight className="h-4 w-4 shrink-0 group-hover:translate-x-0.5 transition-transform" />
-                  </Link>
-                  <p className="mt-3 text-[11px] text-slate-500 leading-tight block">
+                <div className="mt-8 flex flex-col gap-3">
+                  <div className="flex flex-col sm:flex-row items-center gap-3">
+                    <a
+                      href="#solicita-demo"
+                      onClick={() => analytics.trackSolicitaDemoClick("solucion_cta")}
+                      className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base transition-all items-center justify-center box-border"
+                    >
+                      Solicita Demo
+                    </a>
+                    <Link
+                      to="/login"
+                      className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 bg-primary-500 hover:border-primary-600 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base transition-all items-center justify-center gap-1.5 group box-border"
+                    >
+                      Empezar ahora <ArrowRight className="h-4 w-4 shrink-0 group-hover:translate-x-0.5 transition-transform" />
+                    </Link>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-tight block">
                     40 conversaciones gratis (5h ahorradas).<br />
                     Cancela cuando quieras.
                   </p>
@@ -1262,39 +1294,93 @@ export function MarketingLandingV2() {
             </div>
           </div>
 
+          <section
+            id="solicita-demo"
+            className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 pt-4 scroll-mt-32"
+            aria-labelledby="solicita-demo-heading"
+          >
+            <div className="text-center mb-10 px-4">
+              <h2
+                id="solicita-demo-heading"
+                className="text-3xl lg:text-4xl font-extrabold tracking-tight mb-4 font-heading"
+                style={{ color: TITLE }}
+              >
+                Solicita una demo
+              </h2>
+              <p className="text-lg max-w-2xl mx-auto" style={{ color: BODY }}>
+                Elige un hueco y te enseñamos Proplead en vivo.
+              </p>
+            </div>
+            <CalEuInlineEmbed />
+          </section>
+
           <FAQSectionContent />
         </div>
 
-        <footer className="bg-primary-500 pt-32 pb-24">
+        <footer className="bg-slate-950 pt-16 pb-8">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col md:flex-row items-center justify-between gap-12">
-              <div className="flex flex-col items-center md:items-start gap-6">
-                <img
-                  src={whiteLogo}
-                  alt="Proplead"
-                  className="h-9 w-auto"
-                />
-                <p className="text-sm font-bold text-slate-950/60 max-w-sm text-center md:text-left leading-relaxed font-heading">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-12 pb-12 border-b border-white/10">
+              {/* Brand */}
+              <div className="flex flex-col gap-5">
+                <img src={whiteLogo} alt="Proplead" className="h-9 w-auto" />
+                <p className="text-sm text-slate-400 leading-relaxed max-w-xs">
                   Automatizando el sector inmobiliario con inteligencia artificial 24/7.
                 </p>
-              </div>
-              <div className="flex flex-col items-center md:items-end gap-6 text-center md:text-right">
-                <div className="flex flex-wrap justify-center md:justify-end gap-x-10 gap-y-4 text-sm font-bold text-slate-950 font-heading">
-                  <a href="#dolores" className="hover:opacity-60 transition-opacity">Problemas</a>
-                  <a href="#solucion" className="hover:opacity-60 transition-opacity">Solución</a>
-                  <a href="#demo" className="hover:opacity-60 transition-opacity">Demostración</a>
-                  <a href="#precios" className="hover:opacity-60 transition-opacity">Precios</a>
-                  <a href="#faq" className="hover:opacity-60 transition-opacity">Faq</a>
+                <div className="flex gap-3">
+                  <a href="https://www.instagram.com/proplead.io" target="_blank" rel="noopener noreferrer" className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors">
+                    <Instagram size={15} className="text-white" />
+                  </a>
+                  <a href="https://www.linkedin.com/company/proplead" target="_blank" rel="noopener noreferrer" className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors">
+                    <Linkedin size={15} className="text-white" />
+                  </a>
                 </div>
-                <div className="flex flex-wrap justify-center md:justify-end gap-8 text-sm font-bold text-slate-950/70 font-heading">
-                  <Link to="/legal/terms" className="hover:text-slate-950 transition-colors">Términos</Link>
-                  <Link to="/legal/privacy-policy" className="hover:text-slate-950 transition-colors">Privacidad</Link>
-                  <a href="mailto:hola@proplead.com" className="hover:text-slate-950 transition-colors">Soporte</a>
-                </div>
-                <p className="text-[10px] font-black tracking-[0.2em] text-slate-950/40 font-heading">
-                  © 2026 Proplead. Hecho con ❤️ para inmobiliarias.
-                </p>
               </div>
+
+              {/* Producto */}
+              <div className="flex flex-col gap-4">
+                <h3 className="text-[10px] font-black tracking-[0.2em] text-white/40 uppercase font-heading">Producto</h3>
+                <nav className="flex flex-col gap-3">
+                  <a href="#dolores" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Problemas</a>
+                  <a href="#solucion" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Solución</a>
+                  <a href="#demo" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Demostración</a>
+                  <a href="#precios" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Precios</a>
+                  <a href="#faq" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">FAQ</a>
+                </nav>
+              </div>
+
+              {/* Legal */}
+              <div className="flex flex-col gap-4">
+                <h3 className="text-[10px] font-black tracking-[0.2em] text-white/40 uppercase font-heading">Legal</h3>
+                <nav className="flex flex-col gap-3">
+                  <Link to="/legal/privacy-policy" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Política de Privacidad</Link>
+                  <Link to="/legal/terms" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Términos y Condiciones</Link>
+                  <Link to="/legal/cookies" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Política de Cookies</Link>
+                  <Link to="/legal/aup" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Uso Aceptable</Link>
+                </nav>
+              </div>
+
+              {/* Contacto */}
+              <div className="flex flex-col gap-4">
+                <h3 className="text-[10px] font-black tracking-[0.2em] text-white/40 uppercase font-heading">Contacto</h3>
+                <a
+                  href="mailto:soporte@proplead.io"
+                  className="inline-flex items-center justify-center px-4 py-2.5 rounded-lg bg-white text-slate-950 text-sm font-bold font-heading hover:bg-slate-100 transition-colors w-fit"
+                >
+                  Contactar soporte
+                </a>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-black tracking-[0.15em] text-white/30 uppercase font-heading">Email</span>
+                  <a href="mailto:soporte@proplead.io" className="text-sm text-slate-300 hover:text-white transition-colors">soporte@proplead.io</a>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom bar */}
+            <div className="pt-8 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <p className="text-sm font-bold text-white/30 font-heading">© 2026 Talmate Limited · Proplead</p>
+              <p className="text-xs text-white/20 text-center sm:text-right">
+                Talmate Limited (Companies House nº 16733027) · 191 King's Cross Road, Flat 2, London, WC1X 9DB, United Kingdom.
+              </p>
             </div>
           </div>
         </footer>

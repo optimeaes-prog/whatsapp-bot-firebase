@@ -9,7 +9,7 @@ export function ProtectedRoute({
   children: React.ReactNode;
   requiredRoles?: string[];
 }) {
-  const { user, loading: authLoading, organizationId, role } = useAuth();
+  const { user, loading: authLoading, organizationId, effectiveRole } = useAuth();
   if (authLoading || (user && !organizationId)) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -22,7 +22,7 @@ export function ProtectedRoute({
     return <Navigate to="/login" replace />;
   }
 
-  if (requiredRoles && requiredRoles.length > 0 && !requiredRoles.includes(role)) {
+  if (requiredRoles && requiredRoles.length > 0 && !requiredRoles.includes(effectiveRole)) {
     return <Navigate to="/dashboard" replace />;
   }
 

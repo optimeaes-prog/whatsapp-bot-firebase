@@ -13,10 +13,29 @@ const SHARED_STYLES = {
   slate50: '#F8FAFC',
 };
 
+const PROPLEAD_LOGO_URL = "https://proplead.io/proplead-high-resolution-logo.png";
+
+function renderPropleadLogoHeader(): string {
+  return `
+    <div style="text-align: center; margin-bottom: 32px;">
+      <img
+        src="${PROPLEAD_LOGO_URL}"
+        alt="Proplead"
+        style="height: 44px; width: auto; display: inline-block;"
+      />
+    </div>
+  `;
+}
+
 /**
  * Generates the Welcome Email HTML
  */
-export function formatWelcomeEmail(data: { name: string; orgName: string }): string {
+export function formatWelcomeEmail(data: {
+  name: string;
+  orgName: string;
+  preferencesUrl?: string;
+  unsubscribeUrl?: string;
+}): string {
   return `
     <!DOCTYPE html>
     <html>
@@ -28,53 +47,71 @@ export function formatWelcomeEmail(data: { name: string; orgName: string }): str
       <div style="padding: 48px 16px;">
         <div style="max-width: 500px; margin: 0 auto;">
           <!-- Header/Logo -->
-          <div style="text-align: center; margin-bottom: 32px;">
-            <div style="display: inline-block; font-size: 24px; font-weight: 900; font-style: italic; letter-spacing: -0.05em; color: ${SHARED_STYLES.slate900}; vertical-align: middle;">
-              <div style="display: inline-block; width: 24px; height: 24px; background-color: ${SHARED_STYLES.primaryColor}; border-radius: 6px; margin-right: 8px; vertical-align: middle;"></div>
-              PROPLEAD
-            </div>
-          </div>
+          ${renderPropleadLogoHeader()}
 
           <!-- Main Card Container -->
-          <div style="position: relative; margin-bottom: 48px;">
-            <!-- Decorative tilted bg 1 -->
-            <div style="position: absolute; inset: 0; background-color: ${SHARED_STYLES.primaryColor}; border-radius: 24px; transform: rotate(-2deg); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);"></div>
-            
+          <div style="margin-bottom: 48px;">
             <!-- Content Card -->
-            <div style="position: relative; background-color: #FFFFFF; border-radius: 24px; padding: 40px; border: 1px solid #F1F5F9; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+            <div style="background-color: #FFFFFF; border-radius: 24px; padding: 40px; border: 1px solid #F1F5F9; box-shadow: 0 18px 35px -18px rgba(0, 0, 0, 0.35);">
               <div style="margin-bottom: 24px;">
                 <span style="background-color: #FFFBEB; color: #D97706; font-weight: bold; padding: 4px 12px; border-radius: 9999px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;">
-                  ✨ Account Activated
+                  ✨ Cuenta activada
                 </span>
               </div>
 
               <h1 style="font-size: 28px; font-weight: 900; color: ${SHARED_STYLES.slate900}; margin-bottom: 16px; letter-spacing: -0.025em; line-height: 1.2;">
-                ¡Bienvenido al club de la automatización!
+                Primer día con Proplead:<br />
+                vamos a dejarlo listo
               </h1>
               
-              <p style="color: ${SHARED_STYLES.slate500}; font-size: 14px; line-height: 1.6; margin-bottom: 32px;">
-                Hola <strong>${data.name}</strong>, el motor de IA para <strong>${data.orgName}</strong> ya ha sido aprovisionado. Desde este momento tienes acceso completo a nuestra plataforma de calificación de leads.
+              <p style="color: ${SHARED_STYLES.slate500}; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+                Hola ${data.name},
               </p>
-
-              <div style="background-color: ${SHARED_STYLES.slate50}; padding: 24px; border-radius: 16px; margin-bottom: 32px; border: 1px solid #F1F5F9;">
-                <p style="font-size: 12px; font-weight: bold; color: ${SHARED_STYLES.slate900}; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 16px; margin-top: 0;">🚀 Siguientes pasos</p>
-                <div style="margin-bottom: 16px; font-size: 14px; color: ${SHARED_STYLES.slate500};">
-                  <div style="display: table-cell; vertical-align: top;">
-                    <div style="width: 20px; height: 20px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: ${SHARED_STYLES.primaryColor}; text-align: center; line-height: 20px;">1</div>
-                  </div>
-                  <div style="display: table-cell; padding-left: 12px;">Conecta tu número de WhatsApp escaneando el código QR en el panel.</div>
-                </div>
-                <div style="font-size: 14px; color: ${SHARED_STYLES.slate500};">
-                  <div style="display: table-cell; vertical-align: top;">
-                    <div style="width: 20px; height: 20px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: ${SHARED_STYLES.primaryColor}; text-align: center; line-height: 20px;">2</div>
-                  </div>
-                  <div style="display: table-cell; padding-left: 12px;">Añade tu primer listado y define a tu Lead Ideal.</div>
+              <p style="color: ${SHARED_STYLES.slate500}; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
+                La mayoría de cierres se pierden por algo muy simple: tardar en responder o dejar conversaciones a medias. Proplead está para evitarlo.
+              </p>
+              <div style="color: ${SHARED_STYLES.slate500}; font-size: 14px; line-height: 1.6; margin-bottom: 32px;">
+                <div style="margin-bottom: 6px;">En cuanto lo actives, tu asistente te ayudará a:</div>
+                <div style="margin-left: 0;">
+                  <div style="margin-bottom: 6px;">• responder en minutos, no horas</div>
+                  <div style="margin-bottom: 6px;">• hacer seguimiento sin que se te escape nadie</div>
+                  <div>• convertir más consultas en visitas y cierres</div>
                 </div>
               </div>
 
+              <div style="background-color: ${SHARED_STYLES.slate50}; padding: 24px; border-radius: 16px; margin-bottom: 32px; border: 1px solid #F1F5F9;">
+                <p style="font-size: 12px; font-weight: bold; color: ${SHARED_STYLES.slate900}; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 16px; margin-top: 0;">🚀 Siguientes pasos</p>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse: collapse; font-size: 14px; color: ${SHARED_STYLES.slate500};">
+                  <tr>
+                    <td valign="middle" style="width: 28px; padding: 0 12px 16px 0;">
+                      <table role="presentation" width="20" height="20" cellspacing="0" cellpadding="0" style="border-collapse: collapse; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 50%;">
+                        <tr>
+                          <td align="center" valign="middle" style="width: 20px; height: 20px; font-size: 10px; line-height: 1; font-weight: bold; color: ${SHARED_STYLES.primaryColor}; mso-line-height-rule: exactly;">1</td>
+                        </tr>
+                      </table>
+                    </td>
+                    <td valign="middle" style="padding: 0 0 16px 0;">
+                      Agenda tu onboarding call (unos 15 min) y dejamos tu asistente listo contigo.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td valign="middle" style="width: 28px; padding: 0 12px 0 0;">
+                      <table role="presentation" width="20" height="20" cellspacing="0" cellpadding="0" style="border-collapse: collapse; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 50%;">
+                        <tr>
+                          <td align="center" valign="middle" style="width: 20px; height: 20px; font-size: 10px; line-height: 1; font-weight: bold; color: ${SHARED_STYLES.primaryColor}; mso-line-height-rule: exactly;">2</td>
+                        </tr>
+                      </table>
+                    </td>
+                    <td valign="middle" style="padding: 0;">
+                      Crea tu primer anuncio y ve a tu asistente en acción.
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
               <div style="text-align: center;">
-                <a href="https://proplead.io/login" style="display: block; background-color: ${SHARED_STYLES.slate900}; color: #FFFFFF; font-weight: bold; padding: 16px; border-radius: 12px; text-decoration: none; font-size: 16px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
-                  Iniciar Sesión &rarr;
+                <a href="https://proplead.io/onboarding" style="display: block; background-color: ${SHARED_STYLES.slate900}; color: #FFFFFF; font-weight: bold; padding: 16px; border-radius: 12px; text-decoration: none; font-size: 16px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
+                  Completar onboarding &rarr;
                 </a>
               </div>
             </div>
@@ -82,10 +119,13 @@ export function formatWelcomeEmail(data: { name: string; orgName: string }): str
 
           <!-- Footer -->
           <div style="text-align: center; color: ${SHARED_STYLES.slate400}; font-size: 12px;">
-            <div style="margin-bottom: 16px; font-weight: 500;">
-              <a href="#" style="color: ${SHARED_STYLES.slate400}; text-decoration: none; margin: 0 12px;">Academy & Docs</a>
-              <a href="#" style="color: ${SHARED_STYLES.slate400}; text-decoration: none; margin: 0 12px;">Login Dashboard</a>
-            </div>
+            <p style="margin: 0 0 16px; line-height: 1.6; font-weight: 500;">
+              ${
+                data.preferencesUrl && data.unsubscribeUrl
+                  ? `<a href="${data.preferencesUrl}" style="color: ${SHARED_STYLES.slate400}; text-decoration: underline;">Actualiza tus preferencias de correo</a> o <a href="${data.unsubscribeUrl}" style="color: ${SHARED_STYLES.slate400}; text-decoration: underline;">darte de baja</a>.`
+                  : "Si quieres gestionar comunicaciones por correo, escríbenos a soporte."
+              }
+            </p>
             <p style="opacity: 0.6; padding-top: 24px; border-top: 1px solid #E2E8F0; line-height: 1.6;">
               © 2026 Proplead Technologies.<br>
               Has recibido este mensaje automático porque tu correo ha sido registrado en Proplead. No respondas a esta dirección.
@@ -114,12 +154,7 @@ export function formatLowBalanceEmail(data: { name: string; balance: number }): 
       <div style="padding: 48px 16px;">
         <div style="max-width: 500px; margin: 0 auto;">
           <!-- Header/Logo -->
-          <div style="text-align: center; margin-bottom: 32px;">
-            <div style="display: inline-block; font-size: 24px; font-weight: 900; font-style: italic; letter-spacing: -0.05em; color: ${SHARED_STYLES.slate900}; vertical-align: middle;">
-              <div style="display: inline-block; width: 24px; height: 24px; background-color: ${SHARED_STYLES.redColor}; border-radius: 6px; margin-right: 8px; vertical-align: middle;"></div>
-              PROPLEAD
-            </div>
-          </div>
+          ${renderPropleadLogoHeader()}
 
           <!-- Main Card Container -->
           <div style="position: relative; margin-bottom: 48px;">
@@ -192,12 +227,7 @@ export function formatPaymentFailedEmail(data: { name: string; orgName: string; 
       <div style="padding: 48px 16px;">
         <div style="max-width: 500px; margin: 0 auto;">
           <!-- Header/Logo -->
-          <div style="text-align: center; margin-bottom: 32px;">
-            <div style="display: inline-block; font-size: 24px; font-weight: 900; font-style: italic; letter-spacing: -0.05em; color: ${SHARED_STYLES.slate900}; vertical-align: middle;">
-              <div style="display: inline-block; width: 24px; height: 24px; background-color: ${SHARED_STYLES.slate900}; border-radius: 6px; margin-right: 8px; vertical-align: middle;"></div>
-              PROPLEAD
-            </div>
-          </div>
+          ${renderPropleadLogoHeader()}
 
           <!-- Main Card Container -->
           <div style="position: relative; margin-bottom: 48px;">
@@ -265,12 +295,7 @@ export function formatInvitationEmail(data: { name: string; orgName: string; inv
       <div style="padding: 48px 16px;">
         <div style="max-width: 500px; margin: 0 auto;">
           <!-- Header/Logo -->
-          <div style="text-align: center; margin-bottom: 32px;">
-            <div style="display: inline-block; font-size: 24px; font-weight: 900; font-style: italic; letter-spacing: -0.05em; color: ${SHARED_STYLES.slate900}; vertical-align: middle;">
-              <div style="display: inline-block; width: 24px; height: 24px; background-color: ${SHARED_STYLES.primaryColor}; border-radius: 6px; margin-right: 8px; vertical-align: middle;"></div>
-              PROPLEAD
-            </div>
-          </div>
+          ${renderPropleadLogoHeader()}
 
           <!-- Main Card Container -->
           <div style="position: relative; margin-bottom: 48px;">

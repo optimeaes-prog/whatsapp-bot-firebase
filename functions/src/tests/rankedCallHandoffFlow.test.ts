@@ -59,15 +59,15 @@ test("provider confirmation prompt uses interactive buttons with fallback", () =
   );
   assert.match(
     cloudSource,
-    /else if \(msgType === "interactive"\)[\s\S]*?button_reply[\s\S]*?confirm_yes[\s\S]*?confirm_no/,
-    "Cloud API webhook parser should normalize interactive replies"
+    /else if \(msgType === "interactive"\)[\s\S]*?buttonTitle[\s\S]*?text = buttonTitle/,
+    "Cloud API webhook parser should prefer interactive button title for inbound text"
   );
 
   const indexSource = readRepoFile("src/index.ts");
   assert.match(
     indexSource,
-    /ButtonPayload[\s\S]*?confirm_yes[\s\S]*?confirm_no/,
-    "Twilio inbound parsing should normalize button payloads"
+    /const normalizedText = buttonText \|\| bodyText/,
+    "Twilio inbound parsing should prefer visible ButtonText over Body"
   );
 });
 

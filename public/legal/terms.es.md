@@ -35,7 +35,7 @@ La Plataforma incluye flujos automatizados de cualificación mediante IA **dise�
 
 ### 5.2 Restricciones y cumplimiento
 No debes (ni permitir que terceros):
-- enviar **spam**, comunicaciones no solicitadas o mensajes que infrinjan las políticas de WhatsApp/Twilio/Whapi u otros proveedores
+- enviar **spam**, comunicaciones no solicitadas o mensajes que infrinjan las políticas de WhatsApp/Twilio u otros proveedores
 - suplantar identidades o engañar a destinatarios
 - tratar **categorías especiales** de datos (salud, ideología, etc.) salvo que sea estrictamente necesario y con base legal y garantías adecuadas
 - introducir secretos o credenciales en campos de conversación
@@ -54,7 +54,7 @@ La Plataforma puede utilizar modelos de IA para generar respuestas y resúmenes.
 - validar la información crítica antes de actuar
 
 ## 7. Integraciones con terceros
-La Plataforma integra servicios de terceros (por ejemplo, **Twilio/Whapi** para mensajería/voz, **OpenAI** para IA, **Stripe** para pagos, **Calendly** para onboarding, y servicios de **Google/Firebase** para infraestructura).  
+La Plataforma integra servicios de terceros (por ejemplo, **Twilio** para mensajería/voz, **OpenAI** para IA, **Stripe** para pagos, **Calendly** para onboarding, y servicios de **Google/Firebase** para infraestructura).  
 El uso de dichas integraciones puede estar sujeto a términos de terceros. Talmate no es responsable por interrupciones o fallos atribuibles a dichos terceros.
 
 ## 8. Precios, créditos y suscripciones

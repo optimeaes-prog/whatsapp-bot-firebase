@@ -10,6 +10,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Email preference / unsubscribe records (written only by Cloud Functions).
+    match /emailCommunicationPreferences/{id} {
+      allow read, write: if false;
+    }
+
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -30,6 +35,14 @@ service cloud.firestore {
       return isAuthenticated() && getRole() == "super_admin";
     }
 
+    function isOrgManager() {
+      return isAuthenticated() && (isSuperAdmin() || getRole() == "admin" || getRole() == "owner");
+    }
+
+    function isAgent() {
+      return isAuthenticated() && getRole() == "agent";
+    }
+
     function canAccessOrg(orgId) {
       return isAuthenticated() && (getOrgId() == orgId || isSuperAdmin());
     }
@@ -39,6 +52,39 @@ service cloud.firestore {
         isSuperAdmin() ||
         (getOrgId() == orgId && (getRole() == "admin" || getRole() == "owner"))
       );
+    }
+
+    function isListingReadableByAgent() {
+      return isAuthenticated() && (
+        (("createdByUid" in resource.data) && resource.data.createdByUid == request.auth.uid) ||
+        (("assignedAgentUid" in resource.data) && resource.data.assignedAgentUid == request.auth.uid)
+      );
+    }
+
+    function isListingWritableByAgentRequest() {
+      // Agents can only write listings they own, and they can't assign other agents.
+      // Managers perform assignment.
+      return isAuthenticated() &&
+        (("createdByUid" in request.resource.data) && request.resource.data.createdByUid == request.auth.uid) &&
+        (!("assignedAgentUid" in request.resource.data) ||
+          request.resource.data.assignedAgentUid == request.auth.uid ||
+          request.resource.data.assignedAgentUid == "");
+    }
+
+    function isAssignedToAgent() {
+      return isAuthenticated() &&
+        (("assignedAgentUid" in resource.data) && resource.data.assignedAgentUid == request.auth.uid);
+    }
+
+    function isAssignedToAgentAfterWrite() {
+      return isAuthenticated() &&
+        (("assignedAgentUid" in request.resource.data) && request.resource.data.assignedAgentUid == request.auth.uid);
+    }
+
+    function onlyChanged(keys) {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly(keys) &&
+        request.resource.data.diff(resource.data).addedKeys().hasOnly(keys) &&
+        request.resource.data.diff(resource.data).removedKeys().hasOnly([]);
     }
 
     function isValidSelfUserCreate() {
@@ -51,26 +97,13 @@ service cloud.firestore {
         request.resource.data.role == resource.data.role;
     }
 
-    // Platform operator: self-upgrade to super_admin without changing org (verify email in ID token).
-    function isInternalSuperAdminEmailForUser(userId) {
-      return isAuthenticated() &&
-        request.auth.uid == userId &&
-        request.auth.token.email == "ejperezreyes@gmail.com";
-    }
-
-    function isAllowlistedSuperAdminRoleUpgrade(userId) {
-      return isInternalSuperAdminEmailForUser(userId) &&
-        request.resource.data.role == "super_admin" &&
-        (!("orgId" in resource.data) || request.resource.data.orgId == resource.data.orgId);
-    }
-
     // Users can read their own profile. Writes are constrained to prevent role/org escalation.
+    // Role changes (including super_admin promotion) must be done via Cloud Functions
+    // (admin SDK bypasses rules) or directly in the Firebase Console — never client-side.
     match /users/{userId} {
       allow read: if isAuthenticated() && request.auth.uid == userId;
       allow create: if isAuthenticated() && request.auth.uid == userId && isValidSelfUserCreate();
-      allow update: if isAuthenticated() && request.auth.uid == userId && (
-        isSafeSelfUserUpdate() || isAllowlistedSuperAdminRoleUpgrade(userId)
-      );
+      allow update: if isAuthenticated() && request.auth.uid == userId && isSafeSelfUserUpdate();
       allow delete: if false;
       // Also allow owners/admins of the same org to read
       allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || isSuperAdmin());
@@ -87,18 +120,68 @@ service cloud.firestore {
       }
 
       match /listings/{listingId} {
-        allow read: if canAccessOrg(orgId);
-        allow write: if canManageOrg(orgId);
+        allow read: if canAccessOrg(orgId) && (
+          !isAgent() || isOrgManager() || isListingReadableByAgent()
+        );
+
+        allow create: if canAccessOrg(orgId) && (
+          canManageOrg(orgId) ||
+          (isAgent() && isListingWritableByAgentRequest())
+        );
+
+        allow update: if canAccessOrg(orgId) && (
+          canManageOrg(orgId) ||
+          (isAgent() &&
+            isListingReadableByAgent() &&
+            isListingWritableByAgentRequest() &&
+            // Prevent agents from changing ownership/assignment
+            request.resource.data.createdByUid == resource.data.createdByUid &&
+            request.resource.data.assignedAgentUid == resource.data.assignedAgentUid
+          )
+        );
+
+        allow delete: if canManageOrg(orgId);
       }
       
       match /leads/{leadId} {
-        allow read: if canAccessOrg(orgId);
-        allow write: if canManageOrg(orgId);
+        allow read: if canAccessOrg(orgId) && (
+          !isAgent() || isOrgManager() ||
+          isAssignedToAgent()
+        );
+        allow create, delete: if canManageOrg(orgId);
+        allow update: if canManageOrg(orgId) || (
+          canAccessOrg(orgId) &&
+          isAgent() &&
+          isAssignedToAgent() &&
+          isAssignedToAgentAfterWrite() &&
+          onlyChanged([
+            "notes",
+            "tags",
+            "name",
+            "listingCode",
+            "operationType",
+            "qualificationStatus",
+            "consent",
+            "pets",
+            "income",
+            "paymentMethod"
+          ])
+        );
       }
       
       match /conversations/{convId} {
-        allow read: if canAccessOrg(orgId);
-        allow write: if canManageOrg(orgId);
+        allow read: if canAccessOrg(orgId) && (
+          !isAgent() || isOrgManager() ||
+          isAssignedToAgent()
+        );
+        allow create, delete: if canManageOrg(orgId);
+        allow update: if canManageOrg(orgId) || (
+          canAccessOrg(orgId) &&
+          isAgent() &&
+          isAssignedToAgent() &&
+          isAssignedToAgentAfterWrite() &&
+          onlyChanged(["notes", "tags", "name", "botDisabled", "listingCode", "qualified", "isFinished"])
+        );
       }
 
       match /calls/{callId} {
@@ -110,28 +193,75 @@ service cloud.firestore {
         allow read: if canAccessOrg(orgId);
         allow write: if canManageOrg(orgId);
       }
+
+      // Credit usage ledger. Read-only for owners/admins/super_admin; writes are
+      // performed exclusively by Cloud Functions (admin SDK bypasses rules).
+      match /creditTransactions/{txId} {
+        allow read: if canAccessOrg(orgId) && isOrgManager();
+        allow write: if false;
+      }
     }
 
     match /system_alerts/{alertId} {
-      allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || getRole() == 'admin' || getRole() == 'owner');
-      allow write: if isAuthenticated(); 
+      // Read is scoped to the alert's own org or super_admin. Previously this
+      // also matched any admin/owner globally, which leaked alerts cross-org.
+      allow read: if isAuthenticated() && (
+        getOrgId() == resource.data.orgId || isSuperAdmin()
+      );
+      // Alert documents are authored by Cloud Functions (admin SDK bypasses
+      // rules), so direct client create/update is never needed.
+      allow create, update: if false;
+      // Dashboard "dismiss alert" UI uses client deleteDoc; keep that working
+      // for admin/owner of the alert's own org and for super_admin.
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getOrgId() == resource.data.orgId && (getRole() == 'admin' || getRole() == 'owner'))
+      );
     }
 
     match /qualifiedLeads/{leadId} {
-      allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || getRole() == 'admin' || getRole() == 'owner');
-      allow write: if isAuthenticated() && (getRole() == 'admin' || getRole() == 'owner');
+      // Org-scoped read only (super_admin can also read).
+      allow read: if isAuthenticated() && (
+        getOrgId() == resource.data.orgId || isSuperAdmin()
+      );
+      // Collection is functions-only (admin SDK). No client writes.
+      allow write: if false;
     }
 
     match /auditLogs/{logId} {
        allow read: if isAuthenticated() && getOrgId() == resource.data.orgId;
     }
 
+    // Twilio sender migration jobs. Read-only for admin/super_admin; all writes go through Cloud Functions.
+    match /twilioMigrationJobs/{jobId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || getRole() == "admin");
+      allow write: if false;
+    }
+
+    // Invitations (team invites)
+    match /invitations/{invitationId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (("orgId" in resource.data) && getOrgId() == resource.data.orgId)
+      );
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.orgId is string && canManageOrg(request.resource.data.orgId))
+      );
+      allow update, delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (("orgId" in resource.data) && canManageOrg(resource.data.orgId))
+      );
+    }
+
     // COLLECTION GROUP RULES
     match /{path=**}/leads/{lead} {
-      allow read: if isAuthenticated();
+      // Prevent bypassing org/role scoping via collectionGroup queries.
+      allow read: if false;
     }
     match /{path=**}/conversations/{conversation} {
-      allow read: if isAuthenticated();
+      // Prevent bypassing org scoping via collectionGroup queries.
+      allow read: if false;
     }
   }
 }

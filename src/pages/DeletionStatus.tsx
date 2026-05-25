@@ -41,7 +41,7 @@ export function DeletionStatus() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-      <div className="max-w-xl w-full bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+      <div className="max-w-xl w-full bg-white rounded-xl shadow-sm border border-gray-200 p-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Estado de la solicitud de borrado</h1>
         <p className="text-sm text-gray-600 mb-6">
           Proplead · Meta Data Deletion Request

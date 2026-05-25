@@ -34,7 +34,7 @@ const getDb = () => {
   return firestoreInstance;
 };
 
-import { getActiveOrgId } from "./requestContext";
+import { getActiveOrgId, requestContext } from "./requestContext";
 
 const getOrgDb = () => {
   return getDb().collection("organizations").doc(getActiveOrgId());
@@ -83,6 +83,9 @@ function listingRowFromDoc(data: FirebaseFirestore.DocumentData): ListingRow {
     features: data.features || "",
     profitabilityReportAvailable: data.profitabilityReportAvailable || false,
     profitabilityReport: data.profitabilityReport || "",
+    createdByUid: typeof data.createdByUid === "string" ? data.createdByUid : undefined,
+    assignedAgentUid: typeof data.assignedAgentUid === "string" ? data.assignedAgentUid : undefined,
+    assignedAgentName: typeof data.assignedAgentName === "string" ? data.assignedAgentName : undefined,
     price: data.price,
     m2: data.m2,
     rooms: data.rooms,
@@ -100,6 +103,92 @@ function listingRowFromDoc(data: FirebaseFirestore.DocumentData): ListingRow {
     maxPeople: typeof data.maxPeople === "number" ? data.maxPeople : undefined,
     requireMortgageApproved: data.requireMortgageApproved === true,
   };
+}
+
+/** Agent scope UID from a raw Firestore listing document (assignedAgentUid else createdByUid). */
+export function agentScopeFromListingSnapshotData(data: FirebaseFirestore.DocumentData | undefined): string {
+  if (!data) return "";
+  return getListingAgentScopeUid(listingRowFromDoc(data));
+}
+
+export function getListingAgentScopeUid(listing: ListingRow | null): string {
+  if (!listing) return "";
+  const assignedAgentUid = typeof listing.assignedAgentUid === "string" ? listing.assignedAgentUid.trim() : "";
+  if (assignedAgentUid) return assignedAgentUid;
+  return typeof listing.createdByUid === "string" ? listing.createdByUid.trim() : "";
+}
+
+/** Sets assignedAgentUid on all leads and conversations with this listingCode when it differs. */
+export async function syncAssignedAgentUidForListingCode(listingCode: string, scopeUid: string): Promise<void> {
+  const code = typeof listingCode === "string" ? listingCode.trim() : "";
+  const uid = typeof scopeUid === "string" ? scopeUid.trim() : "";
+  if (!code || code === "__pending__" || !uid) return;
+
+  const [leadsSnap, convSnap] = await Promise.all([
+    getOrgDb().collection("leads").where("listingCode", "==", code).get(),
+    getOrgDb().collection("conversations").where("listingCode", "==", code).get(),
+  ]);
+
+  type WriteOp = { ref: FirebaseFirestore.DocumentReference; uid: string };
+  const ops: WriteOp[] = [];
+  for (const d of leadsSnap.docs) {
+    const cur = typeof d.data().assignedAgentUid === "string" ? d.data().assignedAgentUid.trim() : "";
+    if (cur !== uid) ops.push({ ref: d.ref, uid });
+  }
+  for (const d of convSnap.docs) {
+    const cur = typeof d.data().assignedAgentUid === "string" ? d.data().assignedAgentUid.trim() : "";
+    if (cur !== uid) ops.push({ ref: d.ref, uid });
+  }
+  if (ops.length === 0) return;
+
+  const batchSize = 400;
+  for (let i = 0; i < ops.length; i += batchSize) {
+    const batch = getDb().batch();
+    for (const op of ops.slice(i, i + batchSize)) {
+      batch.set(op.ref, { assignedAgentUid: op.uid }, { merge: true });
+    }
+    await batch.commit();
+  }
+}
+
+/**
+ * Aligns leads and conversations for a listingCode with the listing's agent scope
+ * (assignedAgentUid, else createdByUid). Call when assignment/ownership changes on the listing.
+ */
+export async function syncAgentScopeUidForListingCodeFromListingDoc(
+  listingCode: string,
+  listingDocData: FirebaseFirestore.DocumentData
+): Promise<void> {
+  const scopeUid = getListingAgentScopeUid(listingRowFromDoc(listingDocData));
+  await syncAssignedAgentUidForListingCode(listingCode, scopeUid);
+}
+
+/**
+ * For every org listing with a listingCode, re-apply agent scope to all matching leads/conversations.
+ * Use after bulk assignment changes or historical drift (agent queries filter on assignedAgentUid).
+ */
+export async function reconcileAllListingAgentScopesInOrg(orgId: string): Promise<{
+  listingDocs: number;
+  listingsWithCodeAndScope: number;
+}> {
+  const trimmed = typeof orgId === "string" ? orgId.trim() : "";
+  if (!trimmed) {
+    return { listingDocs: 0, listingsWithCodeAndScope: 0 };
+  }
+  return requestContext.run({ orgId: trimmed }, async () => {
+    const snap = await getOrgDb().collection("listings").get();
+    let withCodeAndScope = 0;
+    for (const d of snap.docs) {
+      const data = d.data();
+      const code = typeof data.listingCode === "string" ? data.listingCode.trim() : "";
+      if (!code || code === "__pending__") continue;
+      const scope = getListingAgentScopeUid(listingRowFromDoc(data));
+      if (!scope) continue;
+      withCodeAndScope += 1;
+      await syncAgentScopeUidForListingCodeFromListingDoc(code, data);
+    }
+    return { listingDocs: snap.docs.length, listingsWithCodeAndScope: withCodeAndScope };
+  });
 }
 
 // Listings
@@ -471,6 +560,8 @@ export async function createLead(data: {
   listingResolutionStatus?: "pending" | "resolved" | "failed";
 }): Promise<void> {
   const docId = buildLeadDocId(data.phone, data.listingCode);
+  const listing = data.listingCode ? await fetchListingByCode(data.listingCode).catch(() => null) : null;
+  const assignedAgentUid = getListingAgentScopeUid(listing);
   await getOrgDb().collection("leads").doc(docId).set({
     phone: data.phone,
     listingCode: data.listingCode,
@@ -478,6 +569,7 @@ export async function createLead(data: {
     operationType: data.operationType,
     name: data.name,
     qualificationStatus: data.qualificationStatus,
+    ...(assignedAgentUid ? { assignedAgentUid } : {}),
     tags: data.tags,
     leadSource: data.leadSource,
     listingResolutionStatus: data.listingResolutionStatus,
@@ -523,18 +615,32 @@ export async function createPendingCallLead(params: {
     );
   }
 
-  // Ensure there's a conversation doc to buffer messages into
-  await upsertConversation(params.chatId, {
-    phone: params.phone,
-    chatId: params.chatId,
-    listingCode: sentinelListingCode,
-    history: [],
-    pendingUserMessages: [],
-    isFinished: false,
-    botDisabled: false,
-    type: "lead",
-    tags: ["lead", "call", "pending-listing"],
-  } as Partial<ConversationState>);
+  // Ensure there's a conversation doc to buffer messages into.
+  // IMPORTANT: only initialize transient fields (history, pendingUserMessages, isFinished, tags)
+  // when the doc DOESN'T already exist. Otherwise we'd clobber buffered inbound messages and
+  // a previously-completed handoff state on repeat callers — see the voiceWebhook race we hit.
+  const canonicalChatId = normalizeToCanonicalChatId(params.chatId);
+  const existingConv = await getOrgDb().collection("conversations").doc(canonicalChatId).get();
+  if (!existingConv.exists) {
+    await upsertConversation(params.chatId, {
+      phone: params.phone,
+      chatId: params.chatId,
+      listingCode: sentinelListingCode,
+      history: [],
+      pendingUserMessages: [],
+      isFinished: false,
+      botDisabled: false,
+      type: "lead",
+      tags: ["lead", "call", "pending-listing"],
+    } as Partial<ConversationState>);
+  } else {
+    // Doc exists — only refresh identity fields, leave transient state alone.
+    await upsertConversation(params.chatId, {
+      phone: params.phone,
+      chatId: params.chatId,
+      type: "lead",
+    } as Partial<ConversationState>);
+  }
 }
 
 export async function updateLeadListingByChatId(params: {
@@ -552,6 +658,17 @@ export async function updateLeadListingByChatId(params: {
     return;
   }
 
+  let scopeForSync = "";
+  let assignedPatch: Record<string, string> = {};
+  if (params.listingCode && params.listingCode !== "__pending__") {
+    const listing = await fetchListingByCode(params.listingCode).catch(() => null);
+    const assignedAgentUid = getListingAgentScopeUid(listing);
+    if (assignedAgentUid) {
+      assignedPatch = { assignedAgentUid };
+      scopeForSync = assignedAgentUid;
+    }
+  }
+
   await snapshot.docs[0].ref.set(
     {
       phone: params.phone,
@@ -561,9 +678,14 @@ export async function updateLeadListingByChatId(params: {
       listingResolutionStatus: params.listingResolutionStatus,
       tags: params.tags,
       lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+      ...assignedPatch,
     },
     { merge: true }
   );
+
+  if (scopeForSync && params.listingCode && params.listingCode !== "__pending__") {
+    await syncAssignedAgentUidForListingCode(params.listingCode, scopeForSync);
+  }
 }
 
 /**
@@ -608,6 +730,13 @@ export async function updateLeadChatInfo(params: {
     chatId: params.chatId,
     lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
   };
+  if (params.listingCode && params.listingCode !== "__pending__") {
+    const listing = await fetchListingByCode(params.listingCode).catch(() => null);
+    const assignedAgentUid = getListingAgentScopeUid(listing);
+    if (assignedAgentUid) {
+      updateData.assignedAgentUid = assignedAgentUid;
+    }
+  }
   if (!snap.exists) {
     const ts = admin.firestore.FieldValue.serverTimestamp();
     updateData.createdAt = ts;
@@ -640,22 +769,54 @@ export async function updateLeadChatInfo(params: {
 // Conversations
 
 /**
+ * Union duplicate chatId variants' histories (and optional incoming update) without dropping rows.
+ * Dedupes by role + timestamp + text, sorts by timestamp ascending.
+ */
+export function mergeConversationHistoryItems(...groups: (HistoryItem[] | undefined)[]): HistoryItem[] {
+  const map = new Map<string, HistoryItem>();
+  for (const group of groups) {
+    for (const h of group || []) {
+      if (!h || typeof h.text !== "string") continue;
+      const role: HistoryItem["role"] = h.role === "assistant" ? "assistant" : "user";
+      const key = `${role}:${h.timestamp}:${h.text}`;
+      if (!map.has(key)) {
+        map.set(key, { role, text: h.text, timestamp: h.timestamp });
+      }
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
+}
+
+/**
  * Get a conversation by chatId, searching all possible variants.
- * Returns the conversation data with the actual document ID.
+ * When both @c.us and @s.whatsapp.net exist (legacy duplicates), returns the document with the
+ * richest history — not simply the first variant in fixed order (which hid assistant rows on canonical docs).
  */
 export async function getConversationByChatId(chatId: string): Promise<ConversationState | null> {
   const variants = getChatIdVariants(chatId);
+  const found: ConversationState[] = [];
 
-  // Try each variant
   for (const variant of variants) {
     const docRef = getOrgDb().collection("conversations").doc(variant);
     const doc = await docRef.get();
     if (doc.exists) {
-      return { ...doc.data(), chatId: doc.id } as ConversationState;
+      found.push({ ...doc.data(), chatId: doc.id } as ConversationState);
     }
   }
 
-  return null;
+  if (found.length === 0) return null;
+  if (found.length === 1) return found[0];
+
+  const canonicalId = normalizeToCanonicalChatId(chatId);
+  return found.reduce((best, cur) => {
+    const bl = best.history?.length ?? 0;
+    const cl = cur.history?.length ?? 0;
+    if (cl > bl) return cur;
+    if (cl < bl) return best;
+    if (cur.chatId === canonicalId) return cur;
+    if (best.chatId === canonicalId) return best;
+    return best;
+  });
 }
 
 /**
@@ -713,42 +874,38 @@ export async function upsertConversation(chatId: string, data: Partial<Conversat
   if (existingVariants.length > 1) {
     console.log(`Found ${existingVariants.length} duplicate conversation variants for ${chatId}, merging to ${canonicalChatId}`);
 
-    // Find the one with the most history (best data to keep)
-    let bestData: ConversationState | null = null;
-    let oldDocIds: string[] = [];
+    const bestPair = existingVariants.reduce((best, cur) => {
+      const bl = best[1].history?.length ?? 0;
+      const cl = cur[1].history?.length ?? 0;
+      return cl > bl ? cur : best;
+    });
+    const [, bestData] = bestPair;
 
-    for (const [docId, convData] of existingVariants) {
-      if (!bestData || (convData.history?.length || 0) > (bestData.history?.length || 0)) {
-        if (bestData) {
-          // The previous best is now an old doc to delete
-          const previousBestId = existingVariants.find(([_, d]) => d === bestData)?.[0];
-          if (previousBestId && previousBestId !== canonicalChatId) {
-            oldDocIds.push(previousBestId);
-          }
-        }
-        bestData = convData;
-      } else if (docId !== canonicalChatId) {
-        oldDocIds.push(docId);
-      }
-    }
+    const allHistories = existingVariants.map(([, c]) => c.history);
+    const unionHistory = mergeConversationHistoryItems(...allHistories);
+    const { history: incomingHistory, ...rest } = data;
+    const finalHistory =
+      incomingHistory !== undefined
+        ? mergeConversationHistoryItems(unionHistory, incomingHistory)
+        : unionHistory;
 
-    // Merge the new data with the best existing data
     const mergedData = {
       ...bestData,
-      ...data,
+      ...rest,
+      history: finalHistory,
+      messageCount: finalHistory.length,
       chatId: canonicalChatId,
-      messageCount: data.history?.length || bestData?.history?.length || 0,
       lastMessage: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    // Write to canonical ID
     const canonicalRef = getOrgDb().collection("conversations").doc(canonicalChatId);
     await canonicalRef.set(mergedData, { merge: true });
 
-    // Delete old variants
-    for (const oldId of oldDocIds) {
-      console.log(`Deleting duplicate conversation variant: ${oldId}`);
-      await getOrgDb().collection("conversations").doc(oldId).delete();
+    for (const [variantId] of existingVariants) {
+      if (variantId !== canonicalChatId) {
+        console.log(`Deleting duplicate conversation variant: ${variantId}`);
+        await getOrgDb().collection("conversations").doc(variantId).delete();
+      }
     }
 
     return;
@@ -759,11 +916,18 @@ export async function upsertConversation(chatId: string, data: Partial<Conversat
     const [oldDocId, oldData] = existingVariants[0];
     console.log(`Migrating conversation from ${oldDocId} to canonical ${canonicalChatId}`);
 
+    const { history: incomingHistory, ...rest } = data;
+    const finalHistory =
+      incomingHistory !== undefined
+        ? mergeConversationHistoryItems(oldData.history, incomingHistory)
+        : oldData.history || [];
+
     const mergedData = {
       ...oldData,
-      ...data,
+      ...rest,
+      history: finalHistory,
+      messageCount: finalHistory.length,
       chatId: canonicalChatId,
-      messageCount: data.history?.length || oldData.history?.length || 0,
       lastMessage: admin.firestore.FieldValue.serverTimestamp(),
     };
 
@@ -778,15 +942,23 @@ export async function upsertConversation(chatId: string, data: Partial<Conversat
 
   // Normal case: no duplicates, just upsert to canonical ID
   const docRef = getOrgDb().collection("conversations").doc(canonicalChatId);
-  await docRef.set(
-    {
-      ...data,
-      chatId: canonicalChatId,
-      messageCount: data.history?.length || 0,
-      lastMessage: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const [existingPair] = existingVariants;
+  const existingHist = existingPair?.[1]?.history;
+  const { history: incomingHistory, ...rest } = data;
+
+  const payload: Record<string, unknown> = {
+    ...rest,
+    chatId: canonicalChatId,
+    lastMessage: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (incomingHistory !== undefined) {
+    const merged = mergeConversationHistoryItems(existingHist, incomingHistory);
+    payload.history = merged;
+    payload.messageCount = merged.length;
+  }
+
+  await docRef.set(payload, { merge: true });
 }
 
 
@@ -800,9 +972,16 @@ export async function appendConversationRow(params: {
   isFinished?: boolean;
   recordings?: string[];
 }): Promise<void> {
+  const listingCode = typeof params.listingCode === "string" ? params.listingCode.trim() : "";
+  const listing = listingCode && listingCode !== "__pending__"
+    ? await fetchListingByCode(listingCode).catch(() => null)
+    : null;
+  const assignedAgentUid = getListingAgentScopeUid(listing);
+
   await upsertConversation(params.chatId, {
     phone: params.phone,
     listingCode: params.listingCode,
+    ...(assignedAgentUid ? { assignedAgentUid } : {}),
     history: params.history,
     name: params.name,
     qualificationStatus: params.qualified ?? null,
@@ -978,7 +1157,7 @@ export async function updateTwilioConfig(patch: Partial<TwilioTransportConfig>):
 export async function getOrganizationMessagingProvider(orgId: string): Promise<MessagingProvider | undefined> {
   const doc = await getDb().doc(`organizations/${orgId}/botConfig/config`).get();
   const value = doc.data()?.messagingProvider;
-  if (value === "cloud_api" || value === "twilio" || value === "whapi") return value;
+  if (value === "cloud_api" || value === "twilio") return value;
   return undefined;
 }
 

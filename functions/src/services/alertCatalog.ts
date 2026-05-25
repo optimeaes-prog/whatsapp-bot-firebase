@@ -1,13 +1,10 @@
 import type { AlertSeverity } from "../types";
 
 export type AlertCatalogKey =
-  | "whapi_down"
   | "cloud_api_down"
   | "cloud_api_template_rejected"
   | "sync_task_error"
-  | "sync_error"
   | "sync_failed"
-  | "sync_discrepancies"
   | "twilio_maintenance"
   | "provider_maintenance"
   | "failed_message_permanent"
@@ -36,13 +33,6 @@ export type AlertCatalogItem = {
 
 export const ALERT_CATALOG: AlertCatalogItem[] = [
   {
-    key: "whapi_down",
-    subject: "Whapi Down",
-    description: "Whapi no responde o el token es inválido (health-check programado).",
-    defaultSeverity: "warning",
-    autoTest: { kind: "schedule", every: "cada 30 min" },
-  },
-  {
     key: "cloud_api_down",
     subject: "Cloud API Down",
     description: "WhatsApp Cloud API no responde o el Access Token es inválido.",
@@ -64,24 +54,10 @@ export const ALERT_CATALOG: AlertCatalogItem[] = [
     autoTest: { kind: "schedule", every: "cada 30 min" },
   },
   {
-    key: "sync_error",
-    subject: "Sync Error",
-    description: "No se pudieron obtener chats de Whapi durante la sincronización.",
-    defaultSeverity: "critical",
-    autoTest: { kind: "schedule", every: "cada 30 min" },
-  },
-  {
     key: "sync_failed",
     subject: "Sync Failed",
-    description: "Fallo crítico general durante la sincronización Whapi ↔ Firestore.",
+    description: "Fallo crítico general durante la sincronización de mantenimiento.",
     defaultSeverity: "critical",
-    autoTest: { kind: "schedule", every: "cada 30 min" },
-  },
-  {
-    key: "sync_discrepancies",
-    subject: "Discrepancias de Sincronización Detectadas",
-    description: "Se detectaron desajustes entre Whapi y Firestore (mismatch/missing/stale buffer).",
-    defaultSeverity: "warning",
     autoTest: { kind: "schedule", every: "cada 30 min" },
   },
   {

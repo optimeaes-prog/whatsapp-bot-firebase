@@ -1,8 +1,11 @@
-import { sendText as whapiSendText } from "./whapiClient";
 import {
   sendText as twilioSendText,
   sendTemplate as twilioSendTemplate,
   sendTextWithTemplateFallback as twilioSendTextWithTemplateFallback,
+  isLikelyWhatsAppCustomerCareWindowOpenForRecipient,
+  twilioContentVariablesForTemplateFallback,
+  agentDebugLog,
+  phoneSuffixForLog,
 } from "./twilioClient";
 import {
   sendText as cloudApiSendText,
@@ -32,9 +35,9 @@ type SendTemplateParams = {
   language: "es" | "en";
   variables: Record<string, string>;
   mediaUrl?: string;
-  /** Twilio ContentSid (ignored by Cloud API / Whapi). */
+  /** Twilio ContentSid (ignored by Cloud API). */
   templateSid?: string;
-  /** Cloud API template name (ignored by Twilio / Whapi). */
+  /** Cloud API template name (ignored by Twilio). */
   templateName?: string;
   /**
    * Legacy-only escape hatch to mirror pre-opt-in behavior.
@@ -201,8 +204,7 @@ async function assertTemplateSendAllowed(params: { to: string; chatId?: string }
 }
 
 /**
- * Send a WhatsApp message using the configured provider (Whapi, Twilio or Cloud API).
- * For messages within the 24h customer service window or via Whapi (which has no window).
+ * Send a WhatsApp message using the configured provider (Twilio or Cloud API).
  */
 export async function sendTextMessage(params: SendTextParams): Promise<SendTextResult> {
   const provider = await getActiveProvider();
@@ -212,10 +214,7 @@ export async function sendTextMessage(params: SendTextParams): Promise<SendTextR
   if (provider === "twilio") {
     return twilioSendText(params);
   }
-  if (provider === "cloud_api") {
-    return cloudApiSendText(params);
-  }
-  return whapiSendText(params);
+  return cloudApiSendText(params);
 }
 
 export async function sendBinaryConfirmPrompt(params: SendBinaryConfirmPromptParams): Promise<SendTextResult> {
@@ -243,8 +242,8 @@ export async function sendBinaryConfirmPrompt(params: SendBinaryConfirmPromptPar
 }
 
 /**
- * Send initial contact message using a template (Twilio / Cloud API) or plain text (Whapi).
- * Twilio and Cloud API require approved templates for business-initiated messages outside the 24h window.
+ * Send initial contact message using an approved template (Twilio / Cloud API).
+ * Required for business-initiated messages outside the 24h customer-care window.
  * Returns the full message text that was sent (for history tracking).
  */
 export async function sendInitialTemplateMessage(params: SendTemplateParams): Promise<SendTextResult> {
@@ -253,7 +252,7 @@ export async function sendInitialTemplateMessage(params: SendTemplateParams): Pr
   console.log(`Sending initial template message via ${provider} to ${params.to}`);
 
   // A6a/b — enforce opt-in + opt-out for any template-based business-initiated message.
-  if ((provider === "cloud_api" || provider === "twilio") && !params.skipEligibilityGate) {
+  if (!params.skipEligibilityGate) {
     await assertTemplateSendAllowed({ to: params.to, chatId: params.chatId });
   }
 
@@ -261,26 +260,19 @@ export async function sendInitialTemplateMessage(params: SendTemplateParams): Pr
     return twilioSendTemplate(params);
   }
 
-  if (provider === "cloud_api") {
-    if (!params.templateName) {
-      throw new Error(
-        "sendInitialTemplateMessage: cloud_api requires `templateName` (resolve from botConfig.cloudApiConfig.templates)"
-      );
-    }
-    return cloudApiSendTemplate({
-      to: params.to,
-      chatId: params.chatId,
-      language: params.language,
-      variables: params.variables,
-      templateName: params.templateName,
-      mediaUrl: params.mediaUrl,
-    });
+  if (!params.templateName) {
+    throw new Error(
+      "sendInitialTemplateMessage: cloud_api requires `templateName` (resolve from botConfig.cloudApiConfig.templates)"
+    );
   }
-
-  // For Whapi, we just send the composed text as before (no template needed)
-  // The caller should handle this by sending regular messages via sendTextMessage
-  // This function is only needed for Twilio / Cloud API template flow
-  throw new Error("sendInitialTemplateMessage should only be called when Twilio or Cloud API is active");
+  return cloudApiSendTemplate({
+    to: params.to,
+    chatId: params.chatId,
+    language: params.language,
+    variables: params.variables,
+    templateName: params.templateName,
+    mediaUrl: params.mediaUrl,
+  });
 }
 
 export async function sendAgentNotificationMessage(params: {
@@ -288,6 +280,8 @@ export async function sendAgentNotificationMessage(params: {
   body: string;
   chatId?: string;
   templateSid?: string;
+  /** Twilio: optional Content variables (e.g. Proplead {{1}}..{{8}}); when omitted, fallback uses `{ "1": body }`. */
+  twilioTemplateVariables?: Record<string, string>;
   /** Cloud API-only: template name used for the 24h-window fallback. */
   cloudApiTemplateName?: string;
   /** Cloud API-only: language for the fallback template. Defaults to "es". */
@@ -298,11 +292,70 @@ export async function sendAgentNotificationMessage(params: {
   console.log(`Sending agent notification via ${provider} to ${params.to}`);
 
   if (provider === "twilio") {
+    const templateSid = typeof params.templateSid === "string" ? params.templateSid.trim() : "";
+    const windowLikelyOpen = await isLikelyWhatsAppCustomerCareWindowOpenForRecipient(params.to);
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: "H0",
+      location: "messagingProvider.ts:sendAgentNotificationMessage:twilio",
+      message: "sendAgentNotification_twilio_invoke",
+      data: {
+        toSuffix: phoneSuffixForLog(params.to),
+        templateSid,
+        bodyLen: String(params.body || "").length,
+        context: params.context || "",
+        windowLikelyOpen,
+        hasMultiVars: !!(params.twilioTemplateVariables && Object.keys(params.twilioTemplateVariables).length > 0),
+      },
+    });
+    // #endregion
+
+    if (windowLikelyOpen) {
+      const result = await twilioSendTextWithTemplateFallback({
+        to: params.to,
+        body: params.body,
+        chatId: params.chatId,
+        templateSid: params.templateSid,
+        templateVariables: params.twilioTemplateVariables,
+        context: params.context,
+      });
+      if (result.usedTemplateFallback) {
+        console.log(`Agent notification sent via Twilio template fallback to ${params.to}`);
+      }
+      return { chatId: result.chatId, messageId: result.messageId };
+    }
+
+    if (templateSid) {
+      const variables = twilioContentVariablesForTemplateFallback(params.twilioTemplateVariables, params.body);
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: "H7",
+        location: "messagingProvider.ts:sendAgentNotificationMessage:twilio_closed_template",
+        message: "twilio_closed_window_direct_template",
+        data: {
+          toSuffix: phoneSuffixForLog(params.to),
+          templateSid,
+          contentVariableCount: Object.keys(variables).length,
+        },
+      });
+      // #endregion
+      const templated = await twilioSendTemplate({
+        to: params.to,
+        chatId: params.chatId,
+        language: "es",
+        templateSid,
+        variables,
+      });
+      console.log(`Agent notification sent via Twilio template (closed window) to ${params.to}`);
+      return { chatId: templated.chatId, messageId: templated.messageId };
+    }
+
     const result = await twilioSendTextWithTemplateFallback({
       to: params.to,
       body: params.body,
       chatId: params.chatId,
       templateSid: params.templateSid,
+      templateVariables: params.twilioTemplateVariables,
       context: params.context,
     });
     if (result.usedTemplateFallback) {
@@ -311,36 +364,82 @@ export async function sendAgentNotificationMessage(params: {
     return { chatId: result.chatId, messageId: result.messageId };
   }
 
-  if (provider === "cloud_api") {
-    // If no explicit template name was passed, try to resolve the default agent-notification
-    // template from the org's cloudApiConfig.templates (keyed by language).
-    let templateName = params.cloudApiTemplateName;
-    const language = params.cloudApiTemplateLanguage || "es";
-    if (!templateName) {
-      try {
-        const creds = await getCloudApiCredentials();
-        templateName =
-          creds.templates?.agentNotification ||
-          (language === "en"
-            ? creds.templates?.agentNotificationEn
-            : creds.templates?.agentNotificationEs);
-      } catch (error) {
-        console.warn("[cloud_api] Could not load templates for agent notification fallback", error);
-      }
+  // cloud_api
+  // If no explicit template name was passed, try to resolve the default agent-notification
+  // template from the org's cloudApiConfig.templates (keyed by language).
+  let templateName = params.cloudApiTemplateName;
+  const language = params.cloudApiTemplateLanguage || "es";
+  if (!templateName) {
+    try {
+      const creds = await getCloudApiCredentials();
+      templateName =
+        creds.templates?.agentNotification ||
+        (language === "en"
+          ? creds.templates?.agentNotificationEn
+          : creds.templates?.agentNotificationEs);
+    } catch (error) {
+      console.warn("[cloud_api] Could not load templates for agent notification fallback", error);
     }
-    const result = await cloudApiSendTextWithTemplateFallback({
+  }
+  const result = await cloudApiSendTextWithTemplateFallback({
+    to: params.to,
+    body: params.body,
+    chatId: params.chatId,
+    templateName,
+    templateLanguage: language,
+    context: params.context,
+  });
+  if (result.usedTemplateFallback) {
+    console.log(`Agent notification sent via Cloud API template fallback to ${params.to}`);
+  }
+  return { chatId: result.chatId, messageId: result.messageId };
+}
+
+/**
+ * Send the returning-lead reconnect message ("You have contacted us again about the property…").
+ * Tries free-form text first; on 24h-window rejection, falls back to a static approved template.
+ *
+ * The template body is static (no `{{1}}` variables) — Twilio ignores unused ContentVariables.
+ */
+export async function sendReturningLeadMessage(params: {
+  to: string;
+  body: string;
+  chatId?: string;
+  /** Twilio Content SID for the static returning-lead template (language-matched). */
+  templateSid?: string;
+  /** Cloud API template name for the 24h-window fallback (language-matched). */
+  cloudApiTemplateName?: string;
+  /** Language of the fallback template. */
+  language: "es" | "en";
+  context?: string;
+}): Promise<SendTextResult> {
+  const provider = await getActiveProvider();
+  console.log(`Sending returning-lead message via ${provider} to ${params.to}`);
+
+  if (provider === "twilio") {
+    const result = await twilioSendTextWithTemplateFallback({
       to: params.to,
       body: params.body,
       chatId: params.chatId,
-      templateName,
-      templateLanguage: language,
-      context: params.context,
+      templateSid: params.templateSid,
+      context: params.context || "returning_lead",
     });
     if (result.usedTemplateFallback) {
-      console.log(`Agent notification sent via Cloud API template fallback to ${params.to}`);
+      console.log(`Returning-lead message sent via Twilio template fallback to ${params.to}`);
     }
     return { chatId: result.chatId, messageId: result.messageId };
   }
 
-  return whapiSendText({ to: params.to, body: params.body, chatId: params.chatId });
+  const result = await cloudApiSendTextWithTemplateFallback({
+    to: params.to,
+    body: params.body,
+    chatId: params.chatId,
+    templateName: params.cloudApiTemplateName,
+    templateLanguage: params.language,
+    context: params.context || "returning_lead",
+  });
+  if (result.usedTemplateFallback) {
+    console.log(`Returning-lead message sent via Cloud API template fallback to ${params.to}`);
+  }
+  return { chatId: result.chatId, messageId: result.messageId };
 }

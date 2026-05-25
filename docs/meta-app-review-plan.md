@@ -177,11 +177,11 @@ Reviewers open these URLs in an incognito window. Verify:
 
 In [cloudApiClient.ts](functions/src/services/cloudApiClient.ts) requests, append `appsecret_proof = HMAC-SHA256(access_token, app_secret)`. Reduces risk of token-theft-enabled abuse; reviewers sometimes check.
 
-### A10. Remove/gate Whapi and Twilio in the default customer path
+### A10. Remove/gate Twilio in the default customer path
 
 Reviewers see multiple providers and get confused about whether this is really a Cloud API integration. For the review submission:
 - Default `messagingProvider` for all new orgs → `cloud_api`.
-- Hide Whapi/Twilio provider pickers from non-admin UI in [Onboarding.tsx](src/pages/Onboarding.tsx) and settings pages.
+- Hide the Twilio provider picker from non-admin UI in [Onboarding.tsx](src/pages/Onboarding.tsx) and settings pages.
 - Keep backend code for existing customers, but document in the reviewer notes that Cloud API is the published path.
 
 ---
@@ -361,7 +361,7 @@ Two videos, **one per permission**, each 60–120 seconds, 1080p, MP4, no music,
 ### D3. Screencast red flags reviewers penalize
 - Postman / curl / terminal — must be the **business-facing UI**.
 - Real consumer PII on screen — blur or use fake names.
-- Any mention of Whapi or Twilio — hide those provider toggles (see A10).
+- Any mention of Twilio — hide that provider toggle (see A10).
 - Skipping Embedded Signup — if they don't see it, they assume it doesn't exist.
 
 ---
@@ -409,7 +409,7 @@ Run this **end-to-end** before hitting Submit. Each item must pass.
 - [ ] Only `whatsapp_business_messaging` and `whatsapp_business_management` are requested in App Review — no extra permissions.
 - [ ] Both screencasts uploaded (MP4, under 100MB each), one per permission.
 - [ ] Reviewer test credentials work from a fresh browser session.
-- [ ] Whapi/Twilio toggles hidden from the customer UI path that reviewers will see.
+- [ ] Twilio toggle hidden from the customer UI path that reviewers will see.
 - [ ] Publish page is rechecked after App Review updates; if still `Unpublished`, confirm no pending action in `Alert Inbox`.
 
 ---
@@ -639,7 +639,7 @@ Findings:
 Action to close:
 - Keep this as the standard for all new Graph API calls (append `appsecret_proof` wherever access-token auth is used).
 
-#### A10. Remove/gate Whapi and Twilio from default customer path
+#### A10. Remove/gate Twilio from default customer path
 Status: ✅ Done
 
 Implemented:
@@ -647,10 +647,9 @@ Implemented:
 - ✅ Missing provider values are normalized to `cloud_api` in `src/services/botConfig.ts`.
 - ✅ Customer-facing settings (`src/pages/Configuracion.tsx`) do not expose any provider picker.
 - ✅ Provider switching UI remains available only in internal admin tooling (`src/pages/AdminTools.tsx`) and is gated to `super_admin`.
-- ✅ Legacy backend support for Whapi/Twilio remains intact for controlled fallback use.
 
 Action to close:
-- Keep this policy stable for App Review: Cloud API is the published/default path, legacy providers are internal-only fallback controls.
+- Keep this policy stable for App Review: Cloud API is the published/default path, Twilio is an internal-only fallback control.
 
 ---
 

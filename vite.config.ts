@@ -10,4 +10,18 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  server: {
+    proxy: {
+      '/api/email-preferences': {
+        target: 'https://europe-west1-real-estate-idealista-bot.cloudfunctions.net',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/email-preferences/, '/emailPreferencesApi'),
+      },
+      '/api/email-unsubscribe': {
+        target: 'https://europe-west1-real-estate-idealista-bot.cloudfunctions.net',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/email-unsubscribe/, '/emailUnsubscribe'),
+      },
+    },
+  },
 })

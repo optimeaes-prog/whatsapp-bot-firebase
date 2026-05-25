@@ -115,7 +115,8 @@ export async function grantSubscriptionConversations(
     await addOrgConversations(
         conversations,
         `Suscripción: Plan ${planId.toUpperCase()} (Base + ${extraBlocks} packs extra)`,
-        orgId
+        orgId,
+        { eventType: "subscription_grant", stripeReference: invoiceId }
     );
 
     // Persist extraBlocks on the subscription doc so getSubscription can expose contractedConversations

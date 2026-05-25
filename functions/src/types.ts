@@ -177,6 +177,9 @@ export type ListingRow = {
   profitabilityReport: string;
   idealistaDescription?: string;
   quickQualificationEnabled?: boolean;
+  createdByUid?: string;
+  assignedAgentUid?: string;
+  assignedAgentName?: string;
   price?: string;
   m2?: string;
   rooms?: string;
@@ -224,7 +227,7 @@ export type BotStyle = {
   promptModifier: string;
 };
 
-export type MessagingProvider = "cloud_api" | "whapi" | "twilio";
+export type MessagingProvider = "cloud_api" | "twilio";
 
 export type CloudApiTemplateNames = {
   /** Preferred single key for agent notifications (always ES strategy). */
@@ -247,6 +250,12 @@ export type TwilioTemplateNames = {
   agentNotification?: string;
   /** Optional single-body ({{1}}) template for quick-qual / call-flow when `agentNotification` is a multi-variable template */
   agentNotificationLegacy?: string;
+  /**
+   * True when the org's `agentNotification` template is the 8-variable Proplead-style format.
+   * False/undefined falls back to legacy 1-variable behavior. Set by the Twilio sender migration
+   * when an 8-var template is cloned into a new account (replaces the legacy hardcoded SID whitelist).
+   */
+  agentNotificationIs8Var?: boolean;
   callHandoffOrgEs?: string;
   callHandoffOrgEn?: string;
   callHandoffOrgNoNameEs?: string;
@@ -254,6 +263,10 @@ export type TwilioTemplateNames = {
   voiceOptInConsent?: string;
   idealistaInitialEs?: string;
   idealistaInitialEn?: string;
+  /** Static template for returning-lead reconnect message (ES). Used as 24h-window fallback. */
+  returningLeadEs?: string;
+  /** Static template for returning-lead reconnect message (EN). Used as 24h-window fallback. */
+  returningLeadEn?: string;
 };
 
 export type TwilioTransportConfig = {
@@ -300,6 +313,7 @@ export type BotConfig = {
   styles: BotStyle[];
   messagingProvider?: MessagingProvider;
   orgName?: string;
+  /** Comma-separated WhatsApp recipients that always receive qualified-lead summaries for this org. */
   notificationNumbers?: string;
   assistantAvatarName?: string;
   cloudApiConfig?: CloudApiConfig;
@@ -319,29 +333,6 @@ export type InboundMessage = {
   phone: string;
   text: string;
   timestamp: number;
-};
-
-// ==================== WHAPI SYNC TYPES ====================
-
-export type WhapiChat = {
-  id: string;
-  name?: string;
-  type: string;
-  timestamp: number;
-  last_message?: WhapiMessage;
-  unread?: number;
-};
-
-export type WhapiMessage = {
-  id: string;
-  chat_id: string;
-  from: string;
-  from_me: boolean;
-  timestamp: number;
-  text?: { body: string };
-  body?: string;
-  type?: string;
-  source?: string;
 };
 
 export type AlertSeverity = "info" | "warning" | "critical" | "healthy";
@@ -369,9 +360,8 @@ export type SyncResult = {
 
 export type SyncDiscrepancy = {
   chatId: string;
-  type: "missing_in_firestore" | "missing_in_whapi" | "message_mismatch" | "stale_buffer";
+  type: "stale_buffer";
   details: string;
-  whapiTimestamp?: number;
   firestoreTimestamp?: number;
 };
 
@@ -393,22 +383,6 @@ export type OrgSubscription = {
 };
 
 // ==================== BILLING / CONVERSATION SYSTEM TYPES ====================
-
-export type UserConversations = {
-  userId: string;
-  balance: number;
-  updatedAt: FirebaseFirestore.Timestamp;
-};
-
-export type ConversationTransaction = {
-  id?: string;
-  userId: string;
-  type: "purchase" | "deduction";
-  amount: number;  // positive for purchases, negative for deductions
-  stripeSessionId?: string;
-  description: string;
-  createdAt: FirebaseFirestore.Timestamp;
-};
 
 export type ConversationPackage = {
   id: string;

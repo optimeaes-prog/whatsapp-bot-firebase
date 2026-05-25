@@ -1,13 +1,14 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { TrendingUp, Filter, Calendar, User, Phone, ArrowRight, ChevronDown, CheckSquare, Square } from "lucide-react";
-import { getListings } from "../services/listings";
+import { getListings, getListingsForAgent } from "../services/listings";
 import {
   getLeads,
+  getLeadsForAgent,
   filterQualifiedLeads,
   qualifiedLeadMetricTimestamp,
 } from "../services/leads";
-import { getConversations } from "../services/conversations";
+import { getConversations, getConversationsForAgent } from "../services/conversations";
 import { formatDate, formatPhone, cn } from "../lib/utils";
 import { metricTheme } from "../lib/metricTheme";
 import type { Listing, Lead, Conversation } from "../types";
@@ -21,7 +22,7 @@ import { PageLoading } from "../components/ui/PageLoading";
 import { useAuth } from "../contexts/AuthContext";
 
 export function Dashboard() {
-  const { organizationId } = useAuth();
+  const { organizationId, effectiveRole, effectiveUid, isImpersonationReadOnly } = useAuth();
   const [dateFilter, setDateFilter] = useState("last_30");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -110,13 +111,15 @@ export function Dashboard() {
   useEffect(() => {
     async function loadStats() {
       if (!organizationId) return;
+      if (!effectiveRole) return;
+      if (effectiveRole === "agent" && !effectiveUid) return;
 
       setLoading(true);
       try {
         const [listings, leads, conversations] = await Promise.all([
-          getListings(),
-          getLeads(),
-          getConversations(),
+          effectiveRole === "agent" ? getListingsForAgent(effectiveUid) : getListings(),
+          effectiveRole === "agent" ? getLeadsForAgent(effectiveUid) : getLeads(),
+          effectiveRole === "agent" ? getConversationsForAgent(effectiveUid) : getConversations(),
         ]);
         setRawData({ listings, leads, conversations });
       } catch (error) {
@@ -127,10 +130,11 @@ export function Dashboard() {
     }
 
     loadStats();
-  }, [organizationId]);
+  }, [organizationId, effectiveRole, effectiveUid]);
 
   useEffect(() => {
     const fn = async () => {
+      if (isImpersonationReadOnly) return;
       const intent = getCheckoutIntent();
       if (intent) {
         analytics.trackCheckoutIntentResumed(intent.planId);
@@ -152,7 +156,7 @@ export function Dashboard() {
       }
     };
     fn();
-  }, []);
+  }, [isImpersonationReadOnly]);
 
   const recentLeads = useMemo(() => {
     if (!rawData) return [];
@@ -304,9 +308,9 @@ export function Dashboard() {
           <div className="lg:col-span-2 card animate-pulse h-full flex flex-col items-center p-8">
             <div className="h-6 bg-gray-200 rounded w-48 mb-12"></div>
             <div className="space-y-4 w-full px-12">
-              <div className="h-24 bg-gray-100 rounded-2xl w-full"></div>
-              <div className="h-24 bg-gray-100 rounded-2xl w-[75%] mx-auto"></div>
-              <div className="h-24 bg-gray-100 rounded-2xl w-[50%] mx-auto"></div>
+              <div className="h-24 bg-gray-100 rounded-xl w-full"></div>
+              <div className="h-24 bg-gray-100 rounded-xl w-[75%] mx-auto"></div>
+              <div className="h-24 bg-gray-100 rounded-xl w-[50%] mx-auto"></div>
             </div>
           </div>
         </div>
@@ -536,7 +540,7 @@ export function Dashboard() {
                         "relative h-24 sm:h-28 transition-all duration-1000 ease-out flex items-center justify-center",
                         step.color,
                         step.textColor,
-                        "rounded-2xl border-2 border-slate-50"
+                        "rounded-xl border-2 border-slate-50"
                       )}
                       style={{ width: `${width}%` }}
                     >

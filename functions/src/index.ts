@@ -3,6 +3,7 @@ import axios from "axios";
 import crypto from "crypto";
 import JSZip from "jszip";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import { SendMessageSchema, SendMassMessageSchema, NewLeadSchema } from "./schemas";
 import { sendEmailToUser } from "./services/emailService";
 import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
@@ -23,6 +24,7 @@ import {
   PendingItem,
   TwilioTemplateNames,
 } from "./types";
+import { organizationDisplayNameFromOrgDoc } from "./utils/organizationDisplayName";
 import {
   fetchListingByCode,
   fetchListingGlobally,
@@ -61,19 +63,25 @@ import {
   updateGlobalMessagingPolicy,
   setPlatformDefaultProvider,
   getOrganizationMessagingProvider,
+  agentScopeFromListingSnapshotData,
+  syncAgentScopeUidForListingCodeFromListingDoc,
+  getListingAgentScopeUid,
+  syncAssignedAgentUidForListingCode,
+  reconcileAllListingAgentScopesInOrg,
 } from "./services/firestore";
+import { resolveQualifiedLeadNotificationRecipients } from "./services/qualifiedLeadNotificationTargets";
 import { sendIdealistaOptInSms } from "./services/smsOptIn";
-import { checkWhapiHealth } from "./services/whapiClient";
 import {
   sendTextMessage,
   sendBinaryConfirmPrompt,
   sendInitialTemplateMessage,
   sendAgentNotificationMessage,
+  sendReturningLeadMessage,
   getActiveProvider as getActiveProviderFn,
   getEffectiveProviderForOrg,
   invalidateProviderCache,
 } from "./services/messagingProvider";
-import { createContentTemplate, createVoiceCall } from "./services/twilioClient";
+import { createContentTemplate, createVoiceCall, fetchContentTemplate, renderTwilioTemplateBody } from "./services/twilioClient";
 import {
   checkCloudApiHealth,
   createMessageTemplate as createCloudApiMessageTemplate,
@@ -92,11 +100,22 @@ import {
   checkLeadPassesFilters,
 } from "./services/openaiClient";
 import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS, REGION } from "./shared";
+import {
+  forceCompleteMigration,
+  pollAllInFlightMigrations,
+  pollMigration,
+  retryMigrationStep,
+  startMigration,
+  submitMigrationTemplates,
+} from "./services/twilioMigration";
+import { TWILIO_MIGRATION_JOBS_COLLECTION } from "./services/twilioMigrationTypes";
 import { sendAlert, sendHealthReport } from "./services/alertService";
 import { isOptOutMessage, applyOptOut } from "./services/optOut";
 import { ALERT_CATALOG } from "./services/alertCatalog";
-import { syncConversationsWithWhapi, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
-import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, WHAPI_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY, META_APP_ID, META_APP_SECRET, META_FB_LOGIN_CONFIG_ID, META_VERIFY_TOKEN, ELEVENLABS_KEY, MAKE_WEBHOOK_SHARED_SECRET } from "./secrets";
+import { syncConversations, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
+import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY, META_APP_ID, META_APP_SECRET, META_FB_LOGIN_CONFIG_ID, META_VERIFY_TOKEN, ELEVENLABS_KEY, MAKE_WEBHOOK_SHARED_SECRET } from "./secrets";
+import { EMAIL_UNSUBSCRIBE_SECRET } from "./emailUnsubscribeParams";
+import { emailPreferencesApiHandler, emailUnsubscribeHandler } from "./emailPreferenceEndpoints";
 import {
   exchangeCodeForToken,
   registerPhoneNumber,
@@ -111,6 +130,8 @@ import { buildAvatarPublicUrl, getAssistantAvatarById } from "./services/assista
 import {
   addOrgConversations,
   addOrgConversationsForPaymentIntentOnce,
+  deductOrgConversationForInitialOutboundOnce,
+  deductOrgConversationOnce,
   getOrgAutoRechargeSettingsForApi,
   getOrgConversationBalance,
   getOrgStripeCustomerId,
@@ -146,7 +167,7 @@ import {
 } from "./utils";
 import { normalizeForSearch } from "./utils/addressNormalize";
 import { getActiveOrgId, requestContext } from "./services/requestContext";
-import { sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
+import { sendInvitationNotification, sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
 import { generateSpeechMp3 } from "./services/elevenLabsClient";
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
@@ -244,6 +265,58 @@ async function getAgentNotificationTemplateSid(orgId: string): Promise<string | 
   return normalized || undefined;
 }
 
+/**
+ * Twilio Content SIDs that are Proplead's 8-var ({{1}}..{{8}}) qualified-lead templates.
+ *
+ * Legacy fallback: predates per-org `agentNotificationIs8Var` flag. Kept for backwards
+ * compat with orgs whose botConfig wasn't updated by the sender-migration flow.
+ * Prefer reading `BotConfig.twilioTemplates.agentNotificationIs8Var` going forward.
+ */
+const TWILIO_AGENT_NOTIFICATION_8VAR_CONTENT_SIDS = new Set(
+  [
+    "HX0f65d74044e27ae2f344b28eabad2776",
+    "HX553ad04854fe0627b4f521e8c0fe6cdd",
+  ].map((s) => s.trim().toUpperCase())
+);
+
+/**
+ * Decides if a given `agentNotification` SID should be rendered with 8-var variables.
+ *
+ * Source of truth (in order):
+ *  1. Per-org `BotConfig.twilioTemplates.agentNotificationIs8Var` flag (preferred).
+ *  2. Legacy hardcoded whitelist (for orgs migrated before the flag existed).
+ */
+function isProplead8VarAgentNotification(params: {
+  sid: string | undefined;
+  is8VarFlag?: boolean;
+}): boolean {
+  if (params.is8VarFlag === true) return true;
+  return TWILIO_AGENT_NOTIFICATION_8VAR_CONTENT_SIDS.has(String(params.sid || "").trim().toUpperCase());
+}
+
+/**
+ * Template for unstructured agent alerts (quick qualification, call flow).
+ * Uses `agentNotificationLegacy` when set; otherwise `agentNotification` unless it is an 8-var Proplead SID.
+ */
+async function getAgentNotificationTemplateSidForCompactAlert(orgId: string): Promise<string | undefined> {
+  const { twilioTemplates } = await getOrgTemplateSnapshot(orgId);
+  const legacy = typeof twilioTemplates.agentNotificationLegacy === "string"
+    ? twilioTemplates.agentNotificationLegacy.trim()
+    : "";
+  if (legacy) return legacy;
+  const primary = typeof twilioTemplates.agentNotification === "string"
+    ? twilioTemplates.agentNotification.trim()
+    : "";
+  if (!primary) return undefined;
+  if (isProplead8VarAgentNotification({ sid: primary, is8VarFlag: twilioTemplates.agentNotificationIs8Var })) {
+    console.warn(
+      "[twilio] agentNotification is Proplead 8-var; set twilioTemplates.agentNotificationLegacy for quick-qual/call-flow alerts"
+    );
+    return undefined;
+  }
+  return primary;
+}
+
 async function getVoiceOptInTemplateSid(orgId: string): Promise<string> {
   const { twilioTemplates } = await getOrgTemplateSnapshot(orgId);
   const sid = twilioTemplates.voiceOptInConsent || "HX8da52518b4b16392cffdd1f89dd49b55";
@@ -257,11 +330,72 @@ function buildTwiml(xmlBody: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n${xmlBody}\n</Response>`;
 }
 
-const FORCED_SUPER_ADMIN_EMAILS = new Set(["ejperezreyes@gmail.com"]);
+// Allowlist of browser origins that may call our authenticated HTTP functions.
+// Webhooks and intake endpoints set cors: false. Public marketing/billing
+// endpoints (e.g., getPackages) may keep cors: true.
+const WEB_CLIENT_CORS: (string | RegExp)[] = [
+  "https://proplead.io",
+  "https://www.proplead.io",
+  "https://real-estate-idealista-bot.web.app",
+  "https://real-estate-idealista-bot.firebaseapp.com",
+  /^http:\/\/localhost:\d+$/,
+  /^http:\/\/127\.0\.0\.1:\d+$/,
+];
 
-function isForcedSuperAdminEmail(email?: string): boolean {
-  const normalized = typeof email === "string" ? email.trim().toLowerCase() : "";
-  return !!normalized && FORCED_SUPER_ADMIN_EMAILS.has(normalized);
+async function checkAndRecordRateLimit(opts: {
+  bucket: string;
+  key: string;
+  windowMs: number;
+}): Promise<boolean> {
+  const DATABASE_ID = "realestate-whatsapp-bot";
+  const db = getFirestore(admin.app(), DATABASE_ID);
+  const safeKey = opts.key.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 256);
+  const docRef = db.collection("rateLimits").doc(`${opts.bucket}__${safeKey}`);
+  const now = Date.now();
+  try {
+    const snap = await docRef.get();
+    const lastAt = snap.exists ? (snap.data()?.lastAt as number | undefined) : undefined;
+    if (typeof lastAt === "number" && now - lastAt < opts.windowMs) {
+      return false;
+    }
+    await docRef.set({ lastAt: now, bucket: opts.bucket, key: opts.key }, { merge: true });
+    return true;
+  } catch (error) {
+    console.warn(`Rate limit check failed for ${opts.bucket}:${safeKey}; allowing request:`, error);
+    return true;
+  }
+}
+
+function reconstructRequestUrl(req: { headers: Record<string, string | string[] | undefined>; originalUrl: string }): string {
+  const protoHeader = req.headers["x-forwarded-proto"];
+  const proto = (Array.isArray(protoHeader) ? protoHeader[0] : protoHeader) || "https";
+  const hostHeader = req.headers["host"];
+  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  return `${proto}://${host}${req.originalUrl}`;
+}
+
+function verifyTwilioSignature(
+  authToken: string,
+  signatureHeader: string | undefined,
+  fullUrl: string,
+  body: Record<string, unknown> | undefined
+): boolean {
+  if (!authToken || !signatureHeader) return false;
+  const params = body && typeof body === "object" ? body : {};
+  const sortedKeys = Object.keys(params).sort();
+  let data = fullUrl;
+  for (const key of sortedKeys) {
+    const value = params[key];
+    data += key + (value == null ? "" : String(value));
+  }
+  const expected = crypto
+    .createHmac("sha1", authToken)
+    .update(Buffer.from(data, "utf-8"))
+    .digest("base64");
+  const sigBuf = Buffer.from(signatureHeader);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length) return false;
+  return crypto.timingSafeEqual(sigBuf, expBuf);
 }
 
 async function resolveOrgIdFromToken(authHeader?: string): Promise<string> {
@@ -300,14 +434,21 @@ async function resolveUserContextFromToken(authHeader?: string): Promise<{
   const userDoc = await userRef.get();
   const data = userDoc.data() || {};
   const orgId = typeof data.orgId === "string" ? data.orgId : "";
-  let role = typeof data.role === "string" ? data.role : "";
+  const role = typeof data.role === "string" ? data.role : "";
 
-  if (isForcedSuperAdminEmail(email) && role !== "super_admin") {
-    await userRef.set({ role: "super_admin", email }, { merge: true });
-    role = "super_admin";
-  }
   if (!orgId && role !== "super_admin") throw new Error("Organization not found for user");
   return { uid, orgId, role, email };
+}
+
+async function resolveAuthIdentityFromToken(authHeader?: string): Promise<{ uid: string; email: string }> {
+  if (!authHeader?.startsWith("Bearer ")) {
+    throw new Error("Unauthorized");
+  }
+  const token = authHeader.split("Bearer ")[1];
+  const decoded = await admin.auth().verifyIdToken(token);
+  const uid = decoded.uid;
+  const email = typeof decoded.email === "string" ? decoded.email.toLowerCase() : "";
+  return { uid, email };
 }
 
 const ALLOWED_CONSENT_SOURCES = new Set([
@@ -880,6 +1021,14 @@ function setCachedConversationState(chatId: string, state: ConversationState): v
   conversationStates.set(conversationStateCacheKey(chatId), state);
 }
 
+type EnsureConversationStateOptions = {
+  /**
+   * History is mutated by multiple Cloud Run services. A warm instance cache can be
+   * stale relative to Firestore, so write paths must opt into a fresh read first.
+   */
+  preferFresh?: boolean;
+};
+
 // Initial language resolving
 function resolveInitialLanguage(phone?: string): InitialLanguage {
   return isSpanishPhoneNumber(phone) ? "es" : "en";
@@ -894,7 +1043,7 @@ const ENGLISH_LANGUAGE_TOKENS = new Set([
   "yes", "no", "link", "reference", "correct", "interested", "not",
 ]);
 
-function isLikelySpanishReply(text: string): boolean {
+export function isLikelySpanishReply(text: string): boolean {
   const lowered = text.toLowerCase();
   if (!/[a-záéíóúñü]/i.test(lowered)) return false;
   if (/[¿¡ñáéíóúü]/i.test(lowered)) return true;
@@ -911,17 +1060,42 @@ function isLikelySpanishReply(text: string): boolean {
   return esScore > 0 && esScore >= enScore;
 }
 
-function resolveReplyLanguageFromMessages(messages: PendingItem[], fallback: InitialLanguage): InitialLanguage {
+export function isLikelyEnglishReply(text: string): boolean {
+  const lowered = text.toLowerCase();
+  if (!/[a-z]/i.test(lowered)) return false;
+  // Any Spanish-specific character → not English.
+  if (/[¿¡ñáéíóúü]/i.test(lowered)) return false;
+  const words = lowered.match(/[a-z]+/gi) || [];
+  if (words.length === 0) return false;
+  let esScore = 0;
+  let enScore = 0;
+  for (const rawWord of words) {
+    const word = rawWord.trim();
+    if (!word) continue;
+    if (SPANISH_LANGUAGE_TOKENS.has(word)) esScore += 1;
+    if (ENGLISH_LANGUAGE_TOKENS.has(word)) enScore += 1;
+  }
+  return enScore > 0 && enScore > esScore;
+}
+
+export function resolveReplyLanguageFromMessages(messages: PendingItem[], fallback: InitialLanguage): InitialLanguage {
+  // Require POSITIVE evidence to switch languages. Short ambiguous replies (e.g. a name like
+  // "Jorge") used to trip the old logic into returning "en" simply because `isLikelySpanishReply`
+  // couldn't confidently classify them as Spanish. Now we only switch when we see clear signal.
   let sawSpanish = false;
+  let sawEnglish = false;
   for (const message of messages) {
     const text = (message.text || "").trim();
     if (!/[a-záéíóúñü]/i.test(text)) continue;
-    if (!isLikelySpanishReply(text)) {
-      return "en";
+    if (isLikelySpanishReply(text)) {
+      sawSpanish = true;
+    } else if (isLikelyEnglishReply(text)) {
+      sawEnglish = true;
     }
-    sawSpanish = true;
   }
-  return sawSpanish ? "es" : fallback;
+  if (sawSpanish && !sawEnglish) return "es";
+  if (sawEnglish && !sawSpanish) return "en";
+  return fallback;
 }
 
 function cleanFeature(line: string): string {
@@ -1032,6 +1206,137 @@ function compactMessage(lines: string[]): string {
   return normalized.join("\n");
 }
 
+function extractQualifiedSummaryField(summaryText: string, label: string): string | undefined {
+  const trimmedSummary = summaryText.trim();
+  if (!trimmedSummary) return undefined;
+  const prefix = `${label}:`;
+  for (const rawLine of trimmedSummary.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.toLowerCase().startsWith(prefix.toLowerCase())) continue;
+    const value = line.slice(prefix.length).trim();
+    if (!value || value === NO_DATA_LABEL) return undefined;
+    return value;
+  }
+  return undefined;
+}
+
+function buildPropleadAgentNotificationTwilioVariables(params: {
+  templateSid: string | undefined;
+  /** Per-org flag from BotConfig.twilioTemplates.agentNotificationIs8Var (preferred over SID whitelist). */
+  is8VarFlag?: boolean;
+  after: Record<string, unknown> | undefined;
+  listingDescription: string;
+}): Record<string, string> | null {
+  if (!isProplead8VarAgentNotification({ sid: params.templateSid, is8VarFlag: params.is8VarFlag })) return null;
+
+  const after = params.after || {};
+  const summary = typeof after.conversationSummary === "string" ? after.conversationSummary : "";
+
+  const name =
+    (typeof after.name === "string" && after.name.trim()) ||
+    extractQualifiedSummaryField(summary, "Nombre") ||
+    NO_DATA_LABEL;
+
+  const phoneDigitsField = typeof after.phone === "string" ? after.phone.replace(/\D/g, "") : "";
+  const phoneDigitsSummary = extractQualifiedSummaryField(summary, "Teléfono")?.replace(/\D/g, "") || "";
+  const phoneDigits = phoneDigitsField || phoneDigitsSummary;
+  const phone = phoneDigits ? `+${phoneDigits.replace(/^\+/, "")}` : NO_DATA_LABEL;
+
+  const listingDesc = (params.listingDescription || "").trim();
+  const propFromSummary = extractQualifiedSummaryField(summary, "Propiedad");
+  const listingCode = typeof after.listingCode === "string" ? after.listingCode.trim() : "";
+  const property =
+    listingDesc ||
+    propFromSummary ||
+    (listingCode ? `Anuncio ${listingCode}` : NO_DATA_LABEL);
+
+  const operation =
+    (typeof after.operationType === "string" && after.operationType) ||
+    extractQualifiedSummaryField(summary, "Operación") ||
+    NO_DATA_LABEL;
+
+  const payment =
+    (after.paymentMethod === "Contado" || after.paymentMethod === "Hipoteca")
+      ? String(after.paymentMethod)
+      : extractQualifiedSummaryField(summary, "Forma de pago") ||
+        NO_DATA_LABEL;
+
+  let incomeStr = NO_DATA_LABEL;
+  if (typeof after.income === "number" && Number.isFinite(after.income)) {
+    incomeStr = `${after.income} €/mes`;
+  } else {
+    const inc = extractQualifiedSummaryField(summary, "Ingresos");
+    if (inc) incomeStr = inc;
+  }
+
+  const visit =
+    (typeof after.visitAvailability === "string" && after.visitAvailability.trim()) ||
+    extractQualifiedSummaryField(summary, "Disponibilidad visita") ||
+    NO_DATA_LABEL;
+
+  const notes =
+    (typeof after.notes === "string" && after.notes.trim()) ||
+    extractQualifiedSummaryField(summary, "Notas") ||
+    NO_DATA_LABEL;
+
+  return {
+    "1": name,
+    "2": phone,
+    "3": property.slice(0, 1200),
+    "4": operation,
+    "5": payment,
+    "6": incomeStr,
+    "7": visit,
+    "8": notes.slice(0, 1200),
+  };
+}
+
+function renderPropleadAgentNotificationBody(vars: Record<string, string>): string {
+  return [
+    "Nuevo lead cualificado ✅",
+    "",
+    `Tu nuevo lead se llama *${vars["1"] || NO_DATA_LABEL}* y su teléfono es *${vars["2"] || NO_DATA_LABEL}*.`,
+    `Está interesado en *${vars["3"] || NO_DATA_LABEL}*, con operación *${vars["4"] || NO_DATA_LABEL}*.`,
+    `La forma de pago prevista es *${vars["5"] || NO_DATA_LABEL}* y sus ingresos: *${vars["6"] || NO_DATA_LABEL}*.`,
+    `Su disponibilidad para visitar es: *${vars["7"] || NO_DATA_LABEL}*.`,
+    `Notas adicionales: *${vars["8"] || NO_DATA_LABEL}*.`,
+    "",
+    "— Marcos, Proplead",
+  ].join("\n");
+}
+
+function buildQualifiedLeadFallbackNotificationBody(after: Record<string, unknown> | undefined): string {
+  const summary = typeof after?.conversationSummary === "string" ? after.conversationSummary.trim() : "";
+  if (summary) return summary;
+
+  return compactMessage([
+    "Lead cualificado ✅",
+    `Teléfono: ${after?.phone || "N/D"}`,
+    `Nombre: ${after?.name || "Sin nombre"}`,
+    after?.listingCode ? `Anuncio: ${after.listingCode}` : "",
+  ]);
+}
+
+function buildQualifiedLeadAgentNotificationPayload(params: {
+  templateSid: string | undefined;
+  /** Per-org flag from BotConfig.twilioTemplates.agentNotificationIs8Var. */
+  is8VarFlag?: boolean;
+  after: Record<string, unknown> | undefined;
+  listingDescription: string;
+}): {
+  body: string;
+  twilioTemplateVariables?: Record<string, string>;
+} {
+  const fallbackBody = buildQualifiedLeadFallbackNotificationBody(params.after);
+  const propleadVars = buildPropleadAgentNotificationTwilioVariables(params);
+  if (!propleadVars) return { body: fallbackBody };
+
+  return {
+    body: renderPropleadAgentNotificationBody(propleadVars),
+    twilioTemplateVariables: propleadVars,
+  };
+}
+
 function composeInitialMessages(
   operationType: OperationType,
   link: string,
@@ -1094,19 +1399,13 @@ function extractInboundMessages(body: unknown): InboundMessage[] {
   const candidate = body as Record<string, unknown>;
 
   // Check if it's a Twilio payload (form-urlencoded usually results in top-level fields)
-  if (candidate.SmsSid && candidate.From && candidate.Body) {
+  if (candidate.SmsSid && candidate.From) {
     const from = String(candidate.From);
     const bodyText = String(candidate.Body || "");
-    const buttonPayload = typeof candidate.ButtonPayload === "string" ? candidate.ButtonPayload.trim() : "";
     const buttonText = typeof candidate.ButtonText === "string" ? candidate.ButtonText.trim() : "";
-    const normalizedButton = buttonPayload === "confirm_yes" || buttonPayload === "confirm_no"
-      ? buttonPayload
-      : (buttonText.toLowerCase() === "yes" || buttonText.toLowerCase() === "si" || buttonText.toLowerCase() === "sí")
-        ? "confirm_yes"
-        : buttonText.toLowerCase() === "no"
-          ? "confirm_no"
-          : "";
-    const normalizedText = normalizedButton || bodyText;
+    if (!buttonText && !bodyText.trim()) return [];
+    // Prefer visible button label so language inference matches the template locale (payload ids like confirm_yes read as English).
+    const normalizedText = buttonText || bodyText;
     const waId = candidate.WaId ? String(candidate.WaId) : extractPhoneFromChatId(from);
     
     // Canonical format for Twilio WhatsApp is whatsapp:+123456789
@@ -1212,19 +1511,25 @@ async function hydrateConversationListingFieldsIfNeeded(conv: ConversationState)
   return merged;
 }
 
-export async function ensureConversationState(chatId: string, phoneHint?: string): Promise<ConversationState | undefined> {
+export async function ensureConversationState(
+  chatId: string,
+  phoneHint?: string,
+  options: EnsureConversationStateOptions = {}
+): Promise<ConversationState | undefined> {
   // Get all possible chatId variants (handles @c.us vs @s.whatsapp.net)
   const chatIdVariants = getChatIdVariants(chatId);
 
   // Check in-memory first (try all variants)
-  for (const variant of chatIdVariants) {
-    const existing = getCachedConversationState(variant);
-    if (existing) {
-      const hydrated = await hydrateConversationListingFieldsIfNeeded(existing);
-      setCachedConversationState(variant, hydrated);
-      // Also store under the incoming chatId for future lookups
-      if (variant !== chatId) setCachedConversationState(chatId, hydrated);
-      return hydrated;
+  if (!options.preferFresh) {
+    for (const variant of chatIdVariants) {
+      const existing = getCachedConversationState(variant);
+      if (existing) {
+        const hydrated = await hydrateConversationListingFieldsIfNeeded(existing);
+        setCachedConversationState(variant, hydrated);
+        // Also store under the incoming chatId for future lookups
+        if (variant !== chatId) setCachedConversationState(chatId, hydrated);
+        return hydrated;
+      }
     }
   }
 
@@ -1245,6 +1550,15 @@ export async function ensureConversationState(chatId: string, phoneHint?: string
       }
       if (!savedConv.language) {
         savedConv.language = resolveInitialLanguage(savedConv.phone);
+      }
+      // Defensive normalization: conversations created by the cross-org handoff (or other
+      // partial-merge writes) may lack `history`/`pendingUserMessages`. Without this, the
+      // inbound webhook crashes with `Cannot read properties of undefined (reading 'push')`.
+      if (!Array.isArray(savedConv.history)) {
+        savedConv.history = [];
+      }
+      if (!Array.isArray(savedConv.pendingUserMessages)) {
+        savedConv.pendingUserMessages = [];
       }
       const hydrated = await hydrateConversationListingFieldsIfNeeded(savedConv);
       setCachedConversationState(chatId, hydrated);
@@ -1362,6 +1676,53 @@ export async function ensureConversationState(chatId: string, phoneHint?: string
   setCachedConversationState(chatId, state);
   if (state.chatId !== chatId) setCachedConversationState(state.chatId, state);
   return state;
+}
+
+/**
+ * Bills the destination org for a cross-org call handoff. Two credits:
+ *   1. The Proplead global-intake send that started the conversation
+ *      (idempotency key: `intakeOutboundCreditsDeducted`).
+ *   2. The destination org's own first template send during the handoff
+ *      (idempotency key: `initialOutboundCreditsDeducted`).
+ * Each charge is independently idempotent per (orgId, chatId) and runs in its
+ * own try/catch so an insufficient-balance failure on one does not skip the
+ * other, and a billing failure never blocks an already-delivered message.
+ */
+async function chargeDestinationOrgForHandoff(
+  targetOrgId: string,
+  chatId: string,
+  providerLabel: "twilio" | "cloud_api"
+): Promise<void> {
+  try {
+    await deductOrgConversationOnce(
+      targetOrgId,
+      chatId,
+      "intakeOutboundCreditsDeducted",
+      "Proplead intake send (cross-org handoff)"
+    );
+  } catch (err) {
+    console.error("[credits] post-send deduction failed", {
+      site: `executeCrossOrgCallHandoff:${providerLabel}:intake`,
+      orgId: targetOrgId,
+      chatId,
+      err,
+    });
+  }
+  try {
+    await deductOrgConversationOnce(
+      targetOrgId,
+      chatId,
+      "initialOutboundCreditsDeducted",
+      `Cross-org call handoff (${providerLabel === "twilio" ? "Twilio" : "Cloud API"})`
+    );
+  } catch (err) {
+    console.error("[credits] post-send deduction failed", {
+      site: `executeCrossOrgCallHandoff:${providerLabel}:handoff`,
+      orgId: targetOrgId,
+      chatId,
+      err,
+    });
+  }
 }
 
 /**
@@ -1500,6 +1861,27 @@ async function executeCrossOrgCallHandoff(
       );
     }
 
+    // The exact message body the recipient will see. We populate this in each
+    // provider branch and persist it to the destination org's history so the
+    // conversation log mirrors what the user actually received.
+    let handoffOutboundBody = "";
+
+    // Shared template variables (same shape across providers).
+    const handoffVariables: Record<string, string> = leadName
+      ? {
+        "1": leadName,
+        "2": targetAvatarName,
+        "3": targetOrgName,
+        "4": targetListingLink,
+        "5": formattedFeatures,
+      }
+      : {
+        "2": targetAvatarName,
+        "3": targetOrgName,
+        "4": targetListingLink,
+        "5": formattedFeatures,
+      };
+
     const provider = await getActiveProviderFn();
     if (provider === "twilio") {
       const { twilioTemplates } = await getOrgTemplateSnapshot(targetOrgId);
@@ -1512,28 +1894,26 @@ async function executeCrossOrgCallHandoff(
           leadName ? twilioTemplates.callHandoffOrgEs : twilioTemplates.callHandoffOrgNoNameEs,
           "Twilio call handoff template missing for org (callHandoffOrgEs / callHandoffOrgNoNameEs)"
         );
-      const variables: Record<string, string> = leadName
-        ? {
-          "1": leadName,
-          "2": targetAvatarName,
-          "3": targetOrgName,
-          "4": targetListingLink,
-          "5": formattedFeatures,
-        }
-        : {
-          "2": targetAvatarName,
-          "3": targetOrgName,
-          "4": targetListingLink,
-          "5": formattedFeatures,
-        };
+      // Fetch the real template body from Twilio Content API so the history entry
+      // is byte-identical to what the recipient sees. Best-effort: a fetch failure
+      // mustn't abort the handoff — we fall back to an empty body and continue.
+      try {
+        const template = await fetchContentTemplate(templateSid, targetOrgId);
+        handoffOutboundBody = renderTwilioTemplateBody(template, handoffVariables);
+      } catch (error) {
+        console.warn("Failed to fetch Twilio template body for history seeding; continuing", {
+          templateSid, targetOrgId, error: error instanceof Error ? error.message : String(error),
+        });
+      }
       await sendInitialTemplateMessage({
         to: state.phone,
         chatId: state.chatId,
         language: targetLanguage,
-        variables,
+        variables: handoffVariables,
         templateSid,
         skipEligibilityGate: true,
       });
+      await chargeDestinationOrgForHandoff(targetOrgId, state.chatId, "twilio");
     } else if (provider === "cloud_api") {
       const creds = await getCloudApiCredentials();
       const namedKey = targetLanguage === "en" ? creds.templates?.callHandoffOrgEn : creds.templates?.callHandoffOrgEs;
@@ -1544,32 +1924,36 @@ async function executeCrossOrgCallHandoff(
         leadName ? namedKey : noNameKey,
         `Cloud API handoff template missing for org (${leadName ? "named" : "no-name"} ${targetLanguage})`
       );
-      const variables: Record<string, string> = leadName
-        ? { "1": leadName, "2": targetAvatarName, "3": targetOrgName, "4": targetListingLink, "5": formattedFeatures }
-        : { "2": targetAvatarName, "3": targetOrgName, "4": targetListingLink, "5": formattedFeatures };
       await sendInitialTemplateMessage({
         to: state.phone,
         chatId: state.chatId,
         language: targetLanguage,
-        variables,
+        variables: handoffVariables,
         templateName,
         skipEligibilityGate: true,
       });
+      // TODO: Cloud API templates live in WhatsApp Business Manager; fetching the
+      // exact rendered body requires the Graph API. Until that's wired up, the
+      // history entry will be empty for Cloud API sends (the message still
+      // arrives correctly; only the in-app history mirror is missing).
+      await chargeDestinationOrgForHandoff(targetOrgId, state.chatId, "cloud_api");
     } else {
+      // No template provider configured: send a plain text equivalent.
+      handoffOutboundBody = compactMessage([
+        `Hola${leadName ? `, ${leadName}` : ""}.`,
+        `Soy ${targetAvatarName}, el asistente virtual de ${targetOrgName}.`,
+        "Entiendo que te has interesado en esta vivienda:",
+        targetListingLink,
+        "",
+        "¿Has visto las características?",
+        formattedFeatures,
+        "",
+        "Si quieres dejar de recibir estos mensajes, escribe STOP en cualquier momento.",
+      ]);
       await sendTextMessage({
         to: state.phone,
         chatId: state.chatId,
-        body: compactMessage([
-          `Hola${leadName ? `, ${leadName}` : ""}.`,
-          `Soy ${targetAvatarName}, el asistente virtual de ${targetOrgName}.`,
-          "Entiendo que te has interesado en esta vivienda:",
-          targetListingLink,
-          "",
-          "¿Has visto las características?",
-          formattedFeatures,
-          "",
-          "Si quieres dejar de recibir estos mensajes, escribe STOP en cualquier momento.",
-        ]),
+        body: handoffOutboundBody,
       });
     }
 
@@ -1578,7 +1962,19 @@ async function executeCrossOrgCallHandoff(
     // Hydrate listing-derived fields so the qualification prompt has full
     // context (link/address/features/description/profitability) and does not
     // regress to generic discovery questions.
-    await upsertConversation(state.chatId, {
+    // Also seed history with the handoff message we just sent — without this, the bot
+    // has no record of the outbound message and treats the user's reply as out-of-context.
+    const existingTargetConv = await getConversationByChatId(state.chatId);
+    const existingHistory = (existingTargetConv?.history && Array.isArray(existingTargetConv.history))
+      ? existingTargetConv.history
+      : [];
+    // Only append the assistant entry when we have the exact rendered body. If the
+    // template fetch failed (Twilio) or isn't implemented yet (Cloud API), leave the
+    // history alone rather than seeding it with a fabricated approximation.
+    const seededHistory = handoffOutboundBody
+      ? [...existingHistory, { role: "assistant" as const, text: handoffOutboundBody, timestamp: Date.now() }]
+      : existingHistory;
+    const baseUpsert: Record<string, unknown> = {
       phone: state.phone,
       chatId: state.chatId,
       listingCode: listing.listingCode,
@@ -1595,7 +1991,10 @@ async function executeCrossOrgCallHandoff(
       flowStep: "qualification",
       language: targetLanguage,
       name: leadName ?? undefined,
-    });
+      history: seededHistory,
+      pendingUserMessages: existingTargetConv?.pendingUserMessages || [],
+    };
+    await upsertConversation(state.chatId, baseUpsert);
   });
 
   if (state.name === undefined && leadName) state.name = leadName;
@@ -1625,6 +2024,42 @@ async function executeCrossOrgCallHandoff(
     matchedListingCode: listing.listingCode,
     reason,
   });
+}
+
+async function recordAssistantHistoryMessage(
+  state: ConversationState,
+  text: string,
+  extra: Partial<ConversationState> = {}
+): Promise<void> {
+  const body = text.trim();
+  if (!body) return;
+  if (!state.history) state.history = [];
+  state.history.push({ role: "assistant", text: body, timestamp: Date.now() });
+  await upsertConversation(state.chatId, {
+    ...extra,
+    history: state.history,
+  });
+}
+
+async function sendAssistantTextAndRecord(
+  state: ConversationState,
+  body: string,
+  extra: Partial<ConversationState> = {}
+): Promise<void> {
+  const text = body.trim();
+  await sendTextMessage({ to: state.phone, chatId: state.chatId, body: text });
+  await recordAssistantHistoryMessage(state, text, extra);
+}
+
+async function sendAssistantBinaryPromptAndRecord(
+  state: ConversationState,
+  language: "es" | "en",
+  body: string,
+  extra: Partial<ConversationState> = {}
+): Promise<void> {
+  const text = body.trim();
+  await sendBinaryConfirmPrompt({ to: state.phone, chatId: state.chatId, language, body: text });
+  await recordAssistantHistoryMessage(state, text, extra);
 }
 
 /**
@@ -1809,17 +2244,10 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           "¿Has visto las características de la vivienda?",
           formatFeaturesList(featuresText || "", "es"),
         ]);
-      await sendTextMessage({
-        to: state.phone,
-        chatId: state.chatId,
-        body: introMessage,
-      });
-      state.history.push({ role: "assistant", text: introMessage, timestamp: Date.now() });
-      state.flowStep = "qualification";
-      await upsertConversation(state.chatId, {
-        history: state.history,
+      await sendAssistantTextAndRecord(state, introMessage, {
         flowStep: "qualification",
       });
+      state.flowStep = "qualification";
       return;
     }
 
@@ -1836,10 +2264,15 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         matchedListingCode: listing.listingCode,
         reason: "listing_confirmed_user",
       });
-      const notificationNumberRaw = NOTIFICATION_NUMBER.value();
-      const agentNums = notificationNumberRaw
-        ? notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean)
-        : [];
+      const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+      const botCfg = await getBotConfig();
+      const agentNums = await resolveQualifiedLeadNotificationRecipients({
+        orgId: getActiveOrgId(),
+        botConfig: botCfg,
+        envNotificationFallback: NOTIFICATION_NUMBER.value(),
+        listing,
+        db,
+      });
       const agentMsg = compactMessage([
         "Nuevo interés (cualificación rápida).",
         `Nombre: ${state.name || "Sin nombre"}`,
@@ -1847,7 +2280,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         `Anuncio: ${listing.description} (ID ${listing.listingCode})`,
         listing.link ? `Link: ${listing.link}` : "",
       ]);
-      const templateSid = await getAgentNotificationTemplateSid(getActiveOrgId());
+      const templateSid = await getAgentNotificationTemplateSidForCompactAlert(getActiveOrgId());
       for (const num of agentNums) {
         try {
           await sendAgentNotificationMessage({
@@ -1922,9 +2355,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     });
 
     const namePrompt = buildCallNamePrompt(initialLanguage, capturedName);
-    await sendTextMessage({ to: state.phone, chatId: state.chatId, body: namePrompt });
-    state.history.push({ role: "assistant", text: namePrompt, timestamp: Date.now() });
-    await upsertConversation(state.chatId, { history: state.history });
+    await sendAssistantTextAndRecord(state, namePrompt);
 
     console.log("AGENT_DEBUG", JSON.stringify({
       runId: "post-fix",
@@ -2018,7 +2449,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       if (isYes && captured) {
         const ok = await runHandoff(captured);
         if (!ok) {
-          await sendTextMessage({ to: state.phone, chatId: state.chatId, body: language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve." });
+          await sendAssistantTextAndRecord(state, language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve.");
         }
         return;
       }
@@ -2026,7 +2457,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       if (providedName && providedName.toLowerCase() !== captured.toLowerCase()) {
         const ok = await runHandoff(providedName);
         if (!ok) {
-          await sendTextMessage({ to: state.phone, chatId: state.chatId, body: language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve." });
+          await sendAssistantTextAndRecord(state, language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve.");
         }
         return;
       }
@@ -2038,12 +2469,12 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           flowStep: "call_name_collect",
           pendingNameConfirmation: state.pendingNameConfirmation,
         });
-        await sendTextMessage({ to: state.phone, chatId: state.chatId, body: buildCallNamePrompt(language, undefined) });
+        await sendAssistantTextAndRecord(state, buildCallNamePrompt(language, undefined));
         return;
       }
 
       // Unclear → ask again.
-      await sendTextMessage({ to: state.phone, chatId: state.chatId, body: buildCallNamePrompt(language, captured) });
+      await sendAssistantTextAndRecord(state, buildCallNamePrompt(language, captured));
       return;
     }
 
@@ -2052,12 +2483,12 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       if (providedName) {
         const ok = await runHandoff(providedName);
         if (!ok) {
-          await sendTextMessage({ to: state.phone, chatId: state.chatId, body: language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve." });
+          await sendAssistantTextAndRecord(state, language === "en" ? "Sorry, we hit an issue. The agent will follow up shortly." : "Disculpa, ha habido un problema. El agente te contactará en breve.");
         }
         return;
       }
       // Could not extract a name; ask again succinctly.
-      await sendTextMessage({ to: state.phone, chatId: state.chatId, body: buildCallNamePrompt(language, undefined) });
+      await sendAssistantTextAndRecord(state, buildCallNamePrompt(language, undefined));
       return;
     }
   }
@@ -2098,10 +2529,15 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     const attempt = typeof state.listingResolveAttempts === "number" ? state.listingResolveAttempts : 0;
 
     const notifyAgentAndClose = async (reason: string, extra?: string) => {
-      const notificationNumberRaw = NOTIFICATION_NUMBER.value();
-      const agentNums = notificationNumberRaw
-        ? notificationNumberRaw.split(",").map((n) => n.trim()).filter(Boolean)
-        : [];
+      const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+      const botCfg = await getBotConfig();
+      const agentNums = await resolveQualifiedLeadNotificationRecipients({
+        orgId: getActiveOrgId(),
+        botConfig: botCfg,
+        envNotificationFallback: NOTIFICATION_NUMBER.value(),
+        listing: null,
+        db,
+      });
       const agentMsg = compactMessage([
         reason,
         `Nombre: ${state.name || "Sin nombre"}`,
@@ -2111,7 +2547,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         extra ? `Texto: ${extra}` : "",
         `ChatId: ${state.chatId}`,
       ]);
-      const templateSid = await getAgentNotificationTemplateSid(getActiveOrgId());
+      const templateSid = await getAgentNotificationTemplateSidForCompactAlert(getActiveOrgId());
       for (const num of agentNums) {
         try {
           await sendAgentNotificationMessage({
@@ -2187,7 +2623,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
               pendingListingQueue: undefined,
               pendingListingQueueIndex: undefined,
             });
-            await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt, callFlowLanguage), chatId: state.chatId });
+            await sendAssistantTextAndRecord(state, buildRetryListingLookupMessage(nextAttempt, callFlowLanguage));
             return;
           }
           await applyListingToStateAndPersist(listing.data, candidate.orgId || listing.orgId);
@@ -2207,17 +2643,12 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
               pendingListingCandidate: nextCandidate,
               rejectedListingCodes: state.rejectedListingCodes,
             });
-            await sendBinaryConfirmPrompt({
-              to: state.phone,
-              chatId: state.chatId,
-              language: callFlowLanguage,
-              body: buildConfirmListingMessage(nextCandidate, callFlowLanguage),
-            });
+            await sendAssistantBinaryPromptAndRecord(state, callFlowLanguage, buildConfirmListingMessage(nextCandidate, callFlowLanguage));
             return;
           }
 
           const fallbackToUser = buildListingNotFoundFallback(undefined, callFlowLanguage);
-          await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
+          await sendAssistantTextAndRecord(state, fallbackToUser);
           await updateLeadListingByChatId({
             chatId: state.chatId,
             phone: state.phone,
@@ -2231,14 +2662,13 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           return;
         }
 
-          await sendBinaryConfirmPrompt({
-            to: state.phone,
-            chatId: state.chatId,
-            language: callFlowLanguage,
-            body: callFlowLanguage === "en"
+          await sendAssistantBinaryPromptAndRecord(
+            state,
+            callFlowLanguage,
+            callFlowLanguage === "en"
               ? "Is this the correct property?"
-              : "¿Es correcta esta vivienda?",
-          });
+              : "¿Es correcta esta vivienda?"
+          );
         return;
       }
 
@@ -2274,12 +2704,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
             pendingListingCandidates: undefined,
             listingResolveAttempts: attempt,
           });
-          await sendBinaryConfirmPrompt({
-            to: state.phone,
-            chatId: state.chatId,
-            language: callFlowLanguage,
-            body: buildConfirmListingMessage(candidate, callFlowLanguage),
-          });
+          await sendAssistantBinaryPromptAndRecord(state, callFlowLanguage, buildConfirmListingMessage(candidate, callFlowLanguage));
           return;
         }
 
@@ -2308,12 +2733,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
             pendingListingCandidates: undefined,
             listingResolveAttempts: attempt,
           });
-          await sendBinaryConfirmPrompt({
-            to: state.phone,
-            chatId: state.chatId,
-            language: callFlowLanguage,
-            body: buildConfirmListingMessage(firstCandidate, callFlowLanguage),
-          });
+          await sendAssistantBinaryPromptAndRecord(state, callFlowLanguage, buildConfirmListingMessage(firstCandidate, callFlowLanguage));
           return;
         }
 
@@ -2325,12 +2745,12 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           listingResolveAttempts: nextAttempt,
         });
         if (nextAttempt <= 2) {
-          await sendTextMessage({ to: state.phone, body: buildRetryListingLookupMessage(nextAttempt, callFlowLanguage), chatId: state.chatId });
+          await sendAssistantTextAndRecord(state, buildRetryListingLookupMessage(nextAttempt, callFlowLanguage));
           return;
         }
 
         const fallbackToUser = buildListingNotFoundFallback(undefined, callFlowLanguage);
-        await sendTextMessage({ to: state.phone, body: fallbackToUser, chatId: state.chatId });
+        await sendAssistantTextAndRecord(state, fallbackToUser);
         state.tags = Array.from(new Set([...(state.tags || []), "listing-not-found"]));
         await updateLeadListingByChatId({
           chatId: state.chatId,
@@ -2444,25 +2864,16 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     return;
   }
 
-  // Add assistant response to history
-  state.history.push({
-    role: "assistant",
-    text: cleanMessage,
-    timestamp: Date.now(),
-  });
-
   if (qualificationStatus !== undefined) {
     state.qualificationStatus = qualificationStatus;
   }
 
   // Save updated conversation
-  await appendConversationRow({
+  await recordAssistantHistoryMessage(state, cleanMessage, {
     phone: state.phone,
-    chatId: state.chatId,
     listingCode: state.listingCode,
-    history: state.history,
     name: state.name,
-    qualified: state.qualificationStatus,
+    qualificationStatus: state.qualificationStatus,
     isFinished: qualificationStatus !== undefined,
   });
 
@@ -2517,7 +2928,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
 
 export const webhook = onRequest(
-  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
   async (req, res) => {
   try {
     // Handle GET requests (webhook verification)
@@ -2610,7 +3021,7 @@ export const webhook = onRequest(
             }
 
             // Ensure we have a valid conversation state
-            const state = await ensureConversationState(chatId, messages[0].phone);
+            const state = await ensureConversationState(chatId, messages[0].phone, { preferFresh: true });
             if (!state) {
               console.warn("Could not reconstruct conversation state", chatId, "in org", orgId);
               await sendAlert("Estado no encontrado", `No se pudo reconstruir el estado para el chat: ${chatId}. Es posible que no haya un lead asociado o los datos del anuncio no existan.`, { chatId, phone: messages[0].phone, orgId });
@@ -2930,7 +3341,7 @@ async function dispatchCloudApiInbound(orgId: string, inboundMessages: Array<{ c
             await applyOptOut({ orgId, chatId, phone: messages[0].phone });
             return;
           }
-          const state = await ensureConversationState(chatId, messages[0].phone);
+          const state = await ensureConversationState(chatId, messages[0].phone, { preferFresh: true });
           if (!state) {
             console.warn("whatsappWebhook: could not reconstruct state for", chatId, "org", orgId);
             return;
@@ -3001,9 +3412,17 @@ async function dispatchCloudApiInbound(orgId: string, inboundMessages: Array<{ c
  *   - DTMF 1 → consent captured, template sent by voiceGatherCallback
  *   - timeout / hangup → no consent, no template
  */
-export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [TWILIO_AUTH_TOKEN] }, async (req, res) => {
   try {
+    const signature = req.header("x-twilio-signature") || "";
+    const fullUrl = reconstructRequestUrl(req);
     const body = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : {};
+    if (!verifyTwilioSignature(TWILIO_AUTH_TOKEN.value(), signature, fullUrl, body)) {
+      console.warn("voiceWebhook: invalid or missing X-Twilio-Signature");
+      res.status(401).send("Unauthorized");
+      return;
+    }
+
     const callSid = typeof body.CallSid === "string" ? body.CallSid : "";
     const fromPhone = normalizeE164FromTwilio(body.From);
 
@@ -3027,6 +3446,28 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
       `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceGatherCallback` +
       `?phone=${encodeURIComponent(fromPhone)}&chatId=${encodeURIComponent(chatId)}&callSid=${encodeURIComponent(callSid)}`;
 
+    // Initialize the pending call lead BEFORE responding. On Cloud Functions Gen 2 (Cloud Run),
+    // setImmediate background work is CPU-throttled and runs late — late enough that it can race
+    // with a subsequent inbound WhatsApp reply and clobber pendingUserMessages, breaking the flow
+    // for repeat callers. Twilio allows up to 15s for a TwiML response, plenty of time for these
+    // tiny Firestore writes.
+    try {
+      const intakeOrgId = PROPLEAD_INTAKE_ORG_ID.value();
+      if (!intakeOrgId) {
+        console.error("voiceWebhook: PROPLEAD_INTAKE_ORG_ID is not configured");
+      } else {
+        await requestContext.run({ orgId: intakeOrgId }, async () => {
+          if (callSid) {
+            await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
+          }
+          await createPendingCallLead({ phone: fromPhone, chatId });
+        });
+      }
+    } catch (error) {
+      console.error("voiceWebhook failed initializing pending intake lead", error);
+      // Fall through and still respond so the caller hears something.
+    }
+
     res.set("Content-Type", "text/xml");
     res.status(200).send(
       buildTwiml(
@@ -3041,24 +3482,6 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
         ].join("\n")
       )
     );
-
-    setImmediate(async () => {
-      const intakeOrgId = PROPLEAD_INTAKE_ORG_ID.value();
-      if (!intakeOrgId) {
-        console.error("voiceWebhook: PROPLEAD_INTAKE_ORG_ID is not configured");
-        return;
-      }
-      try {
-        await requestContext.run({ orgId: intakeOrgId }, async () => {
-          if (callSid) {
-            await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
-          }
-          await createPendingCallLead({ phone: fromPhone, chatId });
-        });
-      } catch (error) {
-        console.error("voiceWebhook failed initializing pending intake lead", error);
-      }
-    });
   } catch (error) {
     console.error("voiceWebhook error", error);
     res.set("Content-Type", "text/xml");
@@ -3074,10 +3497,22 @@ export const voiceWebhook = onRequest({ cors: true, region: REGION }, async (req
  * Consent record: { source: "phone_call", proofUrl: callSid, capturedAt: now }.
  */
 export const voiceGatherCallback = onRequest(
-  { cors: true, region: REGION, secrets: [TWILIO_AUTH_TOKEN] },
+  { cors: false, region: REGION, secrets: [TWILIO_AUTH_TOKEN] },
   async (req, res) => {
     try {
+      const signature = req.header("x-twilio-signature") || "";
+      // Gen 2 Cloud Functions (Cloud Run) strip the function path from req.originalUrl,
+      // so we re-add /voiceGatherCallback to match the URL Twilio used to sign.
+      const queryIdx = (req.originalUrl || "").indexOf("?");
+      const queryString = queryIdx >= 0 ? (req.originalUrl || "").substring(queryIdx) : "";
+      const signedUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceGatherCallback${queryString}`;
       const body = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : {};
+      if (!verifyTwilioSignature(TWILIO_AUTH_TOKEN.value(), signature, signedUrl, body)) {
+        console.warn("voiceGatherCallback: invalid or missing X-Twilio-Signature");
+        res.status(401).send("Unauthorized");
+        return;
+      }
+
       const digits = typeof body.Digits === "string" ? body.Digits.trim() : "";
       const phone =
         (typeof req.query.phone === "string" && req.query.phone) ||
@@ -3096,24 +3531,24 @@ export const voiceGatherCallback = onRequest(
         return;
       }
 
-      // Respond to Twilio immediately so the caller is not kept hanging.
-      res.status(200).send(
-        buildTwiml(
-          `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
-        )
-      );
-
-      setImmediate(async () => {
-        try {
-          // Call intake always starts in the global Proplead intake org.
-          const orgId = PROPLEAD_INTAKE_ORG_ID.value();
-          if (!orgId) {
-            console.warn("voiceGatherCallback: PROPLEAD_INTAKE_ORG_ID is not configured");
-            return;
-          }
+      // Do the work BEFORE responding. On Cloud Functions Gen 2 (Cloud Run), background
+      // work scheduled with setImmediate after res.send() runs with throttled CPU and is
+      // not guaranteed to complete before the container shuts down. Twilio allows up to
+      // 15s for a TwiML response — plenty for one Firestore write + one Twilio API call.
+      try {
+        const orgId = PROPLEAD_INTAKE_ORG_ID.value();
+        if (!orgId) {
+          console.warn("voiceGatherCallback: PROPLEAD_INTAKE_ORG_ID is not configured");
+        } else {
           await requestContext.run({ orgId }, async () => {
             await recordVoiceConsent({ phone, chatId, callSid });
             const templateSid = await getVoiceOptInTemplateSid(orgId);
+            // No credit deduction here: this send runs in the Proplead intake org,
+            // before we know which destination org will own the lead. Billing for
+            // this intake message is DEFERRED — executeCrossOrgCallHandoff charges
+            // the destination org 2 credits (1 for this intake send, idempotency key
+            // `intakeOutboundCreditsDeducted`; 1 for the org's own first template,
+            // idempotency key `initialOutboundCreditsDeducted`).
             await sendInitialTemplateMessage({
               to: phone,
               chatId,
@@ -3122,10 +3557,17 @@ export const voiceGatherCallback = onRequest(
               templateSid,
             });
           });
-        } catch (err) {
-          console.error("voiceGatherCallback async error:", err);
         }
-      });
+      } catch (err) {
+        console.error("voiceGatherCallback work error:", err);
+        // Fall through and still respond so the call ends gracefully.
+      }
+
+      res.status(200).send(
+        buildTwiml(
+          `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
+        )
+      );
     } catch (error) {
       console.error("voiceGatherCallback error", error);
       res.set("Content-Type", "text/xml");
@@ -3173,10 +3615,10 @@ async function recordVoiceConsent(params: {
 }
 
 /**
- * Cloud Tasks target: sends the post-call WhatsApp message via Whapi (Spanish).
+ * Cloud Tasks target: sends the post-call WhatsApp message (Spanish).
  * Required because voice webhook must respond immediately to avoid awkward pauses/cut audio.
  */
-export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION, secrets: [TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -3201,6 +3643,11 @@ export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION, se
       return;
     }
 
+    // No credit deduction in this handler: all sends run in the Proplead intake org,
+    // before the destination org is known. Billing for this intake message is DEFERRED —
+    // executeCrossOrgCallHandoff later charges the destination org 2 credits (1 for this
+    // intake send, idempotency key `intakeOutboundCreditsDeducted`; 1 for the org's own
+    // first template, idempotency key `initialOutboundCreditsDeducted`).
     await requestContext.run({ orgId }, async () => {
       const provider = await getActiveProviderFn();
       if (provider === "twilio") {
@@ -3244,7 +3691,7 @@ export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION, se
 /**
  * Process buffered messages - called by Cloud Tasks after buffer delay expires
  */
-export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
+export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
   try {
     // Only accept POST from Cloud Tasks
     if (req.method !== "POST") {
@@ -3297,7 +3744,7 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
       console.log(`Found ${pendingMessages.length} pending message(s) to process for ${chatId}`);
 
       // Get conversation state
-      const state = await ensureConversationState(chatId);
+      const state = await ensureConversationState(chatId, undefined, { preferFresh: true });
       if (!state) {
         console.error(`Could not get conversation state for ${chatId} in org ${resolvedOrgId}`);
         res.status(404).json({ error: "Conversation not found" });
@@ -3338,7 +3785,7 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
  * using the no-name template variant.
  */
 export const processCallNameTimeout = onRequest(
-  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
   async (req, res) => {
     try {
       if (req.method !== "POST") {
@@ -3435,7 +3882,7 @@ async function sendCrossOrgCallHandoff(
 
 /**
  * Shared WhatsApp onboarding after a listing is resolved (Idealista webhook / newLead).
- * Same Twilio template / Whapi flow as legacy newLead. No credit deduction (disabled until re-enabled).
+ * Same Twilio template flow as legacy newLead. No credit deduction (disabled until re-enabled).
  */
 export async function runNewLeadMessagingPipeline(params: {
   phone: string;
@@ -3588,6 +4035,21 @@ export async function runNewLeadMessagingPipeline(params: {
 
       if (result.chatId && result.chatId !== chatId) {
         chatId = result.chatId;
+      }
+
+      try {
+        await deductOrgConversationForInitialOutboundOnce(
+          getActiveOrgId(),
+          chatId,
+          "Idealista new lead"
+        );
+      } catch (err) {
+        console.error("[credits] post-send deduction failed", {
+          site: "idealistaNewLead",
+          orgId: getActiveOrgId(),
+          chatId,
+          err,
+        });
       }
 
       const deliveredText = typeof result.deliveredText === "string" ? result.deliveredText.trim() : "";
@@ -4513,49 +4975,65 @@ export const outboundConsentStatusCallback = onRequest(
   }
 );
 
-export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
+export const newLead = onRequest({ cors: false, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY, MAKE_WEBHOOK_SHARED_SECRET] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
 
-  const phone = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
-  const listingCode = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
-  const orgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
-  const leadName = typeof req.body?.nombre === "string" ? req.body.nombre.trim() : "";
-  const language = typeof req.body?.language === "string" ? req.body.language.trim() : "";
-  const languageNorm = language === "en" ? "en" : language === "es" ? "es" : "";
-
-  if (!phone || !listingCode) {
-    res.status(400).json({ error: "telefono y anuncio son obligatorios" });
+  const providedSecret =
+    (typeof req.headers["x-make-secret"] === "string" ? req.headers["x-make-secret"] : "") ||
+    (typeof req.query.secret === "string" ? req.query.secret : "");
+  const expectedSecret = MAKE_WEBHOOK_SHARED_SECRET.value();
+  if (!expectedSecret || !secureCompare(providedSecret, expectedSecret)) {
+    res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
-  // 1. Resolve organization from listing code
+  const parsed = NewLeadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
+    return;
+  }
+  const phone = parsed.data.telefono.trim();
+  const listingCode = parsed.data.anuncio.trim();
+  const orgId = parsed.data.orgId.trim();
+  const leadName = parsed.data.nombre?.trim() || "";
+  const languageNorm = parsed.data.language === "en" || parsed.data.language === "es" ? parsed.data.language : "";
+
+  // Per-phone+listing rate limit (1 new-lead per 5 min). Prevents an abuser
+  // who has the intake secret from re-triggering opt-in WhatsApp messages.
+  const allowed = await checkAndRecordRateLimit({
+    bucket: "newLead",
+    key: `${phone}__${listingCode}`,
+    windowMs: 5 * 60 * 1000,
+  });
+  if (!allowed) {
+    res.status(429).json({ error: "Rate limited: este lead ya fue procesado recientemente." });
+    return;
+  }
+
+  // 1. Resolve organization from listing code. orgId is REQUIRED — we no
+  //    longer fall back to a global cross-org listing scan.
   let resolvedOrgId = orgId;
   let listingData: ListingRow | null = null;
-  
+
+  if (!resolvedOrgId) {
+    res.status(400).json({ error: "orgId es obligatorio" });
+    return;
+  }
+
   try {
-    if (resolvedOrgId) {
-      // If orgId is provided, fetch listing within that org context
-      await requestContext.run({ orgId: resolvedOrgId }, async () => {
-        listingData = await fetchListingByCode(listingCode);
-      });
-    } else {
-      // Fallback to global search if orgId is not provided
-      const globalResult = await fetchListingGlobally(listingCode);
-      if (globalResult) {
-        resolvedOrgId = globalResult.orgId;
-        listingData = globalResult.data;
-      }
-    }
+    await requestContext.run({ orgId: resolvedOrgId }, async () => {
+      listingData = await fetchListingByCode(listingCode);
+    });
   } catch (error) {
-    console.error(`Error resolving listing ${listingCode} (orgId: ${resolvedOrgId || "global"}):`, error);
-    res.status(500).json({ 
+    console.error(`Error resolving listing ${listingCode} (orgId: ${resolvedOrgId}):`, error);
+    res.status(500).json({
       error: "Error interno al buscar el anuncio",
       details: error instanceof Error ? error.message : String(error),
       listingCode,
-      orgId: resolvedOrgId || undefined
+      orgId: resolvedOrgId,
     });
     return;
   }
@@ -4580,7 +5058,18 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
           : "You have contacted us again through Idealista regarding the property shown above, how can I help you?";
 
         try {
-          await sendTextMessage({ to: phone, body: returnMessage, chatId: existingConv.chatId });
+          const { twilioTemplates, cloudApiTemplates } = await getOrgTemplateSnapshot(resolvedOrgId);
+          const templateSid = isSpanish ? twilioTemplates.returningLeadEs : twilioTemplates.returningLeadEn;
+          const cloudApiTemplateName = isSpanish ? cloudApiTemplates.idealistaConfirmEs : cloudApiTemplates.idealistaConfirmEn;
+          await sendReturningLeadMessage({
+            to: phone,
+            body: returnMessage,
+            chatId: existingConv.chatId,
+            templateSid,
+            cloudApiTemplateName,
+            language: isSpanish ? "es" : "en",
+            context: "returning_lead_idealista",
+          });
 
           // Update history
           const updatedHistory = [...(existingConv.history || [])];
@@ -4642,47 +5131,61 @@ export const newLead = onRequest({ cors: true, region: REGION, secrets: [OPENAI_
  * sends the initial WhatsApp template first (Twilio/Cloud API),
  * then continues normal chat flow on inbound replies.
  */
-export const newLeadLegacy = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
+export const newLeadLegacy = onRequest({ cors: false, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY, MAKE_WEBHOOK_SHARED_SECRET] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
 
-  const phone = typeof req.body?.telefono === "string" ? req.body.telefono.trim() : "";
-  const listingCode = typeof req.body?.anuncio === "string" ? req.body.anuncio.trim() : "";
-  const orgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
-  const leadName = typeof req.body?.nombre === "string" ? req.body.nombre.trim() : "";
-
-  if (!phone || !listingCode) {
-    res.status(400).json({ error: "telefono y anuncio son obligatorios" });
+  const providedSecret =
+    (typeof req.headers["x-make-secret"] === "string" ? req.headers["x-make-secret"] : "") ||
+    (typeof req.query.secret === "string" ? req.query.secret : "");
+  const expectedSecret = MAKE_WEBHOOK_SHARED_SECRET.value();
+  if (!expectedSecret || !secureCompare(providedSecret, expectedSecret)) {
+    res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
-  // 1. Resolve organization from listing code
+  const parsedLegacy = NewLeadSchema.safeParse(req.body);
+  if (!parsedLegacy.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsedLegacy.error.flatten() });
+    return;
+  }
+  const phone = parsedLegacy.data.telefono.trim();
+  const listingCode = parsedLegacy.data.anuncio.trim();
+  const orgId = parsedLegacy.data.orgId.trim();
+  const leadName = parsedLegacy.data.nombre?.trim() || "";
+
+  const allowed = await checkAndRecordRateLimit({
+    bucket: "newLeadLegacy",
+    key: `${phone}__${listingCode}`,
+    windowMs: 5 * 60 * 1000,
+  });
+  if (!allowed) {
+    res.status(429).json({ error: "Rate limited: este lead ya fue procesado recientemente." });
+    return;
+  }
+
+  // 1. Resolve organization from listing code. orgId is REQUIRED.
   let resolvedOrgId = orgId;
   let listingData: ListingRow | null = null;
 
+  if (!resolvedOrgId) {
+    res.status(400).json({ error: "orgId es obligatorio" });
+    return;
+  }
+
   try {
-    if (resolvedOrgId) {
-      // If orgId is provided, fetch listing within that org context
-      await requestContext.run({ orgId: resolvedOrgId }, async () => {
-        listingData = await fetchListingByCode(listingCode);
-      });
-    } else {
-      // Fallback to global search if orgId is not provided
-      const globalResult = await fetchListingGlobally(listingCode);
-      if (globalResult) {
-        resolvedOrgId = globalResult.orgId;
-        listingData = globalResult.data;
-      }
-    }
+    await requestContext.run({ orgId: resolvedOrgId }, async () => {
+      listingData = await fetchListingByCode(listingCode);
+    });
   } catch (error) {
-    console.error(`Error resolving listing ${listingCode} (orgId: ${resolvedOrgId || "global"}):`, error);
+    console.error(`Error resolving listing ${listingCode} (orgId: ${resolvedOrgId}):`, error);
     res.status(500).json({
       error: "Error interno al buscar el anuncio",
       details: error instanceof Error ? error.message : String(error),
       listingCode,
-      orgId: resolvedOrgId || undefined,
+      orgId: resolvedOrgId,
     });
     return;
   }
@@ -4707,7 +5210,18 @@ export const newLeadLegacy = onRequest({ cors: true, region: REGION, secrets: [O
           : "You have contacted us again through Idealista regarding the property shown above, how can I help you?";
 
         try {
-          await sendTextMessage({ to: phone, body: returnMessage, chatId: existingConv.chatId });
+          const { twilioTemplates, cloudApiTemplates } = await getOrgTemplateSnapshot(resolvedOrgId);
+          const templateSid = isSpanish ? twilioTemplates.returningLeadEs : twilioTemplates.returningLeadEn;
+          const cloudApiTemplateName = isSpanish ? cloudApiTemplates.idealistaConfirmEs : cloudApiTemplates.idealistaConfirmEn;
+          await sendReturningLeadMessage({
+            to: phone,
+            body: returnMessage,
+            chatId: existingConv.chatId,
+            templateSid,
+            cloudApiTemplateName,
+            language: isSpanish ? "es" : "en",
+            context: "returning_lead_idealista_legacy",
+          });
 
           // Update history
           const updatedHistory = [...(existingConv.history || [])];
@@ -4763,42 +5277,43 @@ export const newLeadLegacy = onRequest({ cors: true, region: REGION, secrets: [O
   }
 });
 
-export const sendMessage = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+export const sendMessage = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, secrets: [TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
 
-  const { chatId, text } = req.body;
-  if (!chatId || !text) {
-    res.status(400).json({ error: "chatId and text are required" });
+  const parsed = SendMessageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
     return;
   }
+  const { chatId, text } = parsed.data;
 
   try {
     const authHeader = req.headers.authorization;
     const orgId = await resolveOrgIdFromToken(authHeader);
 
+    // Per-org rate limit: ~60/min (1 per second) to cap admin-account abuse.
+    const allowed = await checkAndRecordRateLimit({
+      bucket: "sendMessage",
+      key: orgId,
+      windowMs: 1000,
+    });
+    if (!allowed) {
+      res.status(429).json({ error: "Rate limited: too many outbound messages, slow down." });
+      return;
+    }
+
     await requestContext.run({ orgId }, async () => {
-      const state = await ensureConversationState(chatId);
+      const state = await ensureConversationState(chatId, undefined, { preferFresh: true });
       if (!state) {
         res.status(404).json({ error: "Conversación no encontrada" });
         return;
       }
 
-      // Send via messaging provider
-      await sendTextMessage({ to: state.phone, body: text, chatId });
-
-      // Add to history
-      const updatedHistory = [...(state.history || [])];
-      updatedHistory.push({
-        role: "assistant",
-        text,
-        timestamp: Date.now(),
-      });
-
-      await upsertConversation(chatId, { history: updatedHistory });
-      setCachedConversationState(chatId, { ...state, history: updatedHistory });
+      await sendAssistantTextAndRecord(state, text);
+      setCachedConversationState(chatId, state);
 
       res.status(200).json({ success: true });
     });
@@ -4808,23 +5323,42 @@ export const sendMessage = onRequest({ cors: true, region: REGION, secrets: [WHA
   }
 });
 
-export const sendMassMessage = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+export const sendMassMessage = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, secrets: [TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
 
-  const { chatIds, text } = req.body;
-  if (!chatIds || !Array.isArray(chatIds) || !text) {
-    res.status(400).json({ error: "chatIds (array) and text are required" });
+  const parsed = SendMassMessageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request body", details: parsed.error.flatten() });
     return;
   }
+  const { chatIds, text } = parsed.data;
 
   console.log(`Sending mass message to ${chatIds.length} chats`);
 
   try {
     const authHeader = req.headers.authorization;
     const orgId = await resolveOrgIdFromToken(authHeader);
+
+    // Per-org rate limit: 1 mass-message run per 10s (max ~6/min).
+    // Bulk sends are inherently large; this guards against runaway loops.
+    const allowed = await checkAndRecordRateLimit({
+      bucket: "sendMassMessage",
+      key: orgId,
+      windowMs: 10_000,
+    });
+    if (!allowed) {
+      res.status(429).json({ error: "Rate limited: wait 10s between mass-send runs." });
+      return;
+    }
+
+    // Hard cap on the per-call broadcast size to limit blast radius.
+    if (chatIds.length > 500) {
+      res.status(400).json({ error: "chatIds limit exceeded (max 500 per call)" });
+      return;
+    }
 
     await requestContext.run({ orgId }, async () => {
       console.log(`Sending mass message to ${chatIds.length} chats in org ${orgId}`);
@@ -4838,24 +5372,13 @@ export const sendMassMessage = onRequest({ cors: true, region: REGION, secrets: 
       await Promise.all(
         chatIds.map(async (chatId) => {
           try {
-            const state = await ensureConversationState(chatId);
+            const state = await ensureConversationState(chatId, undefined, { preferFresh: true });
             if (!state) {
               throw new Error("Conversación no encontrada");
             }
 
-            // Send via messaging provider
-            await sendTextMessage({ to: state.phone, body: text, chatId });
-
-            // Add to history
-            const updatedHistory = [...(state.history || [])];
-            updatedHistory.push({
-              role: "assistant",
-              text,
-              timestamp: Date.now(),
-            });
-
-            await upsertConversation(chatId, { history: updatedHistory });
-            setCachedConversationState(chatId, { ...state, history: updatedHistory });
+            await sendAssistantTextAndRecord(state, text);
+            setCachedConversationState(chatId, state);
 
             results.success++;
           } catch (error) {
@@ -4885,13 +5408,25 @@ export const sendMassMessage = onRequest({ cors: true, region: REGION, secrets: 
 /**
  * Utility endpoint to retry sending opt-in SMS to leads missing onboarding conversation state.
  */
-export const retryMissingLeads = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+export const retryMissingLeads = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   const authHeader = req.headers.authorization;
   let orgId = "";
   try {
     orgId = await resolveOrgIdFromToken(authHeader);
   } catch (error) {
     res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  // Per-org rate limit: 1 retry-run per minute. The endpoint can scan and
+  // re-send opt-in messages to many leads at once; one run per minute is plenty.
+  const allowed = await checkAndRecordRateLimit({
+    bucket: "retryMissingLeads",
+    key: orgId,
+    windowMs: 60_000,
+  });
+  if (!allowed) {
+    res.status(429).json({ error: "Rate limited: wait 60s between retry runs." });
     return;
   }
 
@@ -5442,7 +5977,7 @@ export const cloudApiHealthCheck = onRequest(
  */
 async function evaluateCallHandoffReadiness(targetOrgId: string): Promise<{
   targetOrgId: string;
-  provider: "twilio" | "cloud_api" | "whapi";
+  provider: "twilio" | "cloud_api";
   providerSource: "org" | "global" | "fallback";
   checks: Array<{ key: string; ok: boolean; value?: string; note?: string }>;
   missingRequiredKeys: string[];
@@ -5766,6 +6301,225 @@ export const migrateTwilioTransportToOrg = onRequest(
       console.error("migrateTwilioTransportToOrg error", error);
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
+  }
+);
+
+// ==================== TWILIO SENDER MIGRATION (admin/super_admin) ====================
+
+function isAdminRole(role: string): boolean {
+  return role === "admin" || role === "super_admin";
+}
+
+/**
+ * Kick off a Twilio-sender migration for an org. Admin or super_admin only.
+ * See plan in /Users/ejperezreyes/.claude/plans/we-need-to-develop-recursive-tower.md.
+ */
+export const startTwilioSenderMigration = onRequest(
+  { cors: true, region: REGION, timeoutSeconds: 540 },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { uid, email, role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isAdminRole(role)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const targetOrgId = typeof req.body?.targetOrgId === "string" ? req.body.targetOrgId.trim() : "";
+      const sourceOrgId = typeof req.body?.sourceOrgId === "string" ? req.body.sourceOrgId.trim() : "";
+      const newAccountSid = typeof req.body?.newAccountSid === "string" ? req.body.newAccountSid.trim() : "";
+      const newAuthToken = typeof req.body?.newAuthToken === "string" ? req.body.newAuthToken.trim() : "";
+      if (!targetOrgId || !sourceOrgId || !newAccountSid || !newAuthToken) {
+        res.status(400).json({
+          error:
+            "Missing required body fields: targetOrgId, sourceOrgId, newAccountSid, newAuthToken",
+        });
+        return;
+      }
+      const result = await startMigration({
+        targetOrgId,
+        sourceOrgId,
+        newAccountSid,
+        newAuthToken,
+        actor: { uid, email },
+      });
+      res.status(200).json(result);
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("startTwilioSenderMigration error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Phase 2 of a Twilio sender migration: create + submit the selected templates
+ * for WhatsApp approval. Called after the admin reviews the snapshot from
+ * `startTwilioSenderMigration` and confirms which templates to submit.
+ *
+ * Body: { jobId: string, friendlyNames?: string[] }
+ *   - When `friendlyNames` is omitted, every snapshotted template is submitted.
+ *   - When provided, only matching templates are submitted; others remain in
+ *     `not_submitted` state and can be resubmitted later.
+ */
+export const submitTwilioMigrationTemplates = onRequest(
+  { cors: true, region: REGION, timeoutSeconds: 540 },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isAdminRole(role)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const jobId = typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
+      if (!jobId) {
+        res.status(400).json({ error: "Missing jobId" });
+        return;
+      }
+      const friendlyNames = Array.isArray(req.body?.friendlyNames)
+        ? (req.body.friendlyNames as unknown[]).filter((s): s is string => typeof s === "string")
+        : undefined;
+      if (friendlyNames && friendlyNames.length === 0) {
+        res.status(400).json({ error: "friendlyNames must be a non-empty array when provided" });
+        return;
+      }
+      const result = await submitMigrationTemplates(jobId, friendlyNames);
+      res.status(200).json(result);
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("submitTwilioMigrationTemplates error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Manually poll a migration job for template approval updates ("Refresh now" in the UI).
+ */
+export const pollTwilioMigrationJob = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isAdminRole(role)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const jobId = typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
+      if (!jobId) {
+        res.status(400).json({ error: "Missing jobId" });
+        return;
+      }
+      const result = await pollMigration(jobId);
+      res.status(200).json(result);
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("pollTwilioMigrationJob error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Manually mark a migration job complete. Use when the admin has finalized the
+ * org's botConfig outside the system and wants the job out of the in-flight list.
+ */
+export const forceCompleteTwilioMigrationJob = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isAdminRole(role)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const jobId = typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
+      if (!jobId) {
+        res.status(400).json({ error: "Missing jobId" });
+        return;
+      }
+      const result = await forceCompleteMigration(jobId);
+      res.status(200).json(result);
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("forceCompleteTwilioMigrationJob error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Retry a single failed step on a migration job (e.g. webhook config, or one template's submission).
+ */
+export const retryTwilioMigrationStep = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isAdminRole(role)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const jobId = typeof req.body?.jobId === "string" ? req.body.jobId.trim() : "";
+      const step = typeof req.body?.step === "string" ? req.body.step.trim() : "";
+      if (!jobId || !step) {
+        res.status(400).json({ error: "Missing jobId or step" });
+        return;
+      }
+      const result = await retryMigrationStep(jobId, step);
+      res.status(200).json(result);
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("retryTwilioMigrationStep error", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
+ * Scheduled poller: every 10 minutes scan all in-flight migration jobs and
+ * advance their approval state. Idempotent; safe to invoke manually.
+ */
+export const pollPendingTwilioMigrations = onSchedule(
+  { schedule: "every 10 minutes", region: REGION, timeoutSeconds: 540 },
+  async () => {
+    const result = await pollAllInFlightMigrations();
+    console.log(
+      `pollPendingTwilioMigrations: scanned=${result.scanned} updated=${result.updated} collection=${TWILIO_MIGRATION_JOBS_COLLECTION}`
+    );
   }
 );
 
@@ -6208,13 +6962,13 @@ export const setPlatformDefaultProviderConfig = onRequest(
         return;
       }
       const provider = typeof req.body?.provider === "string" ? req.body.provider.trim() : "";
-      const allowedProviders = new Set(["cloud_api", "twilio", "whapi"]);
+      const allowedProviders = new Set(["cloud_api", "twilio"]);
       if (!allowedProviders.has(provider)) {
-        res.status(400).json({ error: "provider must be cloud_api, twilio, or whapi" });
+        res.status(400).json({ error: "provider must be cloud_api or twilio" });
         return;
       }
       const policy = await setPlatformDefaultProvider({
-        provider: provider as "cloud_api" | "twilio" | "whapi",
+        provider: provider as "cloud_api" | "twilio",
         updatedBy: uid,
       });
       invalidateProviderCache();
@@ -6248,7 +7002,7 @@ export const seedGlobalMessagingPolicy = onRequest(
         return;
       }
       const body = (req.body || {}) as {
-        defaultProvider?: "cloud_api" | "twilio" | "whapi";
+        defaultProvider?: "cloud_api" | "twilio";
       };
       const defaultProvider = body.defaultProvider || "twilio";
 
@@ -6300,7 +7054,7 @@ export const setOrgMessagingProvider = onRequest(
       const body = (req.body || {}) as { orgId?: string; provider?: string };
       const targetOrgId = typeof body.orgId === "string" ? body.orgId.trim() : "";
       const provider = typeof body.provider === "string" ? body.provider.trim() : "";
-      const allowedProviders = new Set(["cloud_api", "twilio", "whapi"]);
+      const allowedProviders = new Set(["cloud_api", "twilio"]);
       if (!targetOrgId || !allowedProviders.has(provider)) {
         res.status(400).json({ error: "orgId and valid provider are required" });
         return;
@@ -6422,6 +7176,49 @@ export const listOrganizationsForSuperAdmin = onRequest(
 );
 
 /**
+ * Re-applies listing agent scope (assignedAgentUid / createdByUid) to all leads and conversations
+ * per listingCode. Fixes historical drift so agent-role users see leads for their assigned ads.
+ * super_admin: pass { orgId } in JSON body. owner/admin: reconciles their own org (body optional).
+ */
+export const reconcileAgentScopeForOrganization = onRequest(
+  { cors: true, region: REGION, timeoutSeconds: 540, memory: "512MiB" },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const ctx = await resolveUserContextFromToken(req.headers.authorization);
+      let orgId = "";
+      if (ctx.role === "super_admin") {
+        const bodyOrg = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+        const ctxOrg = typeof ctx.orgId === "string" ? ctx.orgId.trim() : "";
+        orgId = bodyOrg || ctxOrg;
+      } else if (ctx.role === "owner" || ctx.role === "admin") {
+        orgId = typeof ctx.orgId === "string" ? ctx.orgId.trim() : "";
+      } else {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      if (!orgId) {
+        res.status(400).json({ error: "orgId required (super_admin: set orgId in JSON body)" });
+        return;
+      }
+
+      const stats = await reconcileAllListingAgentScopesInOrg(orgId);
+      res.status(200).json({ ok: true, orgId, ...stats });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("reconcileAgentScopeForOrganization error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+/**
  * Creates (or resolves) the tenant context for an authenticated user.
  * Idempotent: if the user already has orgId/role, returns existing context.
  */
@@ -6477,7 +7274,6 @@ export const bootstrapUserOrganization = onRequest(
         tx.set(orgRef, {
           onboardingCompleted: false,
           onboardingStep: 0,
-          plan: "free",
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
@@ -6511,6 +7307,74 @@ export const bootstrapUserOrganization = onRequest(
     }
   }
 );
+
+/**
+ * Explicitly activate the Free plan for an org.
+ * This is user-initiated (no automatic activation on signup).
+ */
+export const activateFreePlan = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    const authHeader = req.headers.authorization;
+    const orgId = await resolveOrgIdFromToken(authHeader);
+
+    const DATABASE_ID = "realestate-whatsapp-bot";
+    const db = getFirestore(admin.app(), DATABASE_ID);
+    const orgRef = db.collection("organizations").doc(orgId);
+
+    const freeCredits = PLAN_BASE_CONVERSATIONS["free"] ?? 40;
+
+    // Idempotent activation: only set the plan if not already active.
+    const outcome = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(orgRef);
+      const data = snap.exists ? (snap.data() ?? {}) : {};
+      const existingPlan = typeof (data as any).plan === "string" ? String((data as any).plan) : "";
+      const existingBalance = typeof (data as any).creditBalance === "number" ? (data as any).creditBalance : 0;
+
+      if (existingPlan !== "free") {
+        tx.set(
+          orgRef,
+          {
+            plan: "free",
+            planActivatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+
+      const needsInitialCredits = existingBalance < freeCredits;
+      return { existingPlan, existingBalance, needsInitialCredits };
+    });
+
+    // Grant up to the Free baseline once (only if they had less than freeCredits).
+    if (outcome.needsInitialCredits) {
+      const currentSnap = await orgRef.get();
+      const currentBalance = currentSnap.exists && typeof currentSnap.data()?.creditBalance === "number"
+        ? currentSnap.data()!.creditBalance
+        : 0;
+      const delta = Math.max(0, freeCredits - currentBalance);
+      if (delta > 0) {
+        await addOrgConversations(delta, "Activación plan Free", orgId, { eventType: "free_plan_activation" });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      subscription: {
+        planId: "free",
+        status: "active",
+        currentPeriodEnd: null,
+        contractedConversations: freeCredits,
+      },
+    });
+  } catch (error) {
+    console.error("activateFreePlan error:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
 
 /**
  * Meta Data Deletion Callback (required in App Basic Settings).
@@ -6703,10 +7567,31 @@ export const exportMyData = onRequest(
         .auth()
         .getUser((await admin.auth().verifyIdToken((req.headers.authorization || "").replace(/^Bearer /, ""))).uid);
       if (user.email) {
+        const logoUrl = "https://proplead.io/proplead-high-resolution-logo.png";
         await sendEmailToUser({
           to: user.email,
           subject: "Tu exportación de datos de Proplead",
-          html: `<p>Hola,</p><p>Hemos preparado la exportación de los datos de tu organización. Podrás descargarla durante los próximos 7 días desde el siguiente enlace:</p><p><a href="${url}">Descargar exportación</a></p><p>Si no solicitaste esta exportación, ignora este correo o escribe a dpo@proplead.io.</p>`,
+          html: `
+            <div style="font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background:#F8FAFC; padding: 32px 16px;">
+              <div style="max-width: 560px; margin: 0 auto; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 16px; padding: 24px;">
+                <div style="text-align:center; margin-bottom: 16px;">
+                  <img src="${logoUrl}" alt="Proplead" style="height: 28px; width: auto; display:inline-block;" />
+                </div>
+                <p style="margin: 0 0 12px; color:#0F172A;">Hola,</p>
+                <p style="margin: 0 0 12px; color:#334155; line-height:1.6;">
+                  Hemos preparado la exportación de los datos de tu organización. Podrás descargarla durante los próximos 7 días desde el siguiente enlace:
+                </p>
+                <p style="margin: 16px 0;">
+                  <a href="${url}" style="display:inline-block; background:#0F172A; color:#FFFFFF; text-decoration:none; padding: 12px 16px; border-radius: 12px; font-weight: 700;">
+                    Descargar exportación
+                  </a>
+                </p>
+                <p style="margin: 16px 0 0; color:#64748B; font-size: 12px; line-height:1.6;">
+                  Si no solicitaste esta exportación, ignora este correo o escribe a dpo@proplead.io.
+                </p>
+              </div>
+            </div>
+          `,
         });
       }
 
@@ -6891,7 +7776,7 @@ export const waRedirect = onRequest(
   }
 );
 
-export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, WHAPI_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
+export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -6931,65 +7816,8 @@ export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPEN
 });
 
 
-export const healthz = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN] }, async (_req, res) => {
-  const whapiStatus = await checkWhapiHealth();
-
-  if (whapiStatus.status !== "ok") {
-    res.status(503).json({
-      status: "error",
-      message: "Whapi service is not reachable or responding correctly",
-      details: whapiStatus.details
-    });
-    return;
-  }
-
-  res.status(200).json({ status: "ok", whapi: whapiStatus.details });
-});
-
-/**
- * Scheduled health check to verify Whapi is online
- * Runs every 30 minutes
- */
-export const monitoringTask = onSchedule({
-  schedule: "*/30 * * * *", // Every 30 minutes
-  region: REGION,
-  timeZone: "Europe/Madrid",
-  secrets: [WHAPI_TOKEN],
-}, async () => {
-  console.log("Running scheduled health check...");
-  const whapiStatus = await checkWhapiHealth();
-
-  // Persist last test time + status even when Whapi is OK.
-  try {
-    const databaseId = "realestate-whatsapp-bot";
-    const orgId = getActiveOrgId();
-    const db = getFirestore(admin.app(), databaseId);
-    const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
-    await settingsRef.set(
-      {
-        lastCheckByKey: {
-          whapi_down: {
-            status: whapiStatus.status === "ok" ? "ok" : "error",
-            checkedAt: new Date().toISOString(),
-            checkedAtMs: Date.now(),
-            details: whapiStatus.details ?? null,
-          },
-        },
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch (e) {
-    console.warn("Failed to persist lastCheckByKey for monitoringTask:", e);
-  }
-
-  if (whapiStatus.status !== "ok") {
-    await sendAlert(
-      "Whapi Down",
-      "El servicio de Whapi no responde o el token es inválido.",
-      whapiStatus.details
-    );
-  }
+export const healthz = onRequest({ cors: true, region: REGION }, async (_req, res) => {
+  res.status(200).json({ status: "ok" });
 });
 
 // Seed function to initialize collections (commented out - use scripts/addListingsAdmin.mjs instead)
@@ -7095,7 +7923,7 @@ export const testWelcomeEmail = onRequest(
   {
     cors: true,
     region: REGION,
-    secrets: ["SENDGRID_API_KEY"]
+    secrets: [SENDGRID_API_KEY, EMAIL_UNSUBSCRIBE_SECRET]
   },
   async (req, res) => {
     try {
@@ -7118,9 +7946,20 @@ export const testWelcomeEmail = onRequest(
   }
 );
 
+/** JSON API: GET ?action=status|unsubscribe|resubscribe&token= */
+export const emailPreferencesApi = onRequest(
+  { cors: true, region: REGION, secrets: [EMAIL_UNSUBSCRIBE_SECRET] },
+  emailPreferencesApiHandler
+);
+
+/** HTML: one-click / confirm unsubscribe */
+export const emailUnsubscribe = onRequest(
+  { cors: true, region: REGION, secrets: [EMAIL_UNSUBSCRIBE_SECRET] },
+  emailUnsubscribeHandler
+);
+
 /**
- * Sync conversations with Whapi every 30 minutes
- * Compares Whapi chat state with Firestore to detect discrepancies
+ * Periodic maintenance sync (every 30 minutes): retry failed messages and flag stale buffers.
  */
 export const syncConversationsTask = onSchedule({
   schedule: "*/30 * * * *", // Every 30 minutes
@@ -7129,7 +7968,7 @@ export const syncConversationsTask = onSchedule({
 }, async () => {
   console.log("Starting scheduled conversation sync...");
   try {
-    const result = await syncConversationsWithWhapi();
+    const result = await syncConversations();
     console.log(`Sync completed: ${result.chatsChecked} chats, ${result.discrepanciesFound} discrepancies, ${result.errors.length} errors`);
   } catch (error) {
     console.error("Sync task failed:", error);
@@ -7151,7 +7990,7 @@ export const twiceDailyStatusReportTask = onSchedule({
   console.log("Starting twice-daily status report...");
   try {
     // 1. Run sync to get latest stats
-    const syncResult = await syncConversationsWithWhapi({ silent: true });
+    const syncResult = await syncConversations({ silent: true });
 
     // 2. Get alerts in last 12 hours
     const twelveHoursAgo = new Date();
@@ -7315,12 +8154,22 @@ export const analyzeLeadsAgent = onSchedule({
 });
 
 /**
- * Manual trigger for sync (for testing)
+ * Manual trigger for sync (for testing). Restricted to super_admin.
  */
-export const triggerSync = onRequest({ cors: true, region: REGION }, async (_req, res) => {
+export const triggerSync = onRequest({ cors: false, region: REGION }, async (req, res) => {
+  try {
+    const { role } = await resolveUserContextFromToken(req.headers.authorization);
+    if (role !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+  } catch {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
   try {
     console.log("Manual sync triggered...");
-    const result = await syncConversationsWithWhapi();
+    const result = await syncConversations();
     res.status(200).json({ success: true, result });
   } catch (error) {
     console.error("Manual sync failed:", error);
@@ -7329,10 +8178,20 @@ export const triggerSync = onRequest({ cors: true, region: REGION }, async (_req
 });
 
 /**
- * Manual trigger for lead analysis (for testing).
+ * Manual trigger for lead analysis (for testing). Restricted to super_admin.
  * Forces re-analysis of ALL leads regardless of lastAnalyzedAt.
  */
-export const triggerAnalyzeLeads = onRequest({ cors: true, region: REGION, timeoutSeconds: 540, memory: "512MiB" }, async (_req, res) => {
+export const triggerAnalyzeLeads = onRequest({ cors: false, region: REGION, timeoutSeconds: 540, memory: "512MiB" }, async (req, res) => {
+  try {
+    const { role } = await resolveUserContextFromToken(req.headers.authorization);
+    if (role !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+  } catch {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
   console.log("[AnalyzeLeadsAgent] Manual trigger — analyzing ALL leads...");
   try {
     const leads = await getAllLeadsWithChatId();
@@ -7417,11 +8276,13 @@ export const getPackages = onRequest({ cors: true, region: REGION }, async (_req
  * Get user's conversation balance
  * Requires Authorization header with Firebase ID token
  */
-export const getConversations = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const getConversations = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   try {
     // Verify auth token
     const authHeader = req.headers.authorization;
-    const orgId = await resolveOrgIdFromToken(authHeader);
+    const ctx = await resolveUserContextFromToken(authHeader);
+    const requestedOrgId = typeof req.query.orgId === "string" ? req.query.orgId : "";
+    const orgId = ctx.role === "super_admin" && requestedOrgId ? requestedOrgId : ctx.orgId;
 
     await requestContext.run({ orgId }, async () => {
       const balance = await getOrgConversationBalance();
@@ -7577,7 +8438,7 @@ export const createSubscriptionCheckout = onRequest(
  * Returns planId, status, and currentPeriodEnd.
  * Requires Authorization header with Firebase ID token.
  */
-export const getSubscription = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const getSubscription = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   try {
     if (req.method !== "GET") {
       res.status(405).json({ error: "Method not allowed" });
@@ -7585,14 +8446,29 @@ export const getSubscription = onRequest({ cors: true, region: REGION }, async (
     }
 
     const authHeader = req.headers.authorization;
-    const orgId = await resolveOrgIdFromToken(authHeader);
+    const ctx = await resolveUserContextFromToken(authHeader);
+    const requestedOrgId = typeof req.query.orgId === "string" ? req.query.orgId : "";
+    const orgId = ctx.role === "super_admin" && requestedOrgId ? requestedOrgId : ctx.orgId;
 
     await requestContext.run({ orgId }, async () => {
-      const activeOrgId = getActiveOrgId();
-      const sub = await getOrgSubscription(activeOrgId);
+      const sub = await getOrgSubscription(orgId);
 
       if (!sub) {
-        res.status(200).json({ planId: "free", status: "active", currentPeriodEnd: null, contractedConversations: PLAN_BASE_CONVERSATIONS["free"] });
+        // No Stripe subscription. Only treat as Free if the org explicitly activated it.
+        const DATABASE_ID = "realestate-whatsapp-bot";
+        const db = getFirestore(admin.app(), DATABASE_ID);
+        const orgSnap = await db.collection("organizations").doc(orgId).get();
+        const plan = orgSnap.exists ? orgSnap.data()?.plan : undefined;
+        if (plan === "free") {
+          res.status(200).json({
+            planId: "free",
+            status: "active",
+            currentPeriodEnd: null,
+            contractedConversations: PLAN_BASE_CONVERSATIONS["free"],
+          });
+          return;
+        }
+        res.status(404).json({ error: "No active subscription" });
         return;
       }
 
@@ -7627,16 +8503,17 @@ export const createBillingPortalSession = onRequest(
         return;
       }
       const authHeader = req.headers.authorization;
-      const orgId = await resolveOrgIdFromToken(authHeader);
+      const ctx = await resolveUserContextFromToken(authHeader);
+
+      const { returnUrl, orgId: requestedOrgId } = req.body as { returnUrl?: string; orgId?: string };
+      const orgId = ctx.role === "super_admin" && typeof requestedOrgId === "string" && requestedOrgId ? requestedOrgId : ctx.orgId;
 
       await requestContext.run({ orgId }, async () => {
-        const { returnUrl } = req.body as { returnUrl?: string };
         if (!returnUrl) {
           res.status(400).json({ error: "returnUrl is required" });
           return;
         }
-        const activeOrgId = getActiveOrgId();
-        const customerId = await getOrgStripeCustomerId(activeOrgId);
+        const customerId = await getOrgStripeCustomerId(orgId);
         if (!customerId) {
           res.status(400).json({ error: "No Stripe customer found for this organization" });
           return;
@@ -7655,7 +8532,7 @@ export const createBillingPortalSession = onRequest(
 /**
  * Create a Stripe Checkout session for purchasing credits
  */
-export const createStripeCheckout = onRequest({ cors: true, region: REGION, secrets: ["STRIPE_API_KEY", STRIPE_PRICE_TOPUP_40_CONVS] }, async (req, res) => {
+export const createStripeCheckout = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, secrets: ["STRIPE_API_KEY", STRIPE_PRICE_TOPUP_40_CONVS] }, async (req, res) => {
   try {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
@@ -7717,7 +8594,7 @@ export const createStripeCheckout = onRequest({ cors: true, region: REGION, secr
 /**
  * Persist auto-recharge preferences for the org.
  */
-export const saveAutoRechargeSettings = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const saveAutoRechargeSettings = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   try {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
@@ -7754,7 +8631,7 @@ export const saveAutoRechargeSettings = onRequest({ cors: true, region: REGION }
 /**
  * Read auto-recharge preferences (and whether a card is on file).
  */
-export const getAutoRechargeSettings = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const getAutoRechargeSettings = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   try {
     if (req.method !== "GET") {
       res.status(405).json({ error: "Method not allowed" });
@@ -7946,7 +8823,8 @@ export const updateSubscriptionPlan = onRequest(
             await addOrgConversations(
               proratedConvs,
               `Actualización de plan: +${proratedConvs} conversaciones prorrateadas (${sub.planId} → ${newPlanId})`,
-              activeOrgId
+              activeOrgId,
+              { eventType: "subscription_grant" }
             );
           }
         }
@@ -8033,7 +8911,8 @@ export const stripeWebhook = onRequest({
             const newBalance = await addOrgConversations(
               conversations,
               `Compra de ${conversations} conversaciones${userId ? ` (uid ${userId})` : ""} · session ${session.id}`,
-              orgId
+              orgId,
+              { eventType: "manual_purchase", actorUid: userId, stripeReference: session.id }
             );
             console.log(`Added ${conversations} org conversations for ${orgId}. New balance: ${newBalance}`);
           } else {
@@ -8179,7 +9058,7 @@ export const stripeWebhook = onRequest({
 /**
  * Ignore a chat for sync alerts
  */
-export const ignoreChatForSync = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const ignoreChatForSync = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -8293,7 +9172,6 @@ export const getAlertCatalogStatus = onRequest({ cors: true, region: REGION }, a
     });
 
     // Merge in last health-check results (even when no alert was emitted).
-    // Important for "whapi_down": when Whapi recovers, we want to show "healthy" + latest test.
     for (const [key, rawCheck] of Object.entries(lastCheckByKey)) {
       const row = rowsByKey.get(key);
       if (!row) continue;
@@ -8342,7 +9220,7 @@ export const getAlertCatalogStatus = onRequest({ cors: true, region: REGION }, a
 /**
  * Enable/disable a specific alert type (by catalog key).
  */
-export const setAlertEnabled = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const setAlertEnabled = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -8389,7 +9267,7 @@ export const setAlertEnabled = onRequest({ cors: true, region: REGION }, async (
  * Run an on-demand check for a specific alert type.
  * Supports all keys in ALERT_CATALOG.
  */
-export const runAlertCheck = onRequest({ cors: true, region: REGION, secrets: [WHAPI_TOKEN] }, async (req, res) => {
+export const runAlertCheck = onRequest({ cors: true, region: REGION }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -8455,30 +9333,13 @@ export const runAlertCheck = onRequest({ cors: true, region: REGION, secrets: [W
       console.warn("Rate-limit read failed, proceeding:", e);
     }
 
-    if (key === "whapi_down") {
-      const whapiStatus = await checkWhapiHealth();
-      await persistLastCheck({
-        status: whapiStatus.status === "ok" ? "ok" : "error",
-        details: { kind: "whapi_health_check", synthetic: false, result: whapiStatus.details ?? null },
-      });
-
-      if (whapiStatus.status === "ok") {
-        res.status(200).json({ ok: true, key, status: "ok", checkedAt, details: whapiStatus.details });
-        return;
-      }
-      res.status(200).json({ ok: true, key, status: "error", checkedAt, details: whapiStatus.details });
-      return;
-    }
-
     if (
       key === "sync_failed" ||
-      key === "sync_error" ||
-      key === "sync_task_error" ||
-      key === "sync_discrepancies"
+      key === "sync_task_error"
     ) {
       const startedAt = Date.now();
       try {
-        const result = await syncConversationsWithWhapi({ silent: true });
+        const result = await syncConversations({ silent: true });
         const ok = (result.errors?.length || 0) === 0;
         const details = {
           kind: "sync_health_check",
@@ -8591,7 +9452,7 @@ export const runAlertCheck = onRequest({ cors: true, region: REGION, secrets: [W
 /**
  * Get audit logs with optional filtering
  */
-export const getAuditLogs = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const getAuditLogs = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   if (req.method !== "GET") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -8644,7 +9505,7 @@ export const getAuditLogs = onRequest({ cors: true, region: REGION }, async (req
 /**
  * Get all system users from Firebase Auth
  */
-export const getSystemUsers = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const getSystemUsers = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
   if (req.method !== "GET") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -8670,6 +9531,337 @@ export const getSystemUsers = onRequest({ cors: true, region: REGION }, async (r
   } catch (error) {
     console.error("Error fetching system users:", error);
     res.status(500).json({ error: String(error) });
+  }
+});
+
+// ==================== TEAM INVITATIONS ====================
+
+function randomInviteToken(): string {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function normalizeInviteRole(role: unknown): "admin" | "member" | "agent" {
+  if (role === "admin" || role === "agent") return role;
+  return "member";
+}
+
+function parseEditableTeamRole(role: unknown): "admin" | "member" | "agent" | null {
+  if (role === "admin" || role === "agent" || role === "member") return role;
+  return null;
+}
+
+export const sendInvitation = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, secrets: [SENDGRID_API_KEY] }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const { uid, orgId, role: requesterRole } = await resolveUserContextFromToken(req.headers.authorization);
+    if (requesterRole !== "owner" && requesterRole !== "admin" && requesterRole !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
+    const emailRaw = typeof req.body?.email === "string" ? req.body.email : "";
+    const nameRaw = typeof req.body?.name === "string" ? req.body.name : "";
+    const email = emailRaw.trim().toLowerCase();
+    const name = nameRaw.trim();
+    const inviteRole = normalizeInviteRole(req.body?.role);
+
+    if (!email || !email.includes("@")) {
+      res.status(400).json({ error: "Invalid email" });
+      return;
+    }
+    if (!name) {
+      res.status(400).json({ error: "Invalid name" });
+      return;
+    }
+
+    const DATABASE_ID = "realestate-whatsapp-bot";
+    const db = getFirestore(admin.app(), DATABASE_ID);
+
+    const orgSnap = await db.collection("organizations").doc(orgId).get();
+    const orgName = organizationDisplayNameFromOrgDoc({
+      orgId,
+      exists: orgSnap.exists,
+      data: orgSnap.data(),
+      fallback: "Proplead",
+    });
+
+    const inviterSnap = await db.collection("users").doc(uid).get();
+    const inviterName = inviterSnap.exists ? (inviterSnap.data()?.name || inviterSnap.data()?.email || "Equipo Proplead") : "Equipo Proplead";
+
+    const token = randomInviteToken();
+    const now = Date.now();
+    const expiresAtMs = now + 7 * 24 * 60 * 60 * 1000;
+
+    await db.collection("invitations").doc(token).set({
+      orgId,
+      email,
+      name,
+      role: inviteRole,
+      status: "pending",
+      invitedBy: uid,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    });
+
+    await sendInvitationNotification({
+      email,
+      name,
+      orgName,
+      inviterName,
+      token,
+    });
+
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error("sendInvitation error:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+export const updateTeamMember = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const { uid, orgId, role: requesterRole } = await resolveUserContextFromToken(req.headers.authorization);
+    if (requesterRole !== "owner" && requesterRole !== "admin" && requesterRole !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
+    const requestedOrgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+    const targetOrgId = requesterRole === "super_admin" ? requestedOrgId : orgId;
+    const targetUid = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    const qualifiedLeadNotificationNumbers =
+      typeof req.body?.qualifiedLeadNotificationNumbers === "string"
+        ? req.body.qualifiedLeadNotificationNumbers.trim()
+        : "";
+
+    if (!targetOrgId) {
+      res.status(400).json({ error: "Missing organization" });
+      return;
+    }
+    if (requesterRole !== "super_admin" && requestedOrgId && requestedOrgId !== orgId) {
+      res.status(403).json({ error: "Forbidden organization" });
+      return;
+    }
+    if (!targetUid) {
+      res.status(400).json({ error: "Missing user" });
+      return;
+    }
+    if (!name) {
+      res.status(400).json({ error: "Invalid name" });
+      return;
+    }
+
+    const DATABASE_ID = "realestate-whatsapp-bot";
+    const db = getFirestore(admin.app(), DATABASE_ID);
+    const targetRef = db.collection("users").doc(targetUid);
+    const targetSnap = await targetRef.get();
+
+    if (!targetSnap.exists) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const targetData = targetSnap.data() || {};
+    const currentTargetOrgId = typeof targetData.orgId === "string" ? targetData.orgId : "";
+    const currentTargetRole = typeof targetData.role === "string" ? targetData.role : "";
+
+    if (currentTargetOrgId !== targetOrgId) {
+      res.status(403).json({ error: "User does not belong to this organization" });
+      return;
+    }
+
+    const isProtectedTarget = currentTargetRole === "owner" || currentTargetRole === "super_admin";
+    if (isProtectedTarget && requesterRole !== "super_admin") {
+      res.status(403).json({ error: "Protected role cannot be edited" });
+      return;
+    }
+
+    let resolvedNextRole: "admin" | "member" | "agent" | "owner" | "super_admin";
+    if (isProtectedTarget && requesterRole === "super_admin") {
+      const bodyRole = typeof req.body?.role === "string" ? req.body.role.trim() : "";
+      if (bodyRole !== currentTargetRole) {
+        res.status(400).json({ error: "Role cannot be changed for this user" });
+        return;
+      }
+      resolvedNextRole = currentTargetRole as "owner" | "super_admin";
+    } else {
+      const parsed = parseEditableTeamRole(req.body?.role);
+      if (!parsed) {
+        res.status(400).json({ error: "Invalid role" });
+        return;
+      }
+      resolvedNextRole = parsed;
+    }
+
+    if (targetUid === uid && resolvedNextRole !== currentTargetRole) {
+      res.status(403).json({ error: "You cannot change your own role" });
+      return;
+    }
+
+    await targetRef.set(
+      {
+        name,
+        role: resolvedNextRole,
+        qualifiedLeadNotificationNumbers: resolvedNextRole === "member" ? "" : qualifiedLeadNotificationNumbers,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error("updateTeamMember error:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+export const getInvitationPreview = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+    if (!token) {
+      res.status(400).json({ error: "Missing token" });
+      return;
+    }
+
+    const DATABASE_ID = "realestate-whatsapp-bot";
+    const db = getFirestore(admin.app(), DATABASE_ID);
+    const invRef = db.collection("invitations").doc(token);
+    const invSnap = await invRef.get();
+    if (!invSnap.exists) {
+      res.status(404).json({ error: "Invitation not found" });
+      return;
+    }
+
+    const inv = invSnap.data() || {};
+    const invEmail = typeof inv.email === "string" ? inv.email.trim().toLowerCase() : "";
+    const invOrgId = typeof inv.orgId === "string" ? inv.orgId.trim() : "";
+    const invRole = normalizeInviteRole(inv.role);
+    const status = typeof inv.status === "string" ? inv.status : "pending";
+    const expiresAtIso = typeof inv.expiresAt === "string" ? inv.expiresAt : "";
+    const expiresAt = expiresAtIso ? Date.parse(expiresAtIso) : 0;
+
+    if (!invOrgId) {
+      res.status(400).json({ error: "Invalid invitation" });
+      return;
+    }
+    if (status !== "pending") {
+      res.status(400).json({ error: "Invitation already used" });
+      return;
+    }
+    if (expiresAt && Date.now() > expiresAt) {
+      await invRef.set({ status: "expired" }, { merge: true });
+      res.status(400).json({ error: "Invitation expired" });
+      return;
+    }
+
+    const orgSnap = await db.collection("organizations").doc(invOrgId).get();
+    const orgName = organizationDisplayNameFromOrgDoc({
+      orgId: invOrgId,
+      exists: orgSnap.exists,
+      data: orgSnap.data(),
+      fallback: "Proplead",
+    });
+
+    res.status(200).json({
+      ok: true,
+      orgId: invOrgId,
+      orgName,
+      email: invEmail,
+      name: typeof inv.name === "string" ? inv.name : "",
+      role: invRole,
+      status,
+      expiresAt: expiresAtIso,
+    });
+  } catch (error) {
+    console.error("getInvitationPreview error:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+export const acceptInvitation = onRequest({ cors: WEB_CLIENT_CORS, region: REGION }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const { uid, email } = await resolveAuthIdentityFromToken(req.headers.authorization);
+
+    const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+    if (!token) {
+      res.status(400).json({ error: "Missing token" });
+      return;
+    }
+
+    const DATABASE_ID = "realestate-whatsapp-bot";
+    const db = getFirestore(admin.app(), DATABASE_ID);
+    const invRef = db.collection("invitations").doc(token);
+    const invSnap = await invRef.get();
+    if (!invSnap.exists) {
+      res.status(404).json({ error: "Invitation not found" });
+      return;
+    }
+
+    const inv = invSnap.data() || {};
+    const invEmail = typeof inv.email === "string" ? inv.email.trim().toLowerCase() : "";
+    const invOrgId = typeof inv.orgId === "string" ? inv.orgId.trim() : "";
+    const invRole = normalizeInviteRole(inv.role);
+    const status = typeof inv.status === "string" ? inv.status : "pending";
+    const expiresAt = typeof inv.expiresAt === "string" ? Date.parse(inv.expiresAt) : 0;
+
+    if (!invOrgId) {
+      res.status(400).json({ error: "Invalid invitation" });
+      return;
+    }
+    if (status !== "pending") {
+      res.status(400).json({ error: "Invitation already used" });
+      return;
+    }
+    if (expiresAt && Date.now() > expiresAt) {
+      await invRef.set({ status: "expired" }, { merge: true });
+      res.status(400).json({ error: "Invitation expired" });
+      return;
+    }
+    if (invEmail && invEmail !== String(email || "").trim().toLowerCase()) {
+      res.status(403).json({ error: "Invitation email mismatch" });
+      return;
+    }
+
+    const userRef = db.collection("users").doc(uid);
+    await db.runTransaction(async (tx) => {
+      tx.set(
+        userRef,
+        {
+          email: invEmail || email,
+          name: typeof inv.name === "string" ? inv.name : "",
+          orgId: invOrgId,
+          role: invRole,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      tx.set(invRef, { status: "accepted", acceptedBy: uid, acceptedAt: new Date().toISOString() }, { merge: true });
+    });
+
+    res.status(200).json({ ok: true, orgId: invOrgId });
+  } catch (error) {
+    console.error("acceptInvitation error:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -8713,7 +9905,7 @@ export const onLeadWritten = onDocumentWritten({
   document: "organizations/{orgId}/leads/{leadId}",
   database: DATABASE_ID,
   region: REGION,
-  secrets: [WHAPI_TOKEN, TWILIO_AUTH_TOKEN],
+  secrets: [TWILIO_AUTH_TOKEN],
 }, async (event) => {
   return requestContext.run({ orgId: event.params.orgId }, async () => {
     const before = event.data?.before.data();
@@ -8734,15 +9926,53 @@ export const onLeadWritten = onDocumentWritten({
     after?.userName
   );
 
+  if (action !== "delete" && after) {
+    const listingCode = typeof after.listingCode === "string" ? after.listingCode.trim() : "";
+    if (listingCode && listingCode !== "__pending__") {
+      const curAssigned = typeof after.assignedAgentUid === "string" ? after.assignedAgentUid.trim() : "";
+      const listingCodeChanged =
+        !before || String((before as { listingCode?: string })?.listingCode || "").trim() !== listingCode;
+      const shouldReconcileScope =
+        action === "create" ||
+        listingCodeChanged ||
+        changes.some((c) => c.field === "assignedAgentUid" || c.field === "listingCode") ||
+        !curAssigned;
+      if (shouldReconcileScope) {
+        try {
+          const listing = await fetchListingByCode(listingCode);
+          const scope = getListingAgentScopeUid(listing);
+          if (scope && curAssigned !== scope) {
+            const leadRef = event.data?.after?.ref;
+            if (leadRef) {
+              await leadRef.set({ assignedAgentUid: scope }, { merge: true });
+              await syncAssignedAgentUidForListingCode(listingCode, scope);
+            }
+          }
+        } catch (scopeErr) {
+          console.warn(
+            `[onLeadWritten] assignedAgentUid reconcile skipped for ${event.params.leadId}`,
+            scopeErr
+          );
+        }
+      }
+    }
+  }
+
   // Reliable notification path for qualified leads (covers bot + manual qualification).
   const becameQualified = before?.qualificationStatus !== "qualified" && after?.qualificationStatus === "qualified";
   if (!becameQualified) return;
 
   // Apply listing qualification filters (if any) via AI before notifying agents.
+  let listingDescriptionForAgentVar = "";
+  let listingForNotifications: ListingRow | null = null;
   if (after?.listingCode) {
     try {
       const listing = await fetchListingByCode(after.listingCode);
+      listingForNotifications = listing;
       if (listing) {
+        if (listing.description?.trim()) {
+          listingDescriptionForAgentVar = listing.description.trim();
+        }
         const hasFilters =
           (listing.operationType === "Alquiler" && (listing.minMonthlyIncome != null || listing.maxPeople != null)) ||
           (listing.operationType === "Venta" && listing.requireMortgageApproved === true);
@@ -8783,31 +10013,37 @@ export const onLeadWritten = onDocumentWritten({
   }
 
   const config = await getBotConfig();
-  const notificationNumberRaw = config.notificationNumbers || NOTIFICATION_NUMBER.value();
-  const agentNums = notificationNumberRaw
-    ? notificationNumberRaw.split(",").map((n: string) => n.trim()).filter(Boolean)
-    : [];
+  const db = getFirestore(admin.app(), DATABASE_ID);
+  const leadAssignedUid =
+    typeof after?.assignedAgentUid === "string" ? after.assignedAgentUid : undefined;
+  const agentNums = await resolveQualifiedLeadNotificationRecipients({
+    orgId: event.params.orgId,
+    botConfig: config,
+    envNotificationFallback: NOTIFICATION_NUMBER.value(),
+    listing: listingForNotifications,
+    leadAssignedAgentUid: leadAssignedUid,
+    db,
+  });
   if (agentNums.length === 0) {
     console.warn("No notification numbers configured; qualified lead summary not sent", event.params.leadId);
     return;
   }
 
-  const summaryText = typeof after?.conversationSummary === "string" && after.conversationSummary.trim()
-    ? after.conversationSummary
-    : compactMessage([
-      "Lead cualificado ✅",
-      `Teléfono: ${after?.phone || "N/D"}`,
-      `Nombre: ${after?.name || "Sin nombre"}`,
-      after?.listingCode ? `Anuncio: ${after.listingCode}` : "",
-    ]);
   const templateSid = await getAgentNotificationTemplateSid(getActiveOrgId());
+  const notificationPayload = buildQualifiedLeadAgentNotificationPayload({
+    templateSid,
+    is8VarFlag: config.twilioTemplates?.agentNotificationIs8Var,
+    after: after as Record<string, unknown>,
+    listingDescription: listingDescriptionForAgentVar,
+  });
 
   for (const num of agentNums) {
     try {
       await sendAgentNotificationMessage({
         to: num,
-        body: summaryText,
+        body: notificationPayload.body,
         templateSid,
+        twilioTemplateVariables: notificationPayload.twilioTemplateVariables,
         context: `onLeadWritten:${after?.chatId || event.params.leadId}`,
       });
       console.log(`Notification sent for qualified lead to ${num}`, after?.chatId || event.params.leadId);
@@ -8881,6 +10117,29 @@ export const onListingWritten = onDocumentWritten({
       after?.updatedBy,
       after?.userName
     );
+
+    if (action !== "delete" && after) {
+      const listingCode = typeof after.listingCode === "string" ? after.listingCode.trim() : "";
+      if (listingCode && listingCode !== "__pending__") {
+        const beforeScope = agentScopeFromListingSnapshotData(before);
+        const afterScope = agentScopeFromListingSnapshotData(after);
+        const scopeFields = new Set(["assignedAgentUid", "createdByUid", "listingCode"]);
+        const scopeRelatedChange =
+          action === "create" ||
+          changes.some((c) => scopeFields.has(c.field)) ||
+          beforeScope !== afterScope;
+        if (scopeRelatedChange && afterScope) {
+          try {
+            await syncAgentScopeUidForListingCodeFromListingDoc(listingCode, after);
+          } catch (syncErr) {
+            console.error(
+              `[onListingWritten] Failed to sync assignedAgentUid for listingCode=${listingCode}`,
+              syncErr
+            );
+          }
+        }
+      }
+    }
   });
 });
 
@@ -8905,7 +10164,7 @@ export const onConfigWritten = onDocumentWritten({
   });
 });
 
-export const testEmailTemplates = onRequest({ cors: true, region: REGION }, async (req, res) => {
+export const testEmailTemplates = onRequest({ cors: true, region: REGION, secrets: [SENDGRID_API_KEY, EMAIL_UNSUBSCRIBE_SECRET] }, async (req, res) => {
   const type = typeof req.body?.type === "string" ? req.body.type : "";
   const testEmail = typeof req.body?.email === "string" && req.body.email.trim()
     ? req.body.email.trim()

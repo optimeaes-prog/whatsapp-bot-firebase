@@ -102,6 +102,13 @@ export const analytics = {
   }) {
     trackEvent("cta_click", params);
   },
+  trackSolicitaDemoClick(location: "hero" | "solucion_cta" | "nav") {
+    trackEvent("cta_click", {
+      label: "solicita_demo",
+      location,
+      source_page: "marketing_landing_v2",
+    });
+  },
   trackPricingPlanClick(params: {
     plan_id: string;
     plan_name: string;

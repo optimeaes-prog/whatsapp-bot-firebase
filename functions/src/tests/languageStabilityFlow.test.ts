@@ -22,42 +22,25 @@ test("openai client separates qualification prompt and language policy", () => {
   );
 });
 
-test("index keeps language lock state and ignores neutral quick replies", () => {
+test("index exposes reply language inference for qualification buffering", () => {
   const source = readRepoFile("src/index.ts");
   assert.match(
     source,
-    /LANGUAGE_NEUTRAL_TOKENS[\s\S]*?confirm_yes[\s\S]*?confirm_no/,
-    "index should treat confirm buttons as language-neutral"
+    /export function resolveReplyLanguageFromMessages/,
+    "index should export resolveReplyLanguageFromMessages for tests and tooling"
   );
   assert.match(
     source,
-    /if \(isLanguageNeutralReply\(text\)\) continue;/,
-    "language inference should skip neutral quick replies"
-  );
-  assert.match(
-    source,
-    /state\.targetLanguage = inferredLanguage;[\s\S]*?state\.languageLockSource = "user_confirmed"/,
-    "process flow should lock outbound language from user-confirmed evidence"
-  );
-  assert.match(
-    source,
-    /const isCallDeterministicStep =[\s\S]*?state\.flowStep === "call_listing_collect"[\s\S]*?const inferredLanguage = isCallDeterministicStep[\s\S]*?\? fallbackLanguage/,
-    "call listing/name deterministic steps should not relock language from short listing hints"
+    /Prefer visible button label so language inference matches the template locale/,
+    "Twilio ingress should document locale-safe ButtonText handling"
   );
 });
 
-test("outbound guardrail is feature-flagged and preserves qualification parsing", () => {
+test("assistant replies still parse qualification markers from raw model output", () => {
   const source = readRepoFile("src/index.ts");
-  assert.match(source, /const LANGUAGE_GUARDRAIL_ENABLED = defineString\("LANGUAGE_GUARDRAIL_ENABLED"\);/);
-  assert.match(source, /const LANGUAGE_GUARDRAIL_DRY_RUN = defineString\("LANGUAGE_GUARDRAIL_DRY_RUN"\);/);
   assert.match(
     source,
-    /if \(shouldEnableLanguageGuardrail\(\)\)[\s\S]*?enforceOutboundLanguage\(/,
-    "guardrail should run only when enabled"
-  );
-  assert.match(
-    source,
-    /const \{ cleanMessage, qualificationStatus \} = parseAssistantResponse\(guardedReply\);/,
-    "qualification parsing should remain in place after guardrail processing"
+    /rawAssistantReply = await generateAssistantResponse\([\s\S]*?const \{ cleanMessage, qualificationStatus \} = parseAssistantResponse\(rawAssistantReply\)/,
+    "response pipeline should parse qualification status from assistant output"
   );
 });

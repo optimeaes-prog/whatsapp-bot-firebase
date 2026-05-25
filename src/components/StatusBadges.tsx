@@ -50,7 +50,7 @@ export function OperationTypeBadge({
     <span
       className={cn(
         "rounded-full px-2 py-0.5 text-xs font-medium",
-        isVenta ? "bg-primary-100 text-primary-800" : "bg-orange-100 text-orange-800",
+        isVenta ? "bg-primary-100 text-primary-800" : "bg-slate-100 text-slate-700",
         className
       )}
     >

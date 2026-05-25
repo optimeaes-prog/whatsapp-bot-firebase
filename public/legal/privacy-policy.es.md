@@ -70,7 +70,7 @@ Podemos compartir datos con proveedores para operar la Plataforma, por ejemplo:
 - **proveedores de email/soporte** (si aplica)
 - **proveedores de analítica/ads** (si se habilitan; ver Cookies)
 
-Cuando Talmate actúa como Encargado para datos de leads/conversaciones, estos terceros pueden actuar como **subencargados** (p. ej., Twilio/Whapi/OpenAI), según el DPA del cliente.
+Cuando Talmate actúa como Encargado para datos de leads/conversaciones, estos terceros pueden actuar como **subencargados** (p. ej., Twilio/OpenAI), según el DPA del cliente.
 
 ## 8. Transferencias internacionales
 Al operar con proveedores globales, puede haber transferencias fuera del Reino Unido o EEE. Cuando aplique, utilizamos mecanismos reconocidos, tales como:

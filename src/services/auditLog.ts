@@ -1,6 +1,5 @@
 import type { AuditLogEntry, AuditAction, AuditEntityType } from "../types";
-
-const API_URL = import.meta.env.VITE_API_URL || "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
+import { FUNCTIONS_BASE_URL as API_URL } from "../lib/api";
 
 export interface GetAuditLogsParams {
     entityType?: AuditEntityType;

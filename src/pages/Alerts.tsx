@@ -312,7 +312,7 @@ export function Alerts() {
             case "healthy":
                 return "border-emerald-100 bg-emerald-50 text-emerald-700";
             default:
-                return "border-sky-100 bg-sky-50 text-sky-700";
+                return "border-slate-200 bg-slate-50 text-slate-700";
         }
     };
 

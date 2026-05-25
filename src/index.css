@@ -18,6 +18,10 @@
   --color-primary-950: #4A2C08;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 :root {
   --font-special: "Bricolage Grotesque", sans-serif;
   --font-heading: "Plus Jakarta Sans", sans-serif;

@@ -3,13 +3,16 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Edit, Trash2, Power, PowerOff, CheckCircle, XCircle, Users, MapPin, ExternalLink, ChevronDown, ChevronRight, MessageSquare, CheckSquare, Square, Filter, Search } from "lucide-react";
 import type { Listing, ListingFormData, OperationType, ListingClosureReason, Lead } from "../types";
-import { getListings, createListing, updateListing, deleteListing, deactivateListing, reactivateListing } from "../services/listings";
-import { getConversations } from "../services/conversations";
+import { getListings, getListingsForAgent, createListing, updateListing, deleteListing, deactivateListing, reactivateListing } from "../services/listings";
+import { getConversations, getConversationsForAgent } from "../services/conversations";
 import {
   getQualifiedLeadsByListingCode,
+  getQualifiedLeadsByListingCodeForAgent,
   getLeads,
+  getLeadsForAgent,
   filterQualifiedLeads,
 } from "../services/leads";
+import { getOrgMembers, type SystemUser } from "../services/users";
 import { cn } from "../lib/utils";
 import { composeListingAddress, normalizeForSearch } from "../lib/addressNormalize";
 import { metricTheme, qualificationStatusClasses } from "../lib/metricTheme";
@@ -106,6 +109,8 @@ const emptyFormData: ListingFormState = {
   profitabilityReportAvailable: false,
   profitabilityReport: "",
   agentName: "",
+  assignedAgentUid: "",
+  assignedAgentName: "",
   minMonthlyIncome: undefined,
   maxPeople: undefined,
   requireMortgageApproved: false,
@@ -123,7 +128,7 @@ const closureReasonLabels: Record<ListingClosureReason, string> = {
 type ListingSortOption = "default" | "updated_desc" | "conversations_desc" | "qualified_desc" | "title_asc";
 
 export function Listings() {
-  const { organizationId } = useAuth();
+  const { organizationId, effectiveRole, effectiveUid, impersonation, user, isImpersonationReadOnly } = useAuth();
   const navigate = useNavigate();
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
@@ -171,6 +176,9 @@ export function Listings() {
   const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
   const [expandedAddresses, setExpandedAddresses] = useState<Record<string, boolean>>({});
 
+  const [teamMembers, setTeamMembers] = useState<SystemUser[]>([]);
+  const [loadingTeamMembers, setLoadingTeamMembers] = useState(false);
+
   const [isOperationTypeDropdownOpen, setIsOperationTypeDropdownOpen] = useState(false);
   const [isClosureReasonDropdownOpen, setIsClosureReasonDropdownOpen] = useState(false);
   const [isLeadDropdownOpen, setIsLeadDropdownOpen] = useState(false);
@@ -216,10 +224,20 @@ export function Listings() {
 
     if (!formData.operationType) errors.operationType = "Selecciona el tipo de operación.";
 
-    if (!formData.agentName?.trim()) errors.agentName = "El nombre del agente es obligatorio.";
+    // Agent must be selected from team members.
+    if (effectiveRole === "agent") {
+      const uid = effectiveUid || "";
+      if ((formData.assignedAgentUid || "").trim() !== uid) {
+        errors.assignedAgentUid = "Como agente, solo puedes asignarte a ti mismo.";
+      }
+    } else if (effectiveRole === "owner" || effectiveRole === "admin" || effectiveRole === "super_admin") {
+      if (!(formData.assignedAgentUid || "").trim()) {
+        errors.assignedAgentUid = "Asigna un agente del equipo.";
+      }
+    }
     if (!address) errors.address = "La dirección exacta es obligatoria.";
 
-    if (features.length > 150) errors.features = "Máximo 150 caracteres.";
+    if (features.length > 450) errors.features = "Máximo 450 caracteres.";
 
     if (!price) errors.price = "El precio es obligatorio y debe ser numérico.";
     else if (Number.isNaN(Number(price))) errors.price = "Introduce un número válido.";
@@ -245,7 +263,7 @@ export function Listings() {
     }
 
     return errors;
-  }, [formData]);
+  }, [formData, effectiveRole, effectiveUid]);
 
   const normalizeBulletsOnePerLine = (value: string): string => {
     return value
@@ -332,8 +350,27 @@ export function Listings() {
   };
 
   useEffect(() => {
+    if (!organizationId || !effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
     loadListings();
-  }, [organizationId]);
+  }, [organizationId, effectiveRole, effectiveUid]);
+
+  useEffect(() => {
+    async function loadTeamMembers() {
+      if (!organizationId) return;
+      try {
+        setLoadingTeamMembers(true);
+        const members = await getOrgMembers(organizationId);
+        setTeamMembers(members);
+      } catch (err) {
+        console.error("Error loading team members:", err);
+        setTeamMembers([]);
+      } finally {
+        setLoadingTeamMembers(false);
+      }
+    }
+    loadTeamMembers();
+  }, [organizationId, effectiveRole]);
 
   useEffect(() => {
     const el = featuresRef.current;
@@ -361,16 +398,18 @@ export function Listings() {
 
   async function loadListings() {
     if (!organizationId) return;
+    if (!effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await getListings();
+      const data = effectiveRole === "agent" ? await getListingsForAgent(effectiveUid) : await getListings();
       setListings(data);
 
       try {
         const [conversations, allLeads] = await Promise.all([
-          getConversations(),
-          getLeads(),
+          effectiveRole === "agent" ? getConversationsForAgent(effectiveUid) : getConversations(),
+          effectiveRole === "agent" ? getLeadsForAgent(effectiveUid) : getLeads(),
         ]);
         const qualifieds = filterQualifiedLeads(allLeads);
         
@@ -413,7 +452,26 @@ export function Listings() {
   }
 
   function openCreateModal() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setFormData(emptyFormData);
+    if (effectiveRole === "agent" && effectiveUid) {
+      const selfUid = effectiveUid;
+      const me = teamMembers.find((m) => m.uid === selfUid) || null;
+      const fallbackName =
+        (impersonation?.displayName && impersonation.displayName.trim()) ||
+        user?.displayName ||
+        user?.email ||
+        "";
+      setFormData((prev) => ({
+        ...prev,
+        assignedAgentUid: selfUid,
+        assignedAgentName: me?.name || me?.displayName || fallbackName,
+        agentName: me?.name || me?.displayName || fallbackName,
+      }));
+    }
     setSubmitAttempted(false);
     setPriceNeedsOperationType(false);
     setEditingId(null);
@@ -425,6 +483,10 @@ export function Listings() {
   }
 
   function openEditModal(listing: Listing) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setFormData({
       description: listing.description,
       listingCode: listing.listingCode,
@@ -448,6 +510,8 @@ export function Listings() {
       profitabilityReportAvailable: listing.profitabilityReportAvailable,
       profitabilityReport: listing.profitabilityReport,
       agentName: listing.agentName || "",
+      assignedAgentUid: listing.assignedAgentUid || "",
+      assignedAgentName: listing.assignedAgentName || "",
       minMonthlyIncome: listing.minMonthlyIncome,
       maxPeople: listing.maxPeople,
       requireMortgageApproved: listing.requireMortgageApproved === true,
@@ -464,6 +528,10 @@ export function Listings() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setSubmitAttempted(true);
     const errorEntries = Object.entries(formErrors);
     if (errorEntries.length > 0) {
@@ -489,6 +557,32 @@ export function Listings() {
       const addressLine = composed.trim() || formData.address?.trim() || "";
       const provinceNorm = formData.province ? normalizeForSearch(formData.province) : "";
 
+      const currentUid = effectiveUid || "";
+      const isAgentRole = effectiveRole === "agent";
+      const assignedAgentUidFinal =
+        effectiveRole === "owner" || effectiveRole === "admin" || effectiveRole === "super_admin"
+          ? (formData.assignedAgentUid || "")
+          : isAgentRole
+            ? currentUid
+            : (formData.assignedAgentUid || "");
+
+      const actingName =
+        (impersonation?.displayName && impersonation.displayName.trim()) ||
+        user?.displayName ||
+        "";
+      const actingEmail = (impersonation?.email && impersonation.email.trim()) || user?.email || "";
+
+      const assignedAgentNameFinal =
+        effectiveRole === "owner" || effectiveRole === "admin" || effectiveRole === "super_admin"
+          ? (formData.assignedAgentName || "")
+          : isAgentRole
+            ? (actingName || actingEmail || formData.agentName || "")
+            : (formData.assignedAgentName || "");
+
+      if (!assignedAgentUidFinal) {
+        throw new Error("agent_required");
+      }
+
       const dataToSave = {
         ...formData,
         operationType: formData.operationType as OperationType,
@@ -496,7 +590,10 @@ export function Listings() {
         listingCode: formData.listingCode.trim(),
         listingCodeFotocasa: (formData.listingCodeFotocasa || "").trim(),
         referencia: formData.referencia.trim(),
-        agentName: formData.agentName?.trim() || "",
+        agentName: (assignedAgentNameFinal || formData.agentName || "").trim(),
+        assignedAgentUid: assignedAgentUidFinal,
+        assignedAgentName: assignedAgentNameFinal,
+        ...(editingId ? {} : { createdByUid: currentUid }),
         features: (formData.features || "").trim(),
         address: addressLine,
         provinceNormalized: provinceNorm,
@@ -514,13 +611,21 @@ export function Listings() {
     } catch (error) {
       console.error("Error saving listing:", error);
       const errorMessage = error instanceof Error ? error.message : "Error desconocido";
-      toast.error("Error al guardar: " + errorMessage);
+      if (errorMessage === "agent_required") {
+        toast.error("Selecciona un agente del equipo antes de guardar.");
+      } else {
+        toast.error("Error al guardar: " + errorMessage);
+      }
     } finally {
       setSaving(false);
     }
   }
 
   async function handleDelete(id: string) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     try {
       await deleteListing(id);
       setDeleteConfirm(null);
@@ -532,6 +637,10 @@ export function Listings() {
   }
 
   async function openDeactivateModal(listing: Listing) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setDeactivatingListing(listing);
     setClosureReason("");
     setSelectedQualifiedLead(null);
@@ -539,7 +648,9 @@ export function Listings() {
     setDeactivateModalOpen(true);
     setLoadingQualifiedLeads(true);
     try {
-      const leads = await getQualifiedLeadsByListingCode(listing.listingCode);
+      const leads = effectiveRole === "agent"
+        ? await getQualifiedLeadsByListingCodeForAgent(listing.listingCode, effectiveUid)
+        : await getQualifiedLeadsByListingCode(listing.listingCode);
       setQualifiedLeadsForListing(leads);
     } catch (error) {
       console.error("Error loading qualified leads:", error);
@@ -550,6 +661,10 @@ export function Listings() {
   }
 
   async function handleDeactivate() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!deactivatingListing || !closureReason) return;
     const requiresLead = closureReason === "sold_to_qualified" || closureReason === "rented_to_qualified";
     if (requiresLead && !selectedQualifiedLead) {
@@ -578,6 +693,10 @@ export function Listings() {
   }
 
   async function handleReactivate(id: string) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     try {
       await reactivateListing(id);
       loadListings();
@@ -660,6 +779,12 @@ export function Listings() {
   const filteredListings = useMemo(() => {
     const q = debouncedListingSearch.trim().toLowerCase();
     let rows = listings.filter((listing) => {
+      if (effectiveRole === "agent") {
+        const uid = effectiveUid || "";
+        const isMine = (listing.createdByUid || "") === uid;
+        const isAssigned = (listing.assignedAgentUid || "") === uid;
+        if (!isMine && !isAssigned) return false;
+      }
       const isActive = listing.isActive !== false;
       if (filterStatus === "active" && !isActive) return false;
       if (filterStatus === "inactive" && isActive) return false;
@@ -676,6 +801,7 @@ export function Listings() {
         listing.province,
         listing.postalCode,
         listing.agentName,
+        listing.assignedAgentName,
         listing.features,
         listing.idealistaDescription,
         listing.price,
@@ -720,6 +846,8 @@ export function Listings() {
     filterStatus,
     filterOperationType,
     debouncedListingSearch,
+    effectiveRole,
+    effectiveUid,
     sortBy,
     conversationCounts,
     qualifiedCounts,
@@ -1282,7 +1410,7 @@ export function Listings() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">ID Idealista <span className="text-red-500">*</span></label>
                   <input
@@ -1325,17 +1453,43 @@ export function Listings() {
                   <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.referencia || "") : ""}</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del Agente <span className="text-red-500">*</span></label>
-                  <input
-                    name="agentName"
-                    type="text"
-                    required
-                    value={formData.agentName}
-                    onChange={(e) => setFormData({ ...formData, agentName: e.target.value })}
-                    className={cn("input", submitAttempted && formErrors.agentName && "border-red-400 focus:ring-red-400")}
-                    placeholder="Ej: Paco"
-                  />
-                  <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.agentName || "") : ""}</p>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Agente asignado <span className="text-red-500">*</span></label>
+                  <select
+                    name="assignedAgentUid"
+                    value={formData.assignedAgentUid || ""}
+                    onChange={(e) => {
+                      const uid = e.target.value;
+                      const agent = teamMembers.find((m) => m.uid === uid) || null;
+                      setFormData((prev) => ({
+                        ...prev,
+                        assignedAgentUid: uid,
+                        assignedAgentName: agent?.name || agent?.displayName || agent?.email || "",
+                        // Compatibilidad legacy usada por templates/UI existentes
+                        agentName: agent?.name || agent?.displayName || prev.agentName || "",
+                      }));
+                    }}
+                    className={cn(
+                      "w-full px-4 py-3 rounded-btn border bg-white text-sm",
+                      submitAttempted && formErrors.assignedAgentUid ? "border-red-400 focus:ring-red-400" : "border-gray-300"
+                    )}
+                    disabled={loadingTeamMembers || effectiveRole === "member"}
+                    required={
+                      effectiveRole === "owner" ||
+                      effectiveRole === "admin" ||
+                      effectiveRole === "agent" ||
+                      effectiveRole === "super_admin"
+                    }
+                  >
+                    <option value="">Selecciona un agente...</option>
+                    {teamMembers.map((m) => (
+                        <option key={m.uid} value={m.uid}>
+                          {(m.name || m.displayName || m.email) + (m.email ? ` (${m.email})` : "")}
+                        </option>
+                      ))}
+                  </select>
+                  <p className="mt-1 text-xs text-red-600">
+                    {submitAttempted ? (formErrors.assignedAgentUid || "") : ""}
+                  </p>
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-4">
@@ -1589,7 +1743,7 @@ export function Listings() {
                   <textarea
                     name="features"
                     ref={featuresRef}
-                    maxLength={150}
+                    maxLength={450}
                     value={formData.features}
                     disabled={formData.quickQualificationEnabled === true}
                     onChange={(e) => setFormData({ ...formData, features: e.target.value })}
@@ -1611,7 +1765,7 @@ export function Listings() {
                       ? "Desactivado porque la cualificación rápida está activa."
                       : (formErrors.features || "Una por línea.")}
                   </span>
-                  <span className="text-gray-400">{(formData.features || "").length}/150</span>
+                  <span className="text-gray-400">{(formData.features || "").length}/450</span>
                 </div>
               </div>
 
@@ -1809,7 +1963,7 @@ export function Listings() {
                   {loadingQualifiedLeads ? (
                     <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600 mx-auto"></div>
                   ) : qualifiedLeadsForListing.length === 0 ? (
-                    <div className="p-4 bg-yellow-50 text-yellow-700 text-sm rounded-lg">No hay leads cualificados para este anuncio.</div>
+                    <div className="p-4 bg-slate-50 text-slate-600 text-sm rounded-lg">No hay leads cualificados para este anuncio.</div>
                   ) : (
                     <div className="relative">
                       <button

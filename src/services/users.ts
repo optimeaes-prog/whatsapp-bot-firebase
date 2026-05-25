@@ -13,6 +13,8 @@ export type SystemUser = {
   createdAt?: string;
   creationTime?: string;
   lastSignInTime?: string;
+  /** Comma-separated WhatsApp numbers for qualified-lead summaries when assigned to a listing (non-members). */
+  qualifiedLeadNotificationNumbers?: string;
 };
 
 export type Invitation = {
@@ -24,6 +26,15 @@ export type Invitation = {
   expiresAt: string;
   invitedBy: string;
   createdAt: string;
+};
+
+export type UpdateTeamMemberParams = {
+  orgId: string;
+  userId: string;
+  name: string;
+  /** owner/super_admin only when caller is super_admin (role unchanged). */
+  role: "member" | "agent" | "admin" | "owner" | "super_admin";
+  qualifiedLeadNotificationNumbers?: string;
 };
 
 export async function getSystemUsers(): Promise<SystemUser[]> {
@@ -73,6 +84,26 @@ export async function sendInvitation(params: { email: string; name: string; role
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error || "Failed to send invitation");
+  }
+}
+
+export async function updateTeamMember(params: UpdateTeamMemberParams): Promise<void> {
+  const user = auth.currentUser;
+  if (!user) throw new Error("User not authenticated");
+
+  const token = await user.getIdToken();
+  const response = await fetch(`${FUNCTIONS_BASE_URL}/updateTeamMember`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || "Failed to update team member");
   }
 }
 

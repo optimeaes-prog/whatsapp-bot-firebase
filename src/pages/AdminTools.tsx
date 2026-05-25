@@ -355,7 +355,7 @@ export function AdminTools() {
 
       <div className="space-y-8">
         {/* Tool: Lead Recovery */}
-        <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <section className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-primary-100 rounded-lg text-primary-600">
@@ -408,7 +408,7 @@ export function AdminTools() {
             </div>
 
             {stuckLeads.length > 0 && (
-              <div className="mt-8 border border-primary-100 rounded-2xl overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
+              <div className="mt-8 border border-primary-100 rounded-xl overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
                 <div className="p-4 bg-primary-50 border-b border-primary-100 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <AlertCircle className="text-primary-600" size={18} />
@@ -508,18 +508,18 @@ export function AdminTools() {
         
         {/* Placeholder for future tools */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 opacity-60 grayscale pointer-events-none">
-          <div className="bg-white p-6 rounded-2xl border border-dashed border-gray-300">
+          <div className="bg-white p-6 rounded-xl border border-dashed border-gray-300">
             <h3 className="font-bold text-gray-400 mb-2 font-heading">Limpieza de Auditoría</h3>
             <p className="text-sm text-gray-400">Próximamente: Eliminar logs antiguos para optimizar almacenamiento.</p>
           </div>
-          <div className="bg-white p-6 rounded-2xl border border-dashed border-gray-300">
+          <div className="bg-white p-6 rounded-xl border border-dashed border-gray-300">
             <h3 className="font-bold text-gray-400 mb-2 font-heading">Reset de Contraseñas</h3>
             <p className="text-sm text-gray-400">Próximamente: Gestión centralizada de credenciales de usuario.</p>
           </div>
         </div>
 
         {isSuperAdmin && (
-          <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <section className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex items-center gap-3">
               <div className="p-2 bg-emerald-100 rounded-lg text-emerald-700">
                 <CheckCircle size={20} />
@@ -560,9 +560,9 @@ export function AdminTools() {
         )}
 
         {isSuperAdmin && (
-          <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <section className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex items-center gap-3">
-              <div className="p-2 bg-violet-100 rounded-lg text-violet-700">
+              <div className="p-2 bg-primary-50 rounded-lg text-primary-600">
                 <Globe size={20} />
               </div>
               <div>
@@ -582,7 +582,6 @@ export function AdminTools() {
                 >
                   <option value="twilio">twilio</option>
                   <option value="cloud_api">cloud_api</option>
-                  <option value="whapi">whapi</option>
                 </select>
                 <p className="mt-1 text-xs text-gray-500">
                   Valor actual: <span className="font-semibold">{globalPolicy?.defaultProvider || "twilio"}</span>
@@ -634,9 +633,9 @@ export function AdminTools() {
         )}
 
         {isSuperAdmin && (
-          <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <section className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg text-blue-700">
+              <div className="p-2 bg-primary-50 rounded-lg text-primary-600">
                 <Radio size={20} />
               </div>
               <div>
@@ -656,7 +655,6 @@ export function AdminTools() {
                 >
                   <option value="cloud_api">cloud_api (predeterminado)</option>
                   <option value="twilio">twilio</option>
-                  <option value="whapi">whapi</option>
                 </select>
                 <p className="mt-2 text-xs text-gray-500">
                   Org actual:{" "}
@@ -679,7 +677,7 @@ export function AdminTools() {
         )}
 
         {isSuperAdmin && (
-          <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <section className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex items-center gap-3">
               <div className="p-2 bg-amber-100 rounded-lg text-amber-700">
                 <KeyRound size={20} />

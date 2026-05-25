@@ -6,6 +6,7 @@ import { getActiveOrgId } from "./requestContext";
 
 const DATABASE_ID = "realestate-whatsapp-bot";
 const ALERT_EMAIL_RECIPIENT = "optimea.es@gmail.com";
+const PROPLEAD_LOGO_URL = "https://proplead.io/proplead-high-resolution-logo.png";
 
 const SEVERITY_CONFIG: Record<AlertSeverity, { emoji: string; color: string; borderColor: string; bgColor: string }> = {
     info: { emoji: "ℹ️", color: "#1976d2", borderColor: "#bbdefb", bgColor: "#e3f2fd" },
@@ -46,6 +47,9 @@ export async function sendAlert(
             subject: `${config.emoji} BOT ALERT [${severity.toUpperCase()}]: ${subject}`,
             html: `
       <div style="font-family: sans-serif; padding: 20px; border: 1px solid ${config.borderColor}; border-radius: 8px; background-color: ${config.bgColor};">
+        <div style="text-align:center; margin-bottom: 12px;">
+          <img src="${PROPLEAD_LOGO_URL}" alt="Proplead" style="height: 28px; width: auto; display: inline-block;" />
+        </div>
         <h2 style="color: ${config.color};">${config.emoji} Alerta del Bot de WhatsApp</h2>
         <p><strong>Severidad:</strong> <span style="color: ${config.color}; font-weight: bold;">${severity.toUpperCase()}</span></p>
         <p><strong>Asunto:</strong> ${subject}</p>
@@ -100,6 +104,9 @@ export async function sendHealthReport(
                 subject: `${config.emoji} STATUS REPORT: ${subject}`,
                 html: `
               <div style="font-family: sans-serif; padding: 20px; border: 1px solid ${config.borderColor}; border-radius: 8px; background-color: ${config.bgColor};">
+                <div style="text-align:center; margin-bottom: 12px;">
+                  <img src="${PROPLEAD_LOGO_URL}" alt="Proplead" style="height: 28px; width: auto; display: inline-block;" />
+                </div>
                 <h2 style="color: ${config.color};">${config.emoji} Reporte de Estado del Bot</h2>
                 <p><strong>Estado:</strong> <span style="color: ${config.color}; font-weight: bold;">${summary.status}</span></p>
                 <p><strong>Resumen:</strong></p>

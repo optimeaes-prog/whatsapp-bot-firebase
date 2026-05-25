@@ -42,14 +42,14 @@ export async function updateOrganizationSettings(settings: Partial<OrganizationS
 }
 
 export async function getPendingOnboards(): Promise<(OrganizationSettings & { id: string })[]> {
-  const q = query(collection(db, "organizations"), where("onboardingStep", "==", 5));
+  const q = query(collection(db, "organizations"), where("onboardingStep", "==", 6));
   const querySnapshot = await getDocs(q);
   return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as OrganizationSettings }));
 }
 
 export async function confirmOnboarding(orgId: string): Promise<void> {
   const docRef = doc(db, "organizations", orgId);
-  await updateDoc(docRef, { onboardingStep: 6 });
+  await updateDoc(docRef, { onboardingStep: 7 });
 }
 
 export async function getAllOrganizations(): Promise<{ id: string; agencyName?: string }[]> {

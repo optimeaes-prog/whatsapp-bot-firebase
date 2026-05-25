@@ -9,12 +9,13 @@ import { Button } from "./ui";
 
 interface LeadEditModalProps {
     lead: Lead;
+    readOnly?: boolean;
     onClose: () => void;
     onUpdate: () => void;
     onViewConversation: (lead: Lead) => void;
 }
 
-export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: LeadEditModalProps) {
+export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onViewConversation }: LeadEditModalProps) {
     const [name, setName] = useState(lead.name || "");
     const [listingCode, setListingCode] = useState(lead.listingCode || "");
     const [operationType, setOperationType] = useState<OperationType>(lead.operationType || "Venta");
@@ -64,6 +65,10 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
     };
 
     const handleSave = async () => {
+        if (readOnly) {
+            toast.message("Solo lectura en modo vista como usuario");
+            return;
+        }
         setSaving(true);
         try {
             const data = {
@@ -129,7 +134,12 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                <div
+                    className={cn(
+                        "flex-1 overflow-y-auto p-6 space-y-6",
+                        readOnly && "pointer-events-none opacity-[0.65]"
+                    )}
+                >
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {/* Name */}
                         <div className="space-y-2">
@@ -392,10 +402,10 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                             {tags.map((tag) => (
                                  <span
                                      key={tag}
-                                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-bold border border-amber-100"
+                                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-50 text-primary-600 text-xs font-bold border border-primary-100"
                                  >
                                      {tag}
-                                     <button onClick={() => handleRemoveTag(tag)} className="hover:text-amber-900">
+                                     <button onClick={() => handleRemoveTag(tag)} className="hover:text-primary-700">
                                          <X size={14} />
                                      </button>
                                  </span>
@@ -450,7 +460,7 @@ export function LeadEditModal({ lead, onClose, onUpdate, onViewConversation }: L
                         <Button onClick={onClose} variant="secondary">
                             Cancelar
                         </Button>
-                        <Button onClick={handleSave} loading={saving} className="px-8">
+                        <Button onClick={handleSave} loading={saving} disabled={readOnly} className="px-8">
                             <Save size={18} />
                             Guardar Cambios
                         </Button>

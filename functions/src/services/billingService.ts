@@ -1,7 +1,6 @@
 import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { getActiveOrgId } from "./requestContext";
-import { UserConversations, ConversationTransaction } from "../types";
 import { normalizeToCanonicalChatId } from "../utils";
 import { createConfirmedOffSessionTopUp, packageIdForConversationAmount } from "./stripeService";
 import { sendLowBalanceNotification } from "./emailService";
@@ -17,151 +16,60 @@ function getDb(): FirebaseFirestore.Firestore {
     return firestoreInstance;
 }
 
-function getOrgDb() {
-  return getDb().collection("organizations").doc(getActiveOrgId());
-}
-
-/**
- * Get user conversations balance
- */
-export async function getUserConversationBalance(userId: string): Promise<number> {
-    const db = getOrgDb();
-    const doc = await db.collection("credits").doc(userId).get();
-
-    if (!doc.exists) {
-        return 0;
-    }
-
-    const data = doc.data() as UserConversations;
-    return data.balance || 0;
-}
-
-/**
- * Add conversations to a user's balance
- */
-export async function addConversations(
-    userId: string,
-    amount: number,
-    stripeSessionId?: string,
-    description: string = "Conversation pack purchase"
-): Promise<number> {
-    const db = getOrgDb();
-    const creditsRef = db.collection("credits").doc(userId);
-
-    // Use a transaction to ensure atomicity
-    const newBalance = await getDb().runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
-        const doc = await transaction.get(creditsRef);
-        const currentBalance = doc.exists ? (doc.data() as UserConversations).balance || 0 : 0;
-        const updatedBalance = currentBalance + amount;
-
-        transaction.set(creditsRef, {
-            userId,
-            balance: updatedBalance,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        } as Partial<UserConversations>, { merge: true });
-
-        return updatedBalance;
-    });
-
-    // Record the transaction
-    const transactionData: Omit<ConversationTransaction, "id"> = {
-        userId,
-        type: "purchase",
-        amount,
-        stripeSessionId,
-        description,
-        createdAt: admin.firestore.Timestamp.now(),
-    };
-
-    await db.collection("creditTransactions").add(transactionData);
-
-    console.log(`Added ${amount} conversations to user ${userId}. New balance: ${newBalance}`);
-    return newBalance;
-}
-
-/**
- * Deduct conversations from a user's balance
- * Returns the new balance, or throws if insufficient conversations
- */
-export async function deductConversations(
-    userId: string,
-    amount: number,
-    description: string = "Conversation usage"
-): Promise<number> {
-    const db = getOrgDb();
-    const creditsRef = db.collection("credits").doc(userId);
-
-    const newBalance = await getDb().runTransaction(async (transaction: FirebaseFirestore.Transaction) => {
-        const doc = await transaction.get(creditsRef);
-        const currentBalance = doc.exists ? (doc.data() as UserConversations).balance || 0 : 0;
-
-        if (currentBalance < amount) {
-            throw new Error(`Insufficient credits. Required: ${amount}, Available: ${currentBalance}`);
-        }
-
-        const updatedBalance = currentBalance - amount;
-
-        transaction.set(creditsRef, {
-            userId,
-            balance: updatedBalance,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        } as Partial<UserConversations>, { merge: true });
-
-        return updatedBalance;
-    });
-
-    // Record the transaction
-    const transactionData: Omit<ConversationTransaction, "id"> = {
-        userId,
-        type: "deduction",
-        amount: -amount,  // Negative for deductions
-        description,
-        createdAt: admin.firestore.Timestamp.now(),
-    };
-
-    await db.collection("creditTransactions").add(transactionData);
-
-    console.log(`Deducted ${amount} conversations from user ${userId}. New balance: ${newBalance}`);
-    return newBalance;
-}
-
-/**
- * Get transaction history for a user
- */
-export async function getTransactionHistory(
-    userId: string,
-    limit: number = 50
-): Promise<ConversationTransaction[]> {
-    const db = getOrgDb();
-    const snapshot = await db
-        .collection("creditTransactions")
-        .where("userId", "==", userId)
-        .orderBy("createdAt", "desc")
-        .limit(limit)
-        .get();
-
-    return snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-    })) as ConversationTransaction[];
-}
-
 // ==================== ORGANIZATION-LEVEL CREDITS ====================
 
-/** Credits charged once per conversation when the first outbound (Idealista confirm / new-lead template) is sent. */
+/** Credits charged once per conversation per chargeable event (intake send, initial outbound, etc.). */
 export const CREDITS_PER_INITIAL_OUTBOUND = 1;
 
 /**
- * Idempotent: charges {@link CREDITS_PER_INITIAL_OUTBOUND} once per chatId on the org ledger,
- * keyed by `initialOutboundCreditsDeducted` on the conversation document.
+ * Idempotency field names allowed on the conversation document. Each field represents
+ * a distinct chargeable event for the same chatId, so a single conversation can be
+ * billed multiple times (e.g. cross-org handoff: 1 credit for the Proplead intake send
+ * + 1 credit for the destination org's own initial outbound = 2 total to destination).
  */
-export async function deductOrgConversationForInitialOutboundOnce(
+export type CreditIdempotencyField =
+    | "initialOutboundCreditsDeducted"   // destination org's own first template
+    | "intakeOutboundCreditsDeducted";   // Proplead global-intake send, billed to destination at handoff
+
+/**
+ * Stable category for ledger entries — surfaced in the Usage page UI. Independent
+ * from the free-form `description`, which is intended for humans.
+ */
+export type CreditEventType =
+    | "initial_outbound"
+    | "intake_outbound"
+    | "manual_purchase"
+    | "auto_recharge"
+    | "subscription_grant"
+    | "free_plan_activation"
+    | "other";
+
+function eventTypeForIdempotencyField(field: CreditIdempotencyField): CreditEventType {
+    return field === "intakeOutboundCreditsDeducted" ? "intake_outbound" : "initial_outbound";
+}
+
+function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+    const out: Partial<T> = {};
+    for (const [k, v] of Object.entries(obj)) {
+        if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+    }
+    return out;
+}
+
+/**
+ * Idempotent: charges {@link CREDITS_PER_INITIAL_OUTBOUND} once per (chatId, idempotencyField)
+ * on the org ledger. Different idempotency fields allow charging multiple credits per chatId
+ * without double-billing the same event.
+ */
+export async function deductOrgConversationOnce(
     orgId: string,
     chatId: string,
-    description: string = "Initial outbound (new lead)"
+    idempotencyField: CreditIdempotencyField,
+    description: string,
+    meta?: { actorUid?: string }
 ): Promise<"deducted" | "already_charged"> {
     if (!orgId) {
-        throw new Error("deductOrgConversationForInitialOutboundOnce: orgId is required");
+        throw new Error("deductOrgConversationOnce: orgId is required");
     }
     const canonicalChatId = normalizeToCanonicalChatId(chatId);
     const db = getDb();
@@ -171,7 +79,7 @@ export async function deductOrgConversationForInitialOutboundOnce(
 
     const outcome = await db.runTransaction(async (transaction) => {
         const convSnap = await transaction.get(convRef);
-        if (convSnap.exists && convSnap.data()?.initialOutboundCreditsDeducted === true) {
+        if (convSnap.exists && convSnap.data()?.[idempotencyField] === true) {
             return { kind: "already_charged" as const, newBalance: null as number | null };
         }
 
@@ -186,7 +94,7 @@ export async function deductOrgConversationForInitialOutboundOnce(
             creditBalance: updatedBalance,
             creditBalanceUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-        transaction.set(convRef, { initialOutboundCreditsDeducted: true }, { merge: true });
+        transaction.set(convRef, { [idempotencyField]: true }, { merge: true });
         return { kind: "deducted" as const, newBalance: updatedBalance };
     });
 
@@ -194,15 +102,19 @@ export async function deductOrgConversationForInitialOutboundOnce(
         return "already_charged";
     }
 
-    await orgRef.collection("creditTransactions").add({
+    await orgRef.collection("creditTransactions").add(stripUndefined({
         type: "deduction",
         amount: -amount,
         description,
         createdAt: admin.firestore.Timestamp.now(),
-    });
+        chatId: canonicalChatId,
+        eventType: eventTypeForIdempotencyField(idempotencyField),
+        idempotencyField,
+        actorUid: meta?.actorUid,
+    }));
 
     console.log(
-        `[billingService] Initial outbound deduction for org ${orgId} chat ${canonicalChatId}. New balance: ${outcome.newBalance}`
+        `[billingService] Deduction (${idempotencyField}) for org ${orgId} chat ${canonicalChatId}. New balance: ${outcome.newBalance}`
     );
 
     if (outcome.newBalance! < 20) {
@@ -216,6 +128,18 @@ export async function deductOrgConversationForInitialOutboundOnce(
     );
 
     return "deducted";
+}
+
+/**
+ * Back-compat wrapper for the destination-org's own first template send.
+ * Prefer {@link deductOrgConversationOnce} directly for new call sites.
+ */
+export async function deductOrgConversationForInitialOutboundOnce(
+    orgId: string,
+    chatId: string,
+    description: string = "Initial outbound (new lead)"
+): Promise<"deducted" | "already_charged"> {
+    return deductOrgConversationOnce(orgId, chatId, "initialOutboundCreditsDeducted", description);
 }
 
 /**
@@ -239,7 +163,8 @@ export async function getOrgConversationBalance(orgId: string = getActiveOrgId()
 export async function deductOrgConversations(
     amount: number,
     description: string = "Uso de conversaciones",
-    orgId: string = getActiveOrgId()
+    orgId: string = getActiveOrgId(),
+    meta?: { eventType?: CreditEventType; chatId?: string; actorUid?: string }
 ): Promise<number> {
     const orgRef = getDb().collection("organizations").doc(orgId);
 
@@ -262,12 +187,15 @@ export async function deductOrgConversations(
     });
 
     // Log the transaction
-    await getDb().collection("organizations").doc(orgId).collection("creditTransactions").add({
+    await getDb().collection("organizations").doc(orgId).collection("creditTransactions").add(stripUndefined({
         type: "deduction",
         amount: -amount,
         description,
         createdAt: admin.firestore.Timestamp.now(),
-    });
+        eventType: meta?.eventType ?? "other",
+        chatId: meta?.chatId,
+        actorUid: meta?.actorUid,
+    }));
 
     console.log(`Deducted ${amount} org conversations from ${orgId}. New balance: ${newBalance}`);
 
@@ -312,7 +240,8 @@ async function handleLowBalanceAlert(orgId: string, balance: number) {
 export async function addOrgConversations(
     amount: number,
     description: string = "Recarga de conversaciones",
-    orgId: string = getActiveOrgId()
+    orgId: string = getActiveOrgId(),
+    meta?: { eventType?: CreditEventType; actorUid?: string; stripeReference?: string }
 ): Promise<number> {
     const orgRef = getDb().collection("organizations").doc(orgId);
 
@@ -330,12 +259,15 @@ export async function addOrgConversations(
     });
 
     // Log the transaction
-    await getDb().collection("organizations").doc(orgId).collection("creditTransactions").add({
+    await getDb().collection("organizations").doc(orgId).collection("creditTransactions").add(stripUndefined({
         type: "purchase",
         amount,
         description,
         createdAt: admin.firestore.Timestamp.now(),
-    });
+        eventType: meta?.eventType ?? "manual_purchase",
+        actorUid: meta?.actorUid,
+        stripeReference: meta?.stripeReference,
+    }));
 
     console.log(`Added ${amount} org conversations to ${orgId}. New balance: ${newBalance}`);
     return newBalance;
@@ -427,7 +359,10 @@ export async function addOrgConversationsForPaymentIntentOnce(
         }
         throw e;
     }
-    await addOrgConversations(conversations, `${description} · ${paymentIntentId}`, orgId);
+    await addOrgConversations(conversations, `${description} · ${paymentIntentId}`, orgId, {
+        eventType: "auto_recharge",
+        stripeReference: paymentIntentId,
+    });
     return true;
 }
 

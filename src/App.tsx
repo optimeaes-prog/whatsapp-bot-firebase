@@ -5,6 +5,7 @@ import { AuthProvider } from "./contexts/AuthContext";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
+import { SignupInvitation } from "./pages/SignupInvitation";
 import { Dashboard } from "./pages/Dashboard";
 import { Listings } from "./pages/Listings";
 import { Leads } from "./pages/Leads";
@@ -23,13 +24,16 @@ import { ConnectWhatsApp } from "./pages/ConnectWhatsApp";
 import { DeletionStatus } from "./pages/DeletionStatus";
 import { AdminOnboards } from "./pages/AdminOnboards";
 import { AdminTools } from "./pages/AdminTools";
+import { AdminTwilioMigration } from "./pages/AdminTwilioMigration";
 import { LegalDoc } from "./pages/LegalDoc";
 import { WhatsAppAnimationLab } from "./pages/WhatsAppAnimationLab";
 import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 import FontGallery from "./pages/FontGallery";
 import EmailGallery from "./pages/EmailGallery";
+import EmailPreferences from "./pages/EmailPreferences";
 import { TeamManagement } from "./pages/TeamManagement";
 import { BotTest } from "./pages/BotTest";
+import { Usage } from "./pages/Usage";
 
 import { useEffect } from "react";
 import { usePageTracking } from "./hooks/usePageTracking";
@@ -94,6 +98,8 @@ function App() {
           <PageTracker />
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<SignupInvitation />} />
+            <Route path="/email-preferences" element={<EmailPreferences />} />
             <Route path="/fonts" element={<FontGallery />} />
             <Route path="/" element={<Landing />} />
             <Route path="/landingv2" element={<MarketingLanding />} />
@@ -104,6 +110,8 @@ function App() {
             <Route path="/legal/privacy-policy" element={<LegalDoc title="Política de Privacidad" path="/legal/privacy-policy.md" />} />
             <Route path="/legal/data-deletion" element={<LegalDoc title="Eliminación y exportación de datos" path="/legal/data-deletion.md" />} />
             <Route path="/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
+            <Route path="/legal/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
+            <Route path="/legal/aup" element={<LegalDoc title="Política de Uso Aceptable" path="/legal/aup.es.md" />} />
             <Route path="/aviso-legal" element={<LegalDoc title="Aviso Legal" path="/legal/aviso.es.md" />} />
             <Route path="/legal/deletion-status" element={<DeletionStatus />} />
             <Route
@@ -216,7 +224,7 @@ function App() {
             <Route
               path="/suscripcion"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requiredRoles={["member", "admin", "owner", "super_admin"]}>
                   <Layout>
                     <Subscription />
                   </Layout>
@@ -229,6 +237,16 @@ function App() {
                 <ProtectedRoute requiredRoles={["admin", "owner", "super_admin"]}>
                   <Layout>
                     <Users />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/uso"
+              element={
+                <ProtectedRoute requiredRoles={["owner", "admin", "super_admin"]}>
+                  <Layout>
+                    <Usage />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -259,6 +277,16 @@ function App() {
                 <ProtectedRoute requiredRoles={["super_admin"]}>
                   <Layout>
                     <AdminTools />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/twilio-migration"
+              element={
+                <ProtectedRoute requiredRoles={["admin", "super_admin"]}>
+                  <Layout>
+                    <AdminTwilioMigration />
                   </Layout>
                 </ProtectedRoute>
               }

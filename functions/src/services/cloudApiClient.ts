@@ -547,8 +547,8 @@ export type CloudApiInboundMessage = {
 
 /**
  * Parse a Meta Cloud API webhook POST body into our internal shape.
- * Non-text messages (media/interactive/status) are ignored for now — this mirrors how Twilio/Whapi
- * are handled in the rest of the codebase.
+ * Non-text messages (media/interactive/status) are ignored for now — this mirrors how Twilio
+ * is handled in the rest of the codebase.
  *
  * Payload shape (Meta):
  *   { object, entry: [{ id, changes: [{ value: { messaging_product, metadata: { phone_number_id },
@@ -594,12 +594,11 @@ export function parseCloudApiWebhook(
           const buttonReply = interactive?.button_reply as Record<string, unknown> | undefined;
           const buttonId = typeof buttonReply?.id === "string" ? buttonReply.id.trim() : "";
           const buttonTitle = typeof buttonReply?.title === "string" ? buttonReply.title.trim() : "";
-          if (buttonId === "confirm_yes" || buttonId === "confirm_no") {
+          // Prefer visible title for language-safe history; ids like confirm_yes skew English heuristics.
+          if (buttonTitle) {
+            text = buttonTitle;
+          } else if (buttonId) {
             text = buttonId;
-          } else if (buttonTitle) {
-            const normalized = buttonTitle.toLowerCase();
-            if (normalized === "yes" || normalized === "si" || normalized === "sí") text = "confirm_yes";
-            if (normalized === "no") text = "confirm_no";
           }
         }
         if (!from || !text) continue;

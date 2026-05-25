@@ -1,0 +1,186 @@
+import type { QualificationStatus } from "../ui/QualificationBadge";
+import type { OperationType } from "../ui/OperationTypeBadge";
+
+export type Lead = {
+  id: string;
+  name: string;
+  phoneMasked: string;
+  listingId: string;
+  listingName: string;
+  status: QualificationStatus;
+  operationType: OperationType;
+  consent: boolean;
+  qualificationDate: string;
+  messages: number;
+  summary?: string;
+  hasPets: "Sí" | "No";
+};
+
+export const MOCK_LEADS: Lead[] = [
+  // First three are all "qualified" — the LeadsBulk video selects rows 0..2 to send
+  // a WhatsApp message, and messages can only be sent to qualified leads.
+  {
+    id: "l1",
+    name: "Carmen R.",
+    phoneMasked: "+34 664 *** ***",
+    listingId: "111536482",
+    listingName: "Los Alamos",
+    status: "qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "22 may 2026, 13:11",
+    messages: 7,
+    summary: "Familia de 2 adultos. Ingresos €4 200/mes. Entrada deseada 1 sept. Acepta 1 mes de honorarios. Sin mascotas.",
+    hasPets: "No",
+  },
+  {
+    id: "l3",
+    name: "Hans M.",
+    phoneMasked: "+31 6**** ***07",
+    listingId: "111333534",
+    listingName: "Casa Algarrobo",
+    status: "qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "21 may 2026, 06:17",
+    messages: 9,
+    summary: "Pareja con 1 perro. Buscan entrada inmediata. Ingresos €3 800/mes. Métod pago transferencia.",
+    hasPets: "Sí",
+  },
+  {
+    id: "l6",
+    name: "Javier T.",
+    phoneMasked: "+34 687 *** ***",
+    listingId: "111433879",
+    listingName: "Adosado Chilches",
+    status: "qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "18 may 2026, 11:43",
+    messages: 8,
+    summary: "Estudiante con beca + apoyo familiar. Sin mascotas. Entrada 1 sept.",
+    hasPets: "No",
+  },
+  {
+    id: "l2",
+    name: "Daniel F.",
+    phoneMasked: "+34 685 *** ***",
+    listingId: "111433879",
+    listingName: "Adosado Chilches",
+    status: "not_qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "—",
+    messages: 5,
+    hasPets: "No",
+  },
+  {
+    id: "l4",
+    name: "Sofía M.",
+    phoneMasked: "+34 695 *** ***",
+    listingId: "111456710",
+    listingName: "Sayalonga",
+    status: "not_qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "—",
+    messages: 11,
+    hasPets: "No",
+  },
+  {
+    id: "l5",
+    name: "Lina B.",
+    phoneMasked: "+49 15* **** ****",
+    listingId: "111333534",
+    listingName: "Casa Algarrobo",
+    status: "not_qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "—",
+    messages: 3,
+    hasPets: "No",
+  },
+  {
+    id: "l7",
+    name: "Alexander K.",
+    phoneMasked: "+34 619 *** ***",
+    listingId: "111678123",
+    listingName: "Benajarafe Paraíso del Sol",
+    status: "qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "17 may 2026, 20:56",
+    messages: 10,
+    summary: "Solo, teletrabaja. Ingresos €3 200/mes. Acepta 2 meses depósito.",
+    hasPets: "No",
+  },
+  {
+    id: "l8",
+    name: "Laura P.",
+    phoneMasked: "+34 644 *** ***",
+    listingId: "111433879",
+    listingName: "Adosado Chilches",
+    status: "qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "17 may 2026, 17:14",
+    messages: 9,
+    summary: "Familia con 2 niños y 1 gato. Ingresos €5 100/mes. Entrada 15 sept.",
+    hasPets: "Sí",
+  },
+  {
+    id: "l9",
+    name: "Bilge S.",
+    phoneMasked: "+90 53* *** ****",
+    listingId: "111433879",
+    listingName: "Adosado Chilches",
+    status: "qualified",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "16 may 2026, 10:27",
+    messages: 10,
+    summary: "Pareja sin hijos ni mascotas. Trabajos remotos. Ingresos €4 800/mes.",
+    hasPets: "No",
+  },
+  {
+    id: "l10",
+    name: "Helen V.",
+    phoneMasked: "+41 7** *** ***",
+    listingId: "111333534",
+    listingName: "Casa Algarrobo",
+    status: "rejected",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "—",
+    messages: 5,
+    hasPets: "No",
+  },
+  {
+    id: "l11",
+    name: "Raphael D.",
+    phoneMasked: "+33 615 *** ***",
+    listingId: "111333534",
+    listingName: "Casa Algarrobo",
+    status: "not_qualified",
+    operationType: "Alquiler",
+    consent: false,
+    qualificationDate: "—",
+    messages: 1,
+    hasPets: "No",
+  },
+  {
+    id: "l12",
+    name: "Soledad H.",
+    phoneMasked: "+34 663 *** ***",
+    listingId: "111333534",
+    listingName: "Casa Algarrobo",
+    status: "rejected",
+    operationType: "Alquiler",
+    consent: true,
+    qualificationDate: "—",
+    messages: 8,
+    hasPets: "No",
+  },
+];
+
+export const QUALIFIED_LEADS = MOCK_LEADS.filter((l) => l.status === "qualified");

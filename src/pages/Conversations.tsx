@@ -9,21 +9,24 @@ import {
   sendMessageToWhatsApp,
   triggerAssistantResponse,
   getConversationById,
+  getConversationsForAgent,
   subscribeConversations,
-  subscribeConversationById
+  subscribeConversationsForAgent,
+  subscribeConversationById,
+  alignSelectedConversationWithList,
 } from "../services/conversations";
 import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn } from "../lib/utils";
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
 import { resolveConversationQualification } from "../lib/conversationQualification";
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
-import { getListings } from "../services/listings";
+import { getListings, getListingsForAgent } from "../services/listings";
 import type { Listing } from "../types";
 import { Button, InboxShell, PageLoading } from "../components/ui";
 import { useAuth } from "../contexts/AuthContext";
 
 export function Conversations() {
-  const { organizationId } = useAuth();
+  const { organizationId, effectiveRole, effectiveUid, isImpersonationReadOnly } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +44,9 @@ export function Conversations() {
   const [sending, setSending] = useState(false);
   const [showDetailsMobile, setShowDetailsMobile] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const prevThreadKeyRef = useRef<string | undefined>(undefined);
+  const prevHistoryLenRef = useRef(0);
 
   const scrollMessagesToBottom = (behavior: ScrollBehavior = "smooth") => {
     messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
@@ -56,15 +62,36 @@ export function Conversations() {
 
   useEffect(() => {
     if (!organizationId) return;
+    if (!effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
     setLoading(true);
 
-    const unsub = subscribeConversations(
+    const unsub = (effectiveRole === "agent"
+      ? subscribeConversationsForAgent(effectiveUid, 
+        (data) => {
+          setConversations(data);
+          setSelectedConversation((prev) => {
+            if (prev) {
+              return alignSelectedConversationWithList(prev, data);
+            }
+            if (!prev && data.length > 0 && window.innerWidth >= 768) {
+              return data[0];
+            }
+            return prev;
+          });
+          setLoading(false);
+        },
+        (err) => {
+          console.error("[Conversations] subscribeConversationsForAgent error", { role: effectiveRole, uidTail: (effectiveUid || "").slice(-6), orgTail: (organizationId || "").slice(-8), errName: (err as any)?.name, errCode: (err as any)?.code, errMsg: String((err as any)?.message || err) });
+          setLoading(false);
+        }
+      )
+      : subscribeConversations(
       (data) => {
         setConversations(data);
         setSelectedConversation((prev) => {
           if (prev) {
-            const updated = data.find((c) => c.id === prev.id);
-            return updated || prev;
+            return alignSelectedConversationWithList(prev, data);
           }
           if (!prev && data.length > 0 && window.innerWidth >= 768) {
             return data[0];
@@ -74,22 +101,24 @@ export function Conversations() {
         setLoading(false);
       },
       (err) => {
-        console.error("Error loading conversations (realtime):", err);
+        console.error("[Conversations] subscribeConversations error", { role: effectiveRole, uidTail: (effectiveUid || "").slice(-6), orgTail: (organizationId || "").slice(-8), errName: (err as any)?.name, errCode: (err as any)?.code, errMsg: String((err as any)?.message || err) });
         setLoading(false);
       }
-    );
+    ));
 
     return () => unsub();
-  }, [organizationId]);
+  }, [organizationId, effectiveRole, effectiveUid]);
 
   useEffect(() => {
     if (!organizationId) return;
-    getListings()
+    if (!effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
+    (effectiveRole === "agent" ? getListingsForAgent(effectiveUid) : getListings())
       .then(setListings)
       .catch((error) => {
         console.error("Error loading listings:", error);
       });
-  }, [organizationId]);
+  }, [organizationId, effectiveRole, effectiveUid]);
 
   useEffect(() => {
     if (!selectedConversation?.id || !organizationId) return;
@@ -106,33 +135,54 @@ export function Conversations() {
     return () => unsub();
   }, [selectedConversation?.id, organizationId]);
 
+  // Finished threads: assistant messages are often at the start; auto-scroll-to-bottom was hiding them.
+  // Live threads: keep following the latest message.
   useEffect(() => {
-    if (!selectedConversation?.id) return;
-    scrollMessagesToBottom("auto");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedConversation?.id]);
+    const id = selectedConversation?.id;
+    if (!id) return;
+    const key = id;
+    const isNewThread = prevThreadKeyRef.current !== key;
+    if (isNewThread) {
+      prevThreadKeyRef.current = key;
+      prevHistoryLenRef.current = selectedConversation?.history?.length ?? 0;
+      if (selectedConversation?.isFinished) {
+        messagesScrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
+      } else {
+        scrollMessagesToBottom("auto");
+      }
+      return;
+    }
+  }, [selectedConversation?.id, selectedConversation?.isFinished]);
 
   useEffect(() => {
-    scrollMessagesToBottom("smooth");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedConversation?.history?.length]);
+    const id = selectedConversation?.id;
+    if (!id) return;
+    const len = selectedConversation?.history?.length ?? 0;
+    if (prevThreadKeyRef.current !== id) return;
+    const grew = len > prevHistoryLenRef.current;
+    prevHistoryLenRef.current = len;
+    if (!grew) return;
+    if (!selectedConversation.isFinished) {
+      scrollMessagesToBottom("smooth");
+    }
+  }, [selectedConversation?.history?.length, selectedConversation?.id, selectedConversation?.isFinished]);
 
   async function loadConversations() {
     if (!organizationId) return;
+    if (!effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
     setLoading(true);
     try {
       const [data, listingsData] = await Promise.all([
-        getConversations(),
-        getListings(),
+        effectiveRole === "agent" ? getConversationsForAgent(effectiveUid) : getConversations(),
+        effectiveRole === "agent" ? getListingsForAgent(effectiveUid) : getListings(),
       ]);
       setConversations(data);
       setListings(listingsData);
       
       setSelectedConversation(prev => {
         if (prev) {
-          // Keep the currently selected conversation updated with new data
-          const updated = data.find(c => c.id === prev.id);
-          return updated || prev;
+          return alignSelectedConversationWithList(prev, data);
         }
         // Auto-select the first (latest) conversation if none is selected,
         // and only on desktop (to avoid hiding the conversation list on mobile)
@@ -150,6 +200,10 @@ export function Conversations() {
 
   async function handleDeleteConversation(e: React.MouseEvent, conversation: Conversation) {
     e.stopPropagation();
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!window.confirm(`¿Estás seguro de que quieres eliminar la conversación de ${conversation.name || formatPhoneWhatsApp(conversation.phone)}?`)) {
       return;
     }
@@ -166,6 +220,10 @@ export function Conversations() {
   }
 
   async function handleToggleAssistant() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!selectedConversation) return;
     const newValue = !selectedConversation.botDisabled;
     try {
@@ -200,6 +258,10 @@ export function Conversations() {
 
   async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!selectedConversation || !newMessage.trim() || sending) return;
     if (selectedConversation.optedOut) {
       toast.error("Este chat esta dado de baja (opt-out). No se puede enviar.");
@@ -806,8 +868,10 @@ export function Conversations() {
                       )}
                     </div>
                     <button
+                      type="button"
                       onClick={(e) => handleDeleteConversation(e, conv)}
-                      className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1 rounded-btn transition-colors"
+                      disabled={isImpersonationReadOnly}
+                      className="text-red-600 hover:text-red-800 hover:bg-red-50 p-1 rounded-btn transition-colors disabled:opacity-40 disabled:pointer-events-none"
                       title="Eliminar conversación"
                     >
                       <Trash2 size={13} />
@@ -886,9 +950,11 @@ export function Conversations() {
               </div>
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
                   onClick={handleToggleAssistant}
+                  disabled={isImpersonationReadOnly}
                   className={cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs font-medium transition-colors border",
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs font-medium transition-colors border disabled:opacity-40 disabled:pointer-events-none",
                     selectedConversation.botDisabled
                       ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
                       : "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
@@ -946,7 +1012,7 @@ export function Conversations() {
           </div>
 
           {/* Mensajes */}
-          <div className="flex-1 overflow-y-auto p-2 sm:p-4 bg-gray-50" style={{
+          <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-2 sm:p-4 bg-gray-50" style={{
             backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23e5e7eb' fill-opacity='0.2'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`
           }}>
             <div className="space-y-3 sm:max-w-4xl sm:mx-auto">
@@ -1002,7 +1068,7 @@ export function Conversations() {
                     onChange={(e) => setNewMessage(e.target.value)}
                     placeholder="Escribe un mensaje manual..."
                     className="flex-1 px-4 py-2 text-sm border border-gray-300 rounded-btn focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none resize-none"
-                    disabled={sending || selectedConversation.optedOut}
+                    disabled={sending || selectedConversation.optedOut || isImpersonationReadOnly}
                     rows={1}
                     onKeyDown={(e) => {
                       if (e.key !== "Enter") return;
@@ -1014,7 +1080,7 @@ export function Conversations() {
                   />
                   <Button
                     type="submit"
-                    disabled={!newMessage.trim() || sending || selectedConversation.optedOut}
+                    disabled={!newMessage.trim() || sending || selectedConversation.optedOut || isImpersonationReadOnly}
                     loading={sending}
                     size="icon"
                     className="shrink-0"

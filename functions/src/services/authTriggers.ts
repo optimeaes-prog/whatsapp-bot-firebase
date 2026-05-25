@@ -2,6 +2,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import * as admin from "firebase-admin";
 
 import { sendWelcomeNotification } from "./emailService";
+import { organizationDisplayNameFromOrgDoc } from "../utils/organizationDisplayName";
 
 /**
  * Logic to send a welcome email via SendGrid
@@ -14,9 +15,12 @@ export async function sendWelcomeEmail(email: string, displayName: string): Prom
   let orgName = "Proplead";
   if (orgId) {
     const orgSnap = await db.collection("organizations").doc(orgId).get();
-    if (orgSnap.exists) {
-      orgName = orgSnap.data()?.name || "Proplead";
-    }
+    orgName = organizationDisplayNameFromOrgDoc({
+      orgId,
+      exists: orgSnap.exists,
+      data: orgSnap.data(),
+      fallback: "Proplead",
+    });
   }
 
   await sendWelcomeNotification(email, displayName, orgName);

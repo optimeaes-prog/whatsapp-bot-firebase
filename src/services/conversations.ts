@@ -24,13 +24,34 @@ function getConversationsCollection() {
 /**
  * Extract phone number from chatId (removes @c.us or @s.whatsapp.net suffix)
  */
-function extractPhoneFromId(id: string): string {
+export function extractPhoneFromId(id: string): string {
   return id.replace(/@(c\.us|s\.whatsapp\.net)$/, "");
 }
 
+/** Same key as deduplicateByPhone (phone field or id stem). */
+export function conversationPhoneKey(conv: Pick<Conversation, "phone" | "id">): string {
+  return conv.phone || extractPhoneFromId(conv.id);
+}
+
 /**
- * Deduplicate conversations by phone number, keeping the one with the most recent message
- * or the most history items if timestamps are equal.
+ * After list deduplication, the selected document id may be absent from the list (duplicate chatId
+ * variant). Remap to the row that is actually shown for that phone.
+ */
+export function alignSelectedConversationWithList(
+  prev: Conversation,
+  list: Conversation[]
+): Conversation {
+  const byId = list.find((c) => c.id === prev.id);
+  if (byId) return byId;
+  const key = conversationPhoneKey(prev);
+  return list.find((c) => conversationPhoneKey(c) === key) ?? prev;
+}
+
+/**
+ * Deduplicate conversations by phone number. When @c.us and @s.whatsapp.net both exist, the
+ * document with the **longer history** must win: the other copy is often a partial row (e.g. only
+ * user lines from an inbound path) while the canonical doc holds the full thread including the bot.
+ * Only if lengths tie do we use recency, then canonical @s.whatsapp.net.
  */
 function deduplicateByPhone(conversations: Conversation[]): Conversation[] {
   const byPhone = new Map<string, Conversation>();
@@ -45,15 +66,26 @@ function deduplicateByPhone(conversations: Conversation[]): Conversation[] {
       continue;
     }
 
-    // Compare by lastMessage timestamp, then by message count
+    const existingLen = existing.history?.length ?? 0;
+    const convLen = conv.history?.length ?? 0;
+
+    if (convLen > existingLen) {
+      byPhone.set(phone, conv);
+      continue;
+    }
+    if (convLen < existingLen) {
+      continue;
+    }
+
     const existingTime = existing.lastMessage?.toMillis?.() || 0;
     const convTime = conv.lastMessage?.toMillis?.() || 0;
 
     if (convTime > existingTime) {
       byPhone.set(phone, conv);
     } else if (convTime === existingTime) {
-      // Same timestamp, prefer the one with more history
-      if ((conv.history?.length || 0) > (existing.history?.length || 0)) {
+      const convCanonical = conv.id.endsWith("@s.whatsapp.net");
+      const existingCanonical = existing.id.endsWith("@s.whatsapp.net");
+      if (convCanonical && !existingCanonical) {
         byPhone.set(phone, conv);
       }
     }
@@ -82,6 +114,18 @@ export async function getConversations(): Promise<Conversation[]> {
   return deduplicateByPhone(rawConversations);
 }
 
+export async function getConversationsForAgent(agentUid: string): Promise<Conversation[]> {
+  const uid = agentUid.trim();
+  if (!uid) return [];
+  const q = query(
+    collection(db, getConversationsCollection()),
+    where("assignedAgentUid", "==", uid)
+  );
+  const snapshot = await getDocs(q);
+  const rawConversations = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Conversation[];
+  return deduplicateByPhone(rawConversations);
+}
+
 export function subscribeConversations(
   onChange: (conversations: Conversation[]) => void,
   onError?: (error: unknown) => void
@@ -99,6 +143,30 @@ export function subscribeConversations(
   );
 }
 
+export function subscribeConversationsForAgent(
+  agentUid: string,
+  onChange: (conversations: Conversation[]) => void,
+  onError?: (error: unknown) => void
+): () => void {
+  const uid = agentUid.trim();
+  if (!uid) {
+    onChange([]);
+    return () => {};
+  }
+  const q = query(
+    collection(db, getConversationsCollection()),
+    where("assignedAgentUid", "==", uid)
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const raw = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Conversation[];
+      onChange(deduplicateByPhone(raw));
+    },
+    (err) => onError?.(err)
+  );
+}
+
 export function subscribeConversationById(
   id: string,
   onChange: (conversation: Conversation | null) => void,
@@ -112,7 +180,8 @@ export function subscribeConversationById(
         onChange(null);
         return;
       }
-      onChange({ id: snapshot.id, ...snapshot.data() } as Conversation);
+      const conv = { id: snapshot.id, ...snapshot.data() } as Conversation;
+      onChange(conv);
     },
     (err) => {
       onError?.(err);
@@ -132,6 +201,22 @@ export async function getConversationById(id: string): Promise<Conversation | nu
 
 export async function getConversationByChatId(chatId: string): Promise<Conversation | null> {
   const q = query(collection(db, getConversationsCollection()), where("chatId", "==", chatId));
+  const snapshot = await getDocs(q);
+  if (snapshot.empty) {
+    return null;
+  }
+  const doc = snapshot.docs[0];
+  return { id: doc.id, ...doc.data() } as Conversation;
+}
+
+export async function getConversationByChatIdForAgent(chatId: string, agentUid: string): Promise<Conversation | null> {
+  const uid = agentUid.trim();
+  if (!uid) return null;
+  const q = query(
+    collection(db, getConversationsCollection()),
+    where("chatId", "==", chatId),
+    where("assignedAgentUid", "==", uid)
+  );
   const snapshot = await getDocs(q);
   if (snapshot.empty) {
     return null;

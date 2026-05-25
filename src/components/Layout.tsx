@@ -22,6 +22,8 @@ import {
   CreditCard,
   Wrench,
   Building2,
+  Eye,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -29,6 +31,8 @@ type NavItem = {
   href: string;
   label: string;
   icon: ReactNode;
+  /** If set, the link is only rendered for users whose effectiveRole is in this list. */
+  roles?: string[];
 };
 
 const mainNavItems: NavItem[] = [
@@ -39,6 +43,7 @@ const mainNavItems: NavItem[] = [
   { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
 
   { href: "/suscripcion", label: "Suscripción", icon: <CreditCard size={20} /> },
+  { href: "/uso", label: "Uso", icon: <BarChart3 size={20} />, roles: ["owner", "admin", "super_admin"] },
   { href: "/equipo", label: "Equipo", icon: <Users size={20} /> },
 ];
 
@@ -54,7 +59,17 @@ const adminNavItems: NavItem[] = [
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { user, signOut, role, organizationId, availableOrganizations, switchOrganization } = useAuth();
+  const {
+    user,
+    signOut,
+    role,
+    effectiveRole,
+    organizationId,
+    availableOrganizations,
+    switchOrganization,
+    impersonation,
+    clearImpersonation,
+  } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -84,6 +99,29 @@ export function Layout({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {impersonation && (
+        <div className="sticky top-0 z-[70] border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-950 shadow-sm">
+          <div className="mx-auto flex max-w-7xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 font-heading">
+              <Eye className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />
+              <div>
+                <p className="font-semibold text-amber-950">Modo solo lectura: vista como otro usuario</p>
+                <p className="text-xs text-amber-900/80">
+                  {[impersonation.displayName, impersonation.email].filter(Boolean).join(" · ") ||
+                    impersonation.uid}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => clearImpersonation()}
+              className="shrink-0 rounded-btn bg-amber-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-amber-700"
+            >
+              Salir de vista como…
+            </button>
+          </div>
+        </div>
+      )}
       {/* Mobile header */}
       <div className="lg:hidden bg-white border-b border-gray-200 px-4 py-4 flex items-center justify-between">
         <button
@@ -145,6 +183,15 @@ export function Layout({ children }: { children: ReactNode }) {
           {mainNavItems.map((item) => {
             const isTarget = location.pathname === item.href;
             const isOnboardingItem = item.href === "/onboarding";
+            const isSubscriptionItem = item.href === "/suscripcion";
+
+            if (effectiveRole === "agent" && isSubscriptionItem) {
+              return null;
+            }
+
+            if (item.roles && !item.roles.includes(effectiveRole)) {
+              return null;
+            }
 
             if (isOnboardingItem && !onboardingCompleted) {
               return (

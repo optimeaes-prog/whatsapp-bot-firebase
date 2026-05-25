@@ -1,114 +1,190 @@
-# Data processing inventory (Talmate Limited)
+# Data Processing Inventory — Talmate Limited (Proplead)
 
-Version: 0.1 (draft)  
-Last updated: 2026-04-01  
+**Version:** 1.0  
+**Last updated:** 25 May 2026  
+**Confidential — internal use only**
 
-This inventory is meant to support the legal documents in this repository (Terms, Privacy Policy, Cookies Policy, DPA, templates).
+> **Key roles:** Talmate operates as a **B2B SaaS** provider. In the typical setup:
+> - **Customer (freelancer/agency/immobiliaria)** = **Controller** of lead/contact data they collect via Proplead.
+> - **Talmate** = **Processor** for WhatsApp/voice conversations and lead qualification run on behalf of the customer; **Controller** for its own account, billing, and marketing data.
 
-> Important: Talmate operates as **SaaS B2B**. In the typical setup:
-> - **Customer (freelancer/agency)** = **Controller** of lead/contact data.
-> - **Talmate** = **Processor** for WhatsApp/voice conversations and lead qualification, **Controller** for account/billing/marketing data.
+---
 
-## 1) Product overview (from codebase)
-- Web app (React) to manage inbound/outbound **WhatsApp conversations**, **leads**, **listings**, **alerts**, and **credits/subscriptions**.
-- Backend in Firebase Functions (region `europe-west1`) orchestrates:
-  - inbound WhatsApp messages (Twilio/Whapi webhooks)
-  - buffering and processing via Cloud Tasks
-  - AI responses and lead summarization (OpenAI)
-  - payments, credits, subscriptions and webhooks (Stripe)
-  - onboarding events (Calendly)
-  - voice webhook (Twilio) and call handoff to WhatsApp; recordings are contemplated/stored as URLs in lead/conversation models.
+## 1. Entity and product overview
 
-Primary implementation references:
-- `functions/src/index.ts` (HTTP endpoints and webhooks)
-- `functions/src/services/openaiClient.ts` (AI responses + lead summarisation)
-- `functions/src/services/stripeService.ts` (Checkout + webhooks helpers)
-- `functions/src/services/twilioClient.ts`, `functions/src/services/whapiClient.ts`, `functions/src/calendlyWebhook.ts`
-- Frontend routing in `src/App.tsx`
+| Field | Detail |
+|---|---|
+| Legal entity | Talmate Limited |
+| Companies House | 16733027 |
+| Registered address | 191 King's Cross Road, Flat 2, London, WC1X 9DB, UK |
+| Privacy contact | soporte@proplead.io |
+| Platform name | Proplead |
+| Primary market | Spain (EEA) |
+| Legal frameworks | UK GDPR · EU GDPR (Art. 3.2 — data of EEA residents) · UK DPA 2018 · LSSI-CE (Spain) |
+| Supervisory authorities | ICO (UK) · AEPD (Spain/EU) |
 
-## 2) Data categories processed
+**Product:** React web app + Firebase Functions backend providing WhatsApp/voice conversation management, AI-powered lead qualification, CRM, alerts and billing for real estate agencies in Spain. Firebase Functions run in region `europe-west1`.
 
-### A) Customer account and admin users (Talmate as Controller)
-- **Identifiers**: email, UID, name (if present), authentication metadata (Firebase Auth).
-- **Purpose**: account access, security, support, abuse prevention, admin management.
-- **Legal bases** (UK/EU): contract; legitimate interests (security); legal obligation (where applicable).
-- **Argentina**: consent/contract + information duties; facilitate access/rectification/deletion.
+---
 
-### B) Billing and payments (Talmate as Controller)
-- **Stripe IDs**: customer id, subscription id, default payment method id; checkout/session/payment intent metadata.
-- **Purpose**: payments processing, invoicing, credit balance, subscription renewals, fraud prevention.
-- **Legal bases**: contract; legal obligation (accounting); legitimate interests (fraud/security).
+## 2. Data categories
 
-### C) Support and communications (Talmate as Controller)
-- **Support interactions**: messages, tickets, diagnostics.
-- **Purpose**: provide support, communicate service-related notices.
-- **Legal bases**: contract; legitimate interests.
+### A — Customer accounts & admin users (Talmate as **Controller**)
 
-### D) Marketing communications (Talmate as Controller)
-- **Direct marketing**: email/WhatsApp/SMS where used for Talmate’s own marketing.
-- **Purpose**: product marketing, promotions, newsletters.
-- **Legal bases**: consent and/or legitimate interests depending on jurisdiction and relationship (B2B), with opt-out.
+| Element | Detail |
+|---|---|
+| Data | Email, UID, name (if provided), authentication metadata (Firebase Auth), login timestamps, session data |
+| Source | Directly from the customer user at registration/login |
+| Purposes | Account access, authentication, security, support, abuse prevention |
+| Legal bases | Art. 6(1)(b) GDPR — contract performance; Art. 6(1)(f) — legitimate interests (security) |
+| Retention | Duration of account + 2 years post-deletion (potential claims window) |
+| Sub-processors | Google/Firebase |
 
-### E) Website/app cookies & tracking (Talmate as Controller)
-- **Essential**: session/auth/security.
-- **Analytics**: usage measurement (vendor TBD).
-- **Advertising/retargeting**: pixels/tags (vendors TBD).
-- **Legal bases**: consent for non-essential cookies/ads; legitimate interests/consent for certain analytics depending on setup; essential cookies rely on necessity.
+### B — Billing and payments (Talmate as **Controller**)
 
-### F) Leads & conversations (Customer as Controller; Talmate as Processor)
-Data as processed within the platform to run the customer’s bot and manage leads:
-- **WhatsApp identifiers**: phone number (E.164 / canonical formats), chatId, message timestamps.
-- **Content**: inbound/outbound message text; conversation history; bot state (language, tags, status flags).
-- **Lead profiling**: name, household composition, income (numeric), pets, payment method (cash/mortgage), preferred visit availability, notes.
-- **Listings**: listing codes, links, address and features.
-- **Purpose (processor)**: run customer’s bot flows, qualify leads, allow manual messaging, analytics on lead handling, and produce summaries for agents.
+| Element | Detail |
+|---|---|
+| Data | Stripe customer ID, subscription ID, payment method ID (tokenised), checkout/session metadata, credit balance, payment history |
+| Source | Directly from customer; processed via Stripe |
+| Purposes | Payment processing, invoicing, credit management, subscription renewals, fraud/abuse prevention |
+| Legal bases | Art. 6(1)(b) — contract; Art. 6(1)(c) — legal obligation (accounting); Art. 6(1)(f) — legitimate interests (fraud) |
+| Retention | 7 years from last transaction (tax/accounting obligations) |
+| Sub-processors | Stripe Inc. |
 
-### G) Voice/calls (Customer as Controller; Talmate as Processor)
-- **Call data**: caller phone, call SID, timestamps, and (where enabled) **recordings** or recording URLs.
-- **Purpose**: provide call handling/voicemail-like experience and WhatsApp handoff; operational records.
+### C — Support and communications (Talmate as **Controller**)
 
-## 3) AI processing (OpenAI) — risk notes
-- Conversation history and lead data may be sent to OpenAI to generate assistant responses and to produce structured lead summaries.
-- The integration uses `store: false` on OpenAI responses API in code, but the legal docs must still treat this as disclosure to a sub-processor and address international transfers.
-- The docs will include:
-  - transparency for the customer (and templates for the customer to inform leads)
-  - restrictions on prohibited inputs (special categories, secrets)
-  - safeguards, minimisation, and retention.
+| Element | Detail |
+|---|---|
+| Data | Support messages, tickets, diagnostic logs, email/chat records |
+| Source | Directly from customer users |
+| Purposes | Provide support, service communications, dispute resolution |
+| Legal bases | Art. 6(1)(b) — contract; Art. 6(1)(f) — legitimate interests |
+| Retention | 3 years from resolution |
+| Sub-processors | Google/Firebase (logs) |
 
-## 4) Sub-processors / third parties (non-exhaustive)
-Likely sub-processors, to be confirmed per deployment:
-- **Google/Firebase**: Hosting, Firestore, Cloud Functions/Tasks, Auth, Logging.
-- **Twilio**: WhatsApp messaging and Voice webhooks.
-- **Whapi**: WhatsApp gateway API.
-- **OpenAI**: AI generation and summarisation.
-- **Stripe**: payments and subscriptions.
-- **Calendly**: onboarding event webhooks and scheduling data.
-- **(Optional) Vapi**: voice/call automation platform (present in codebase/services/scripts; confirm usage).
-- **Analytics/Ads vendors**: TBD (e.g., Google Analytics, Meta Pixel, etc.).
+### D — Marketing communications (Talmate as **Controller**)
 
-For each sub-processor the legal pack will include: purpose, categories of data, location/transfer mechanism references, and a process for updates/objections (DPA).
+| Element | Detail |
+|---|---|
+| Data | Email address, marketing preferences, engagement metrics |
+| Source | Customers who opt in; B2B legitimate interests (existing customers) |
+| Purposes | Product marketing, feature updates, promotions |
+| Legal bases | Art. 6(1)(f) — legitimate interests (existing B2B customers, with opt-out); Art. 6(1)(a) — consent where required |
+| Retention | Until opt-out / withdrawal of consent + 1 year |
+| Sub-processors | Email provider (TBD) |
 
-## 5) International data transfers (high-level)
-- Talmate is a UK company operating in **UK, Spain (EEA), and Argentina**.
-- With cloud and AI providers, transfers may occur outside the UK/EEA/Argentina depending on vendor hosting/support operations.
-- Legal documents will cover:
-  - UK GDPR transfer tools (IDTA / UK Addendum to SCCs)
-  - EU GDPR SCCs (where applicable)
-  - Argentina international transfer requirements and contractual safeguards.
+### E — Website/app analytics and advertising (Talmate as **Controller**)
 
-## 6) Retention (placeholders to be finalised)
-Suggested structure (to be implemented in Retention Policy and DPA annex):
-- **Account & billing**: per legal/accounting obligations (e.g., 6–10 years depending on jurisdiction).
-- **Conversations/leads**: configurable by customer; default retention window (TBD).
-- **Recordings**: minimal, with explicit default and deletion schedule (TBD).
-- **Security/audit logs**: limited window (TBD).
+| Category | Vendors | Purposes | Legal basis | Requires consent |
+|---|---|---|---|---|
+| Essential / session | Firebase Auth, Firebase SDK | Authentication, session management, security, fraud prevention | Art. 6(1)(b)/(f) — contract/legitimate interests | No |
+| Analytics | Google Analytics 4 (GA4) via Google Tag Manager | Measure usage, understand user behaviour, improve product | Art. 6(1)(a) — consent | **Yes** |
+| Advertising | Meta Pixel (Meta Platforms Ireland Ltd) | Ad conversion measurement, retargeting, custom audiences on Facebook/Instagram | Art. 6(1)(a) — consent | **Yes** |
+| Advertising | Google Ads / Google Tag (Google LLC) | Ad conversion measurement, remarketing on Google Ads | Art. 6(1)(a) — consent | **Yes** |
 
-## 7) Key legal documents this inventory supports
-- `legal/terms.es.md` and `legal/terms.en.md`
-- `legal/privacy-policy.es.md` and `legal/privacy-policy.en.md`
-- `legal/cookies.es.md` and `legal/cookies.en.md`
-- `legal/dpa.es.md` and `legal/dpa.en.md`
-- `legal/subprocessors.md`
-- `legal/lead-notice-template.es.md` / `legal/lead-notice-template.en.md`
-- `legal/call-recording-notice.es.md` / `legal/call-recording-notice.en.md`
+Analytics and advertising cookies must be withheld until the user actively consents via a compliant cookie banner (equal prominence for accept/reject — AEPD 2023 guidance).
 
+### F — Leads & conversations (Customer as **Controller**; Talmate as **Processor**)
+
+Data processed within Proplead to run the customer's AI bot and manage leads:
+
+| Element | Detail |
+|---|---|
+| Identifiers | Phone number (E.164), chatId, call IDs, message timestamps |
+| Conversation content | Inbound/outbound message text, conversation history, bot state, language, tags, status flags |
+| Lead profile | Name, household composition, budget (numeric), property type sought, preferred location/area, visit availability, pets, payment method (cash/mortgage), notes, qualification score/status |
+| Listings | Listing codes, links, address, property features |
+| Purposes (as Processor) | Run customer's bot flows, AI qualification, manual messaging by agents, lead analytics/summaries for agents |
+| Legal bases | Per customer's instructions and their own legal basis (typically contract/legitimate interests for qualifying inbound leads) |
+| Retention | Per DPA: until customer deletes or end of subscription + 30-day recovery window, then deletion |
+| Sub-processors | Google/Firebase, Twilio, OpenAI |
+
+**Note on AI (OpenAI):** Conversation history and lead attributes are sent to OpenAI to generate responses and lead summaries. Integration uses `store: false` in OpenAI API calls. OpenAI must be covered as sub-processor in the DPA. Customers must be informed (via lead notice template) that automated AI tools assist in responses.
+
+### G — Voice/calls (Customer as **Controller**; Talmate as **Processor**)
+
+| Element | Detail |
+|---|---|
+| Data | Caller phone number, Call SID, timestamps, call status, recording URLs (when enabled) |
+| Purposes | Call handling, voicemail-to-WhatsApp handoff, operational records |
+| Recordings | Stored as URLs in lead/conversation model; customers are responsible for informing callers and obtaining necessary consents |
+| Sub-processors | Twilio Inc., Vapi AI Inc. (when enabled) |
+
+---
+
+## 3. International data transfers
+
+| Transfer route | Mechanism |
+|---|---|
+| EU (Spain) → UK (Talmate) | EU Commission Adequacy Decision for UK (verify current status; fallback: EU SCCs Module 3 Controller→Processor or Module 2 if applicable) |
+| UK (Talmate) → US (Google/Firebase, OpenAI, Stripe, Calendly, Vapi) | UK IDTA / UK Addendum to EU SCCs |
+| EU → US (via Talmate as Processor) | EU SCCs 2021 (Module 2 or 3 depending on role in each transfer) + supplementary measures |
+
+**Note:** The EU-UK Adequacy Decision (adopted June 2021) should be verified for current validity status. If expired/lapsed, EU SCCs apply for EU→UK transfers.
+
+---
+
+## 4. Sub-processors summary
+
+| Sub-processor | Role | Data categories | Country |
+|---|---|---|---|
+| Google LLC / Firebase | Infrastructure (Auth, Firestore, Functions, Tasks, Hosting, Logging) | All platform data (A, B, C, E, F, G) | USA |
+| Twilio Inc. | WhatsApp messaging + Voice | F (phone, messages), G (calls, recordings) | USA |
+| OpenAI OpCo LLC | AI generation & lead summarisation | F (conversation history, lead attributes) | USA |
+| Stripe Inc. | Payments & subscriptions | B (billing data) | USA |
+| Calendly LLC | Onboarding scheduling | Contact/event data from scheduling | USA |
+| Vapi AI Inc. | Voice automation (if enabled) | G (call metadata, transcripts/recordings) | USA |
+| Meta Platforms Ireland Ltd | Meta Pixel (ads) | E (website visitor data, conversions) | Ireland / USA |
+
+Full sub-processor details: see `legal/subprocessors.md`.
+
+---
+
+## 5. Retention schedule
+
+| Data category | Retention period | Basis |
+|---|---|---|
+| Account data | Duration of account + 2 years | Potential claims |
+| Billing/payment records | 7 years from last transaction | Tax/accounting obligations |
+| Support communications | 3 years from resolution | Limitation period |
+| Security/audit logs | 90 days rolling | Operational security |
+| Marketing data | Until opt-out + 1 year | Legitimate interests / consent |
+| Analytics data (GA4) | 14 months (GA4 default, configurable) | Consent-based |
+| Leads/conversations (as Processor) | Per DPA: subscription term + 30-day recovery, then deletion | DPA / customer instructions |
+| Call recordings | Per DPA: typically 90 days unless customer instructs otherwise | DPA / regulatory requirements |
+
+---
+
+## 6. EU Representative (Art. 27 RGPD)
+
+Talmate processes personal data of individuals in Spain (EEA) on a non-occasional basis, which triggers consideration of Art. 27 RGPD obligations (appointment of an EU representative). **Action required:** legal counsel to assess and appoint EU representative if required.
+
+---
+
+## 7. Legal documents supported by this inventory
+
+| Document | Path |
+|---|---|
+| Terms & Conditions (ES) | `legal/terms.es.md` |
+| Terms & Conditions (EN) | `legal/terms.en.md` |
+| Privacy Policy (ES) | `legal/privacy-policy.es.md` |
+| Privacy Policy (EN) | `legal/privacy-policy.en.md` |
+| DPA / Acuerdo de Encargo (ES) | `legal/dpa.es.md` |
+| DPA (EN) | `legal/dpa.en.md` |
+| Cookies Policy (ES) | `legal/cookies.es.md` |
+| Cookies Policy (EN) | `legal/cookies.en.md` |
+| Sub-processors list | `legal/subprocessors.md` |
+| Acceptable Use Policy (ES) | `legal/aup.es.md` |
+| Acceptable Use Policy (EN) | `legal/aup.en.md` |
+| Lead notice template (ES) | `legal/lead-notice-template.es.md` |
+| Call recording notice | `legal/call-recording-notice.es.md` |
+
+---
+
+## 8. Review schedule
+
+This inventory should be reviewed:
+- At least annually (next review: May 2027)
+- When a new sub-processor is added
+- When a new significant processing activity is introduced
+- Following any regulatory guidance change from ICO or AEPD

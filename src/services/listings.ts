@@ -7,6 +7,7 @@ import {
   updateDoc,
   deleteDoc,
   query,
+  where,
   Timestamp,
 } from "firebase/firestore";
 import { db, auth } from "../lib/firebase";
@@ -62,6 +63,54 @@ export async function getListings(): Promise<Listing[]> {
   }
 }
 
+export async function getListingsForAgent(uid: string): Promise<Listing[]> {
+  const agentUid = uid.trim();
+  if (!agentUid) return [];
+
+  const colRef = collection(db, getListingsCollection());
+  const [assignedRes, createdRes] = await Promise.allSettled([
+    getDocs(query(colRef, where("assignedAgentUid", "==", agentUid))),
+    getDocs(query(colRef, where("createdByUid", "==", agentUid))),
+  ]);
+
+  if (assignedRes.status === "rejected") {
+    const err = assignedRes.reason as { name?: string; code?: string; message?: string };
+    console.error("[Listings] agent query (assignedAgentUid) failed", {
+      uidTail: agentUid.slice(-6),
+      errName: err?.name,
+      errCode: err?.code,
+      errMsg: String(err?.message || assignedRes.reason),
+    });
+  }
+  if (createdRes.status === "rejected") {
+    const err = createdRes.reason as { name?: string; code?: string; message?: string };
+    console.error("[Listings] agent query (createdByUid) failed", {
+      uidTail: agentUid.slice(-6),
+      errName: err?.name,
+      errCode: err?.code,
+      errMsg: String(err?.message || createdRes.reason),
+    });
+  }
+
+  const assignedSnap = assignedRes.status === "fulfilled" ? assignedRes.value : null;
+  const createdSnap = createdRes.status === "fulfilled" ? createdRes.value : null;
+
+  const byId = new Map<string, Listing>();
+  for (const snap of [assignedSnap, createdSnap]) {
+    if (!snap) continue;
+    for (const d of snap.docs) {
+      byId.set(d.id, { id: d.id, ...d.data() } as Listing);
+    }
+  }
+
+  const listings = Array.from(byId.values());
+  return listings.sort((a, b) => {
+    const aTime = a.createdAt?.toMillis?.() || 0;
+    const bTime = b.createdAt?.toMillis?.() || 0;
+    return bTime - aTime;
+  });
+}
+
 export async function getListingById(id: string): Promise<Listing | null> {
   const docRef = doc(db, getListingsCollection(), id);
   const snapshot = await getDoc(docRef);
@@ -99,6 +148,9 @@ export async function createListing(data: ListingFormData): Promise<string> {
         features: data.features,
         idealistaDescription: (data as any).idealistaDescription || "",
         quickQualificationEnabled: (data as any).quickQualificationEnabled === true,
+        createdByUid: (data as any).createdByUid || "",
+        assignedAgentUid: (data as any).assignedAgentUid || "",
+        assignedAgentName: (data as any).assignedAgentName || "",
         price: (data as any).price || "",
         m2: (data as any).m2 || "",
         rooms: (data as any).rooms || "",
@@ -159,6 +211,8 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
   if ((data as any).country !== undefined) updateData.country = (data as any).country;
   if ((data as any).provinceNormalized !== undefined) updateData.provinceNormalized = (data as any).provinceNormalized;
   if ((data as any).agentName !== undefined) updateData.agentName = (data as any).agentName;
+  if ((data as any).assignedAgentUid !== undefined) updateData.assignedAgentUid = (data as any).assignedAgentUid;
+  if ((data as any).assignedAgentName !== undefined) updateData.assignedAgentName = (data as any).assignedAgentName;
   if ((data as any).minMonthlyIncome !== undefined) updateData.minMonthlyIncome = (data as any).minMonthlyIncome;
   if ((data as any).maxPeople !== undefined) updateData.maxPeople = (data as any).maxPeople;
   if ((data as any).requireMortgageApproved !== undefined) updateData.requireMortgageApproved = (data as any).requireMortgageApproved === true;

@@ -10,6 +10,35 @@ Aplicación web para gestionar un bot de WhatsApp para cualificación de leads i
 - **Auth**: Firebase Authentication
 - **Hosting**: Firebase Hosting
 
+## Modelo de autorización
+
+Los permisos se modelan en dos capas que conviene entender juntas:
+
+**Roles** (campo `users/{uid}.role`):
+
+| Rol | Capacidad |
+|---|---|
+| `super_admin` | Acceso a cualquier organización, herramientas de plataforma (`triggerSync`, migraciones Twilio, panel de organizaciones). No se gestiona desde la UI: se asigna a mano en la consola de Firebase. |
+| `owner` | Dueño de una organización. Lectura/escritura completa sobre los datos de su `orgId`. |
+| `admin` | Gestiona el día a día de la organización (equipo, anuncios, leads, alertas) dentro de su `orgId`. |
+| `member` (o `agent`) | Acceso limitado a su propio trabajo: anuncios/leads/conversaciones asignados o creados por él. |
+
+Cada usuario está adscrito a una organización vía `users/{uid}.orgId`. El campo `role` y el campo `orgId` se leen desde Firestore en cada regla de seguridad (`getUserData()`).
+
+**Endpoints y reglas — qué pasa por dónde:**
+
+- **Firestore** está protegido por `firestore.rules`. Toda lectura/escritura desde el cliente pasa por estas reglas, que validan rol + `orgId`.
+- **Storage** está protegido por `storage.rules` con el mismo patrón org-scoped. Los buckets internos de audio inbound/outbound se escriben sólo desde Cloud Functions vía Admin SDK.
+- **Cloud Functions** usan el Admin SDK y por tanto **bypassan las reglas**. Cada endpoint debe re-validar permisos manualmente con `resolveUserContextFromToken(authHeader)` y comprobar `role`/`orgId` antes de escribir. Los webhooks (`whatsappWebhook`, `voiceWebhook`, `voiceGatherCallback`, `stripeWebhook`) validan firma criptográfica del emisor en lugar de auth de usuario.
+
+**CORS, secretos y rate limits:**
+
+- HTTP funciones autenticadas usan la allowlist `WEB_CLIENT_CORS` (sólo orígenes de Proplead + localhost para dev). Los webhooks usan `cors: false`. Los endpoints públicos (`getPackages`) pueden mantener `cors: true`.
+- Los secretos viven en Secret Manager (`firebase functions:secrets:set …`). Acceso vía `defineSecret(...)` declarado en `functions/src/secrets.ts`.
+- Los endpoints caros (mensajería saliente, intake de leads, retry-runs) están protegidos por `checkAndRecordRateLimit` con buckets por-org o por-phone+listing.
+
+**Promoción de roles:** los cambios de rol (incluido alta de un `super_admin`) deben hacerse con un script de Admin SDK o directamente en la consola de Firebase. No hay flujo cliente que escriba `role` directamente y las reglas lo prohíben.
+
 ## Configuración
 
 ### 1. Instalar dependencias
@@ -36,13 +65,16 @@ firebase login
 ```bash
 # Configurar secretos
 firebase functions:secrets:set OPENAI_API_KEY
-firebase functions:secrets:set WHAPI_TOKEN
 
 # Configurar variables de entorno
-firebase functions:config:set whapi.url="https://gate.whapi.cloud"
 firebase functions:config:set notification.number="34XXXXXXXXX"
 firebase functions:config:set openai.model="gpt-4o"
 ```
+
+#### Notificaciones de resumen de leads cualificados (WhatsApp)
+
+- En la app, **Configuración → Notificaciones de leads**: los números de la organización reciben **siempre** cada resumen cuando un lead pasa a cualificado (además del fallback global de Functions si no hay números en Firestore).
+- En **Equipo**, usuarios con rol distinto de `member` pueden guardar uno o más WhatsApp (separados por comas). Si están **asignados al anuncio** en Listados y su número es distinto de los de la organización, el backend notifica a **organización + ese usuario**; si el número coincide tras normalizarlo, solo se envía **un** mensaje a ese destino.
 
 #### Twilio: plantilla de fallback para notificaciones a agente (fuera de 24h)
 
@@ -112,7 +144,7 @@ whatsapp_bot_firebase/
 │   ├── src/
 │   │   ├── index.ts     # Endpoints HTTP
 │   │   ├── types.ts     # Tipos TypeScript
-│   │   └── services/    # Servicios (Firestore, OpenAI, Whapi)
+│   │   └── services/    # Servicios (Firestore, OpenAI, mensajería)
 │   └── package.json
 ├── src/                  # Frontend React
 │   ├── components/      # Componentes reutilizables
@@ -128,7 +160,7 @@ whatsapp_bot_firebase/
 ## Endpoints de Functions
 
 ### WhatsApp
-- `POST /webhook` - Webhook para recibir mensajes de Whapi
+- `POST /webhook` - Webhook entrante de WhatsApp (Twilio / Cloud API)
 - `POST /newLead` - Crear nuevo lead y enviar mensajes iniciales
 
 ### Sistema

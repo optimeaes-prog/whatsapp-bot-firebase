@@ -1,9 +1,27 @@
 import sgMail from "@sendgrid/mail";
 import { getFirestore } from "firebase-admin/firestore";
+import { organizationDisplayNameFromOrgDoc } from "../utils/organizationDisplayName";
 import * as admin from "firebase-admin";
 import { formatWelcomeEmail, formatLowBalanceEmail, formatPaymentFailedEmail, formatInvitationEmail } from "./emailTemplates";
 
+import { EMAIL_UNSUBSCRIBE_SECRET } from "../emailUnsubscribeParams";
 import { SENDGRID_API_KEY } from "../secrets";
+import { signEmailPrefsToken } from "./emailPreferenceToken";
+
+function buildWelcomeEmailPreferenceLinks(toEmail: string): { preferencesUrl: string; unsubscribeUrl: string } | undefined {
+  try {
+    const secret = EMAIL_UNSUBSCRIBE_SECRET.value().trim();
+    if (!secret) return undefined;
+    const token = signEmailPrefsToken(toEmail, secret);
+    const enc = encodeURIComponent(token);
+    return {
+      preferencesUrl: `https://proplead.io/email-preferences?t=${enc}`,
+      unsubscribeUrl: `https://proplead.io/api/email-unsubscribe?token=${enc}&confirm=1`,
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Unified Email Service for Proplead
@@ -57,7 +75,8 @@ export async function getOrgOwnerEmails(orgId: string): Promise<string[]> {
  * High-level function to send Welcome Email
  */
 export async function sendWelcomeNotification(email: string, name: string, orgName: string) {
-  const html = formatWelcomeEmail({ name, orgName });
+  const prefs = buildWelcomeEmailPreferenceLinks(email);
+  const html = formatWelcomeEmail({ name, orgName, ...(prefs ?? {}) });
   await sendEmailToUser({
     to: email,
     subject: "¡Bienvenido a Proplead! 🚀",
@@ -104,7 +123,12 @@ export async function sendPaymentFailedNotification(orgId: string, amount: strin
 
   const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
   const orgSnap = await db.collection("organizations").doc(orgId).get();
-  const orgName = orgSnap.exists ? orgSnap.data()?.name || "Tu Organización" : "Tu Organización";
+  const orgName = organizationDisplayNameFromOrgDoc({
+    orgId,
+    exists: orgSnap.exists,
+    data: orgSnap.data(),
+    fallback: "Tu Organización",
+  });
   
   const ownerDoc = await db.collection("users").where("orgId", "==", orgId).where("role", "==", "owner").limit(1).get();
   const name = ownerDoc.empty ? "Team" : ownerDoc.docs[0].data().name || "Team";

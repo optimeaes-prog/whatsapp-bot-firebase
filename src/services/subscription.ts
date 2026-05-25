@@ -1,4 +1,5 @@
 import { auth } from "../lib/firebase";
+import { getOrganizationId } from "../lib/organization";
 import type { AutoRechargeSettings, ConversationPackage, SubscriptionPlanId } from "../types";
 
 export type OrgSubscriptionInfo = {
@@ -52,7 +53,9 @@ export async function getAvailableConversations(): Promise<number> {
     }
 
     const token = await user.getIdToken();
-    const response = await fetch(`${FUNCTIONS_BASE_URL}/getConversations`, {
+    const orgId = getOrganizationId();
+    const url = `${FUNCTIONS_BASE_URL}/getConversations?orgId=${encodeURIComponent(orgId)}`;
+    const response = await fetch(url, {
         method: "GET",
         headers: {
             "Authorization": `Bearer ${token}`,
@@ -300,16 +303,18 @@ export async function getAutoRecharge(): Promise<AutoRechargeInfo> {
 
 /**
  * Get the org's current subscription (plan, status, renewal date).
- * Returns Free plan defaults if no subscription is active.
+ * Returns null if no subscription/plan is active.
  */
-export async function getSubscription(): Promise<OrgSubscriptionInfo> {
+export async function getSubscription(): Promise<OrgSubscriptionInfo | null> {
     const user = auth.currentUser;
     if (!user) {
         throw new Error("User not authenticated");
     }
 
     const token = await user.getIdToken();
-    const response = await fetch(`${FUNCTIONS_BASE_URL}/getSubscription`, {
+    const orgId = getOrganizationId();
+    const url = `${FUNCTIONS_BASE_URL}/getSubscription?orgId=${encodeURIComponent(orgId)}`;
+    const response = await fetch(url, {
         method: "GET",
         headers: {
             "Authorization": `Bearer ${token}`,
@@ -318,10 +323,79 @@ export async function getSubscription(): Promise<OrgSubscriptionInfo> {
     });
 
     if (!response.ok) {
-        throw new Error(`Failed to get subscription: ${response.status}`);
+        // No plan/subscription is a normal state; avoid surfacing as an error in the UI/console.
+        if (response.status === 404) {
+            return null;
+        }
+        let message = `Failed to get subscription: ${response.status}`;
+        try {
+            const err = await response.json() as { error?: string };
+            if (typeof err.error === "string" && err.error.length > 0) message = err.error;
+        } catch { /* ignore */ }
+        throw new Error(message);
     }
 
     return response.json();
+}
+
+/**
+ * Explicitly activate the Free plan for the org (user-initiated).
+ */
+export async function activateFreePlan(): Promise<void> {
+    const user = auth.currentUser;
+    if (!user) throw new Error("User not authenticated");
+
+    const token = await user.getIdToken();
+    const orgId = getOrganizationId();
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/activateFreePlan`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ orgId }),
+    });
+
+    if (!response.ok) {
+        let message = `Failed to activate Free: ${response.status}`;
+        try {
+            const err = await response.json() as { error?: string };
+            if (typeof err.error === "string" && err.error.length > 0) message = err.error;
+        } catch { /* ignore */ }
+        throw new Error(message);
+    }
+}
+
+export type ActivateFreePlanResult = {
+    success: boolean;
+    subscription: OrgSubscriptionInfo;
+};
+
+export async function activateFreePlanAndFetch(): Promise<ActivateFreePlanResult> {
+    const user = auth.currentUser;
+    if (!user) throw new Error("User not authenticated");
+
+    const token = await user.getIdToken();
+    const orgId = getOrganizationId();
+    const response = await fetch(`${FUNCTIONS_BASE_URL}/activateFreePlan`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ orgId }),
+    });
+
+    if (!response.ok) {
+        let message = `Failed to activate Free: ${response.status}`;
+        try {
+            const err = await response.json() as { error?: string };
+            if (typeof err.error === "string" && err.error.length > 0) message = err.error;
+        } catch { /* ignore */ }
+        throw new Error(message);
+    }
+
+    return response.json() as Promise<ActivateFreePlanResult>;
 }
 
 /**
@@ -332,13 +406,14 @@ export async function createBillingPortalSession(returnPath: string = "/suscripc
     if (!user) throw new Error("User not authenticated");
     const token = await user.getIdToken();
     const returnUrl = `${window.location.origin}${returnPath}`;
+    const orgId = getOrganizationId();
     const response = await fetch(`${FUNCTIONS_BASE_URL}/createBillingPortalSession`, {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${token}`,
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({ returnUrl }),
+        body: JSON.stringify({ returnUrl, orgId }),
     });
     if (!response.ok) throw new Error(`Failed to create billing portal session: ${response.status}`);
     const { url } = await response.json();

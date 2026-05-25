@@ -93,7 +93,7 @@ export function BreakdownModal({
 
             {/* Header */}
             <div className="px-8 pb-6 text-center border-b border-gray-50">
-              <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${preview.isUpgrade ? "bg-primary-50 text-primary-600" : "bg-amber-50 text-amber-600"}`}>
+              <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${preview.isUpgrade ? "bg-primary-50 text-primary-600" : "bg-slate-100 text-slate-600"}`}>
                 {preview.isUpgrade ? <ArrowRight size={24} strokeWidth={3} /> : <Calendar size={24} strokeWidth={3} />}
               </div>
               <h3 className="text-xs font-black font-heading text-primary-600 uppercase tracking-[0.2em] mb-1">

@@ -3,9 +3,9 @@ import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Users, Phone, Search, User, ArrowUpDown, ArrowUp, ArrowDown, MessageSquare, X, Trash2, Download, Settings, Eye, EyeOff, CheckSquare, Square, XCircle, ExternalLink, ChevronDown, Calendar, FileText, Filter, Tags, RefreshCw, Hash } from "lucide-react";
 import type { Lead, Conversation, QualificationStatus } from "../types";
-import { getLeads, deleteLead, deleteLeads, bulkUpdateLeadsQualificationStatus, bulkAddLeadTags, bulkRemoveLeadTag, bulkUpdateLeadsListingCode } from "../services/leads";
-import { getListings } from "../services/listings";
-import { getConversationByChatId, getConversations, sendMassMessageToWhatsApp } from "../services/conversations";
+import { getLeads, getLeadsForAgent, deleteLead, deleteLeads, bulkUpdateLeadsQualificationStatus, bulkAddLeadTags, bulkRemoveLeadTag, bulkUpdateLeadsListingCode } from "../services/leads";
+import { getListings, getListingsForAgent } from "../services/listings";
+import { getConversationByChatId, getConversationByChatIdForAgent, getConversations, getConversationsForAgent, sendMassMessageToWhatsApp } from "../services/conversations";
 
 import { formatDate, formatPhone, cn, formatMessageTime } from "../lib/utils";
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
@@ -58,7 +58,7 @@ type LeadWithMessages = Lead & {
 };
 
 export function Leads() {
-  const { organizationId } = useAuth();
+  const { organizationId, effectiveRole, effectiveUid, isImpersonationReadOnly } = useAuth();
   const [leads, setLeads] = useState<LeadWithMessages[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -196,19 +196,42 @@ export function Leads() {
   }, []);
 
   useEffect(() => {
+    if (!organizationId || !effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
     loadLeads();
-  }, [organizationId]);
+  }, [organizationId, effectiveRole, effectiveUid]);
 
 
   async function loadLeads() {
     if (!organizationId) return;
+    if (!effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
     setLoading(true);
     try {
-      const [data, listingsData, conversationsData] = await Promise.all([
-        getLeads(),
-        getListings(),
-        getConversations(),
+      const [dataRes, listingsRes, conversationsRes] = await Promise.allSettled([
+        effectiveRole === "agent" ? getLeadsForAgent(effectiveUid) : getLeads(),
+        effectiveRole === "agent" ? getListingsForAgent(effectiveUid) : getListings(),
+        effectiveRole === "agent" ? getConversationsForAgent(effectiveUid) : getConversations(),
       ]);
+
+      const labels = ["leads", "listings", "conversations"] as const;
+      [dataRes, listingsRes, conversationsRes].forEach((res, i) => {
+        if (res.status === "rejected") {
+          const err = res.reason as { name?: string; code?: string; message?: string };
+          console.error(`[Leads] query failed: ${labels[i]}`, {
+            role: effectiveRole,
+            uidTail: (effectiveUid || "").slice(-6),
+            orgTail: (organizationId || "").slice(-8),
+            errName: err?.name,
+            errCode: err?.code,
+            errMsg: String(err?.message || res.reason),
+          });
+        }
+      });
+
+      const data = dataRes.status === "fulfilled" ? dataRes.value : [];
+      const listingsData = listingsRes.status === "fulfilled" ? listingsRes.value : [];
+      const conversationsData = conversationsRes.status === "fulfilled" ? conversationsRes.value : [];
 
       // Create a map of listing info
       const listingsMap = new Map(
@@ -232,7 +255,14 @@ export function Leads() {
       });
       setLeads(leadsWithMessages);
     } catch (error) {
-      console.error("Error loading leads:", error);
+      console.error("[Leads] loadLeads failed", {
+        role: effectiveRole,
+        uidTail: (effectiveUid || "").slice(-6),
+        orgTail: (organizationId || "").slice(-8),
+        errName: (error as any)?.name,
+        errCode: (error as any)?.code,
+        errMsg: String((error as any)?.message || error),
+      });
     } finally {
       setLoading(false);
     }
@@ -241,7 +271,9 @@ export function Leads() {
   async function openConversation(lead: Lead) {
     setLoadingConversation(true);
     try {
-      const conversation = await getConversationByChatId(lead.chatId);
+      const conversation = effectiveRole === "agent"
+        ? await getConversationByChatIdForAgent(lead.chatId, effectiveUid)
+        : await getConversationByChatId(lead.chatId);
       if (!conversation) {
         toast.error("No hay conversación disponible para este lead. El cliente aún no ha enviado mensajes.");
         return;
@@ -258,6 +290,10 @@ export function Leads() {
   }
 
   function openEditModal(lead: Lead) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setLeadToEdit(lead);
   }
 
@@ -278,6 +314,10 @@ export function Leads() {
 
   async function handleDeleteLead(e: React.MouseEvent, lead: Lead) {
     e.stopPropagation();
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
 
     const leadName = lead.name || formatPhone(lead.phone);
     const warningMessage = `⚠️ ADVERTENCIA: Esta acción eliminará permanentemente:\n\n` +
@@ -326,6 +366,10 @@ export function Leads() {
   }
 
   async function handleSendMassMessage() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!massMessageText.trim()) {
       toast.error("Por favor introduce un mensaje");
       return;
@@ -414,6 +458,10 @@ export function Leads() {
   }
 
   async function handleBulkDelete() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     if (!bulkDeleteAccepted) {
       toast.error("Debes aceptar la advertencia para continuar");
       return;
@@ -439,6 +487,10 @@ export function Leads() {
   }
 
   async function handleBulkUpdateStatus() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     const ids = Array.from(selectedLeadIds);
     if (ids.length === 0) return;
 
@@ -458,6 +510,10 @@ export function Leads() {
   }
 
   async function handleBulkAddTags() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     const ids = Array.from(selectedLeadIds);
     if (ids.length === 0) return;
     const tags = bulkTagsInput
@@ -487,6 +543,10 @@ export function Leads() {
   }
 
   async function handleBulkRemoveTag() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     const ids = Array.from(selectedLeadIds);
     if (ids.length === 0) return;
     const tag = bulkRemoveTagInput.trim();
@@ -512,6 +572,10 @@ export function Leads() {
   }
 
   async function handleBulkUpdateListingCode() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     const ids = Array.from(selectedLeadIds);
     if (ids.length === 0) return;
     const next = bulkListingCode.trim();
@@ -772,7 +836,7 @@ export function Leads() {
                   {
                     value: "no_response",
                     label: "Sin respuesta",
-                    selectedClassName: "bg-sky-200 text-sky-900",
+                    selectedClassName: "bg-slate-200 text-slate-900",
                     unselectedClassName: "text-gray-600 hover:bg-gray-50",
                   },
                   {
@@ -815,8 +879,16 @@ export function Leads() {
             </div>
             <div className="relative">
               <button
-                onClick={() => setIsBulkActionsOpen((v) => !v)}
-                className="px-4 py-2 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 transition-all shadow-sm active:scale-95 flex items-center gap-2"
+                type="button"
+                disabled={isImpersonationReadOnly}
+                onClick={() => {
+                  if (isImpersonationReadOnly) {
+                    toast.message("Solo lectura en modo vista como usuario");
+                    return;
+                  }
+                  setIsBulkActionsOpen((v) => !v);
+                }}
+                className="px-4 py-2 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 transition-all shadow-sm active:scale-95 flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none"
               >
                 <ChevronDown size={16} className={cn("transition-transform", isBulkActionsOpen && "rotate-180")} />
                 <span>Acciones</span>
@@ -1369,8 +1441,13 @@ export function Leads() {
                     </div>
                     <div className="flex items-center gap-2">
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (isImpersonationReadOnly) {
+                            toast.message("Solo lectura en modo vista como usuario");
+                            return;
+                          }
                           setLeadToConsent(lead);
                         }}
                         className="text-xs text-primary-700 hover:text-primary-900 underline"
@@ -1733,8 +1810,13 @@ export function Leads() {
                                 <MessageSquare size={16} />
                               </button>
                               <button
+                                type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  if (isImpersonationReadOnly) {
+                                    toast.message("Solo lectura en modo vista como usuario");
+                                    return;
+                                  }
                                   setLeadToConsent(lead);
                                 }}
                                 className="text-[10px] px-2 py-1 rounded-btn border border-gray-200 hover:bg-gray-50"
@@ -1922,6 +2004,7 @@ export function Leads() {
       {leadToEdit && (
         <LeadEditModal
           lead={leadToEdit}
+          readOnly={isImpersonationReadOnly}
           onClose={() => setLeadToEdit(null)}
           onUpdate={loadLeads}
           onViewConversation={openConversation}
@@ -1990,7 +2073,7 @@ export function Leads() {
               </button>
               <button
                 onClick={handleSendMassMessage}
-                disabled={sendingMassMessage || !massMessageText.trim()}
+                disabled={sendingMassMessage || !massMessageText.trim() || isImpersonationReadOnly}
                 className="flex-[2] px-4 py-2.5 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary-500/20 transition-all active:scale-95 flex items-center justify-center gap-2"
               >
                 {sendingMassMessage ? (

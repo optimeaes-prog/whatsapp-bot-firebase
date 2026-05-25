@@ -74,7 +74,7 @@ export function AdminOnboards() {
                   <AlertCircle className="text-primary-600" size={24} />
                   <div>
                     <h3 className="font-bold text-gray-900 leading-tight font-heading">Pendiente de Activación</h3>
-                    <p className="text-xs text-primary-800 font-heading font-bold">Paso 5 / 6</p>
+                    <p className="text-xs text-primary-800 font-heading font-bold">Paso 6 / 7</p>
                   </div>
                 </div>
                 

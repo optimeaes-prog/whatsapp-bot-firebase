@@ -1,19 +1,22 @@
-import { useState, useEffect } from "react";
-import { toast } from "sonner";
-import { CheckCircle, Lock, ArrowRight, Mail, Clock, Coins, ChevronDown, CheckSquare, Square, MessageCircle } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { CheckCircle, Lock, ArrowRight, Mail, Clock, ChevronDown, CheckSquare, Square, MessageCircle, CalendarDays, XCircle } from "lucide-react";
 import { getOrganizationSettings, updateOrganizationSettings } from "../services/organization";
 import type { OrganizationSettings } from "../services/organization";
-import { Link, useSearchParams } from "react-router-dom";
-import { getAvailableConversations, getConversationPackages, createCheckoutSession, formatPrice } from "../services/subscription";
+import { Link } from "react-router-dom";
 import { analytics } from "../lib/analytics";
-import type { ConversationPackage } from "../types";
-import { CreditCard, AlertCircle } from "lucide-react";
+import { getSubscription } from "../services/subscription";
+import type { OrgSubscriptionInfo } from "../services/subscription";
 import { cn } from "../lib/utils";
 import { Button, PageLoading } from "../components/ui";
 import { getBotConfig } from "../services/botConfig";
 import { ASSISTANT_AVATARS, getAssistantAvatarById, type AssistantAvatarId } from "../constants/assistantAvatars";
+import { CalEuInlineEmbed } from "../components/CalEuInlineEmbed";
+import { useAuth } from "../contexts/AuthContext";
 
 export function Onboarding() {
+  const { organizationId } = useAuth();
+  const loadSeqRef = useRef(0);
+
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<OrganizationSettings | null>(null);
   const [saving, setSaving] = useState(false);
@@ -26,29 +29,31 @@ export function Onboarding() {
     3: true,
     4: true,
     5: true,
+    6: true,
   });
 
-  // Form states for step 1
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+
+  // Form states for step 2
   const [agencyName, setAgencyName] = useState("");
   const [employeesCount, setEmployeesCount] = useState("");
   const [whatsappPhone, setWhatsappPhone] = useState("");
   const [assistantAvatarId, setAssistantAvatarId] = useState<AssistantAvatarId | "">("");
   const [isEmployeesDropdownOpen, setIsEmployeesDropdownOpen] = useState(false);
   
-  // Form state for step 3
+  // Form state for step 4
   const [forwardingEmail, setForwardingEmail] = useState("");
-
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [availableConversations, setAvailableConversations] = useState<number>(0);
-  const [packages, setPackages] = useState<ConversationPackage[]>([]);
-  const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
-  const [conversationsLoading, setConversationsLoading] = useState(true);
+  const [step5Error, setStep5Error] = useState<string | null>(null);
 
   const currentStep = settings?.onboardingStep || 1;
+  const [subscription, setSubscription] = useState<OrgSubscriptionInfo | null>(null);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(true);
 
-  const loadSettings = async () => {
+  const loadSettings = async (seq: number): Promise<OrganizationSettings | null> => {
     try {
       const s = await getOrganizationSettings();
+      if (seq !== loadSeqRef.current) return null;
+
       setSettings(s);
       setAgencyName(s.agencyName || "");
       setEmployeesCount(s.employeesCount || "");
@@ -58,74 +63,82 @@ export function Onboarding() {
       
       // Migration: if they had scheduled a call before the steps logic
       if (!s.onboardingStep && s.onboardingCallScheduled) {
-         setSettings({ ...s, onboardingStep: 3 });
+        const migrated = { ...s, onboardingStep: 2 };
+        setSettings(migrated);
+        return migrated;
       }
+      return s;
     } catch (error) {
       console.error("Failed to load settings:", error);
+      return null;
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   };
 
-  async function loadConversationsData() {
+  async function refreshSubscription(seq: number, step: number) {
     try {
-      setConversationsLoading(true);
-      const [balance, pkgs] = await Promise.all([
-        getAvailableConversations(),
-        getConversationPackages(),
-      ]);
-      setAvailableConversations(balance);
-      setPackages(pkgs);
+      setSubscriptionLoading(true);
+      const sub = await getSubscription().catch(() => null);
+      if (seq !== loadSeqRef.current) return;
+      setSubscription(sub);
+      const isActive =
+        Boolean(sub) &&
+        sub!.planId !== "free" &&
+        (sub!.status === "active" || sub!.status === "trialing");
+
+      if (isActive && step === 4) {
+        await updateOrganizationSettings({ onboardingStep: 5 });
+        await loadSettings(seq);
+      }
     } catch (error) {
-      console.error("Error loading credits:", error);
-      // Fallback display
-      setPackages([
-        { id: "extra_40", name: "40 Conversaciones", amount: 1000, conversations: 40, currency: "eur" },
-      ]);
+      console.error("Failed to load subscription:", error);
+      if (seq !== loadSeqRef.current) return;
+      setSubscription(null);
     } finally {
-      setConversationsLoading(false);
+      if (seq === loadSeqRef.current) setSubscriptionLoading(false);
     }
   }
 
-  async function refreshWhatsAppConnection() {
+  async function refreshWhatsAppConnection(seq: number, step: number) {
     try {
       setCheckingConnection(true);
       const cfg = await getBotConfig();
+      if (seq !== loadSeqRef.current) return;
       const cloudApiCfg = (cfg as unknown as { cloudApiConfig?: { phoneNumberId?: string; wabaId?: string } }).cloudApiConfig;
       const connected = Boolean(cloudApiCfg?.phoneNumberId && cloudApiCfg?.wabaId);
       setWhatsAppConnected(connected);
-      if (connected && currentStep === 2) {
-        await updateOrganizationSettings({ onboardingStep: 3 });
-        await loadSettings();
+      if (connected && step < 4) {
+        await updateOrganizationSettings({ onboardingStep: 4 });
+        await loadSettings(seq);
       }
     } catch (error) {
       console.error("Failed to check WhatsApp connection:", error);
+      if (seq !== loadSeqRef.current) return;
       setWhatsAppConnected(false);
     } finally {
-      setCheckingConnection(false);
+      if (seq === loadSeqRef.current) setCheckingConnection(false);
     }
   }
 
   useEffect(() => {
-    loadSettings();
-    loadConversationsData();
+    if (!organizationId) return;
+    const seq = ++loadSeqRef.current;
 
-    const payment = searchParams.get("payment");
-    if (payment === "success") {
-      analytics.trackPaymentSuccess("onboarding");
-      updateOrganizationSettings({ onboardingStep: 5 }).then(() => {
-        loadSettings();
-        setTimeout(() => setSearchParams({}), 3000);
-      });
-    } else if (payment === "cancelled") {
-      analytics.trackPaymentCancelled("onboarding");
-      setTimeout(() => setSearchParams({}), 3000);
-    }
-  }, []);
+    setLoading(true);
+    setSettings(null);
+    setSubscription(null);
+    setSubscriptionLoading(true);
+    setWhatsAppConnected(false);
+    setCheckingConnection(true);
+    setIsEmployeesDropdownOpen(false);
 
-  useEffect(() => {
-    refreshWhatsAppConnection();
-  }, []);
+    (async () => {
+      const s = await loadSettings(seq);
+      const step = s?.onboardingStep || 1;
+      await Promise.all([refreshSubscription(seq, step), refreshWhatsAppConnection(seq, step)]);
+    })();
+  }, [organizationId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -140,7 +153,14 @@ export function Onboarding() {
     if (!isDesktop) return;
     if (!settings?.onboardingStep) return;
     const cs = settings.onboardingStep;
-    setExpandedSteps((prev) => ({ ...prev, [cs]: true }));
+    setExpandedSteps((prev) => {
+      const next: Record<number, boolean> = {};
+      for (const key of Object.keys(prev)) {
+        const n = Number(key);
+        next[n] = n === cs;
+      }
+      return next;
+    });
   }, [isDesktop, settings?.onboardingStep]);
 
   function toggleStep(step: number) {
@@ -148,7 +168,19 @@ export function Onboarding() {
     setExpandedSteps((prev) => ({ ...prev, [step]: !prev[step] }));
   }
 
-  const handleSaveStep1 = async (e: React.FormEvent) => {
+  const handleConfirmCallScheduled = async () => {
+    setSaving(true);
+    await updateOrganizationSettings({
+      onboardingCallScheduled: true,
+      onboardingStep: Math.max(currentStep, 2),
+    });
+    analytics.trackOnboardingStepComplete(1, "onboarding_call");
+    await loadSettings(loadSeqRef.current);
+    setSaving(false);
+    setIsCallModalOpen(false);
+  };
+
+  const handleSaveStep2 = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     await updateOrganizationSettings({
@@ -162,49 +194,40 @@ export function Onboarding() {
         typeof window !== "undefined" && assistantAvatarId
           ? `${window.location.origin}${getAssistantAvatarById(assistantAvatarId)?.imagePath || ""}`
           : undefined,
-      onboardingStep: 2
+      onboardingStep: 3
     });
-    analytics.trackOnboardingStepComplete(1, "agency_info");
-    await loadSettings();
+    analytics.trackOnboardingStepComplete(2, "agency_info");
+    await loadSettings(loadSeqRef.current);
     setSaving(false);
   };
 
-  const handleSaveStep3 = async (e: React.FormEvent) => {
+  const handleSaveStep5 = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     await updateOrganizationSettings({
       forwardingEmail,
-      onboardingStep: 4
+      onboardingStep: 6
     });
-    analytics.trackOnboardingStepComplete(3, "email_config");
-    await loadSettings();
+    analytics.trackOnboardingStepComplete(5, "email_config");
+    await loadSettings(loadSeqRef.current);
     setSaving(false);
   };
 
-  const handleSaveStep4 = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
+  const handleMarkStep5Complete = async () => {
+    if (!forwardingEmail.trim()) {
+      setStep5Error("Indica el email desde el que se reenviarán los leads.");
+      return;
+    }
+    setStep5Error(null);
     setSaving(true);
     await updateOrganizationSettings({
-      onboardingStep: 5
+      forwardingEmail,
+      onboardingStep: 6
     });
-    analytics.trackOnboardingStepComplete(4, "credits_acknowledged");
-    await loadSettings();
+    analytics.trackOnboardingStepComplete(5, "email_config");
+    await loadSettings(loadSeqRef.current);
     setSaving(false);
   };
-
-  async function handlePurchase(packageId: string) {
-    setPurchaseLoading(packageId);
-    analytics.trackOnboardingPurchaseInitiated(packageId);
-    try {
-      const checkoutUrl = await createCheckoutSession(packageId, "/onboarding");
-      window.location.href = checkoutUrl;
-    } catch (error) {
-      console.error("Error creating checkout session:", error);
-      toast.error("Error al iniciar el pago. Inténtalo de nuevo.");
-    } finally {
-      setPurchaseLoading(null);
-    }
-  }
 
   if (loading) {
     return (
@@ -214,7 +237,14 @@ export function Onboarding() {
     );
   }
 
-  const isCompleted = currentStep >= 6;
+  const isCompleted = currentStep >= 7;
+  // Some legacy org docs may contain non-boolean values; only strict true counts.
+  const callScheduled = settings?.onboardingCallScheduled === true;
+  const step1Done = callScheduled;
+  const hasActiveSubscription =
+    Boolean(subscription) &&
+    subscription!.planId !== "free" &&
+    (subscription!.status === "active" || subscription!.status === "trialing");
 
   return (
     <div className="max-w-3xl mx-auto py-8 px-4 sm:px-6">
@@ -223,59 +253,123 @@ export function Onboarding() {
         <p className="text-gray-600 font-body">Completa estos pasos para empezar a utilizar tu agente de inteligencia artificial.</p>
       </div>
 
+      {/* Paso 1 (sección separada) */}
+      <div className="mb-8">
+        <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleStep(1)}
+            className="w-full flex items-center justify-between text-left px-4 py-4 sm:px-6 hover:bg-gray-50"
+          >
+            <div className="flex items-center gap-3">
+              <div className={cn(
+                "flex h-9 w-9 items-center justify-center rounded-full border",
+                step1Done ? "border-primary-500 bg-primary-500 text-white" :
+                currentStep === 1 ? "border-primary-500 bg-white text-primary-700" :
+                "border-gray-200 text-gray-400 bg-gray-50"
+              )}>
+                <span className="font-bold">1</span>
+              </div>
+              <div>
+                <h2 className="text-lg sm:text-xl font-bold font-heading">Bookea tu onboarding call</h2>
+                <p className="text-xs text-gray-500 font-medium">Te acompañamos para completar la activación sin complicaciones.</p>
+              </div>
+            </div>
+            <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[1] ? "rotate-180" : "")} />
+          </button>
+
+          <div className={cn(expandedSteps[1] ? "" : "hidden", "px-4 pb-5 sm:px-6")}>
+            <p className="text-gray-600 mb-4">
+              Esta llamada es para ayudarte a completar el proceso de activación del asistente paso a paso: resolvemos dudas, revisamos la configuración y nos aseguramos de que todo quede funcionando.
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Button
+                type="button"
+                onClick={() => setIsCallModalOpen(true)}
+                className="w-full sm:w-auto flex items-center justify-center gap-2"
+              >
+                <CalendarDays size={18} />
+                Abrir calendario
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleConfirmCallScheduled}
+                loading={saving}
+                disabled={step1Done}
+                className="w-full sm:w-auto"
+                title={step1Done ? "Este paso ya está completado" : "Si ya la has reservado en el calendario, marca este paso como completado"}
+              >
+                {step1Done ? "Paso completado" : "Ya la he reservado"}
+              </Button>
+            </div>
+
+            {step1Done && (
+              <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+                <CheckCircle size={20} className="text-emerald-600" />
+                <span className="font-medium">Onboarding call reservada.</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className={cn(
         "pb-4",
         isDesktop
-          ? "rounded-2xl border border-gray-200 bg-white shadow-sm divide-y divide-gray-100"
+          ? "rounded-xl border border-gray-200 bg-white shadow-sm divide-y divide-gray-100"
           : "relative border-l-2 border-gray-200 ml-4 space-y-12"
       )}>
-        
-        {/* Paso 1 */}
+
+        {/* Paso 2 */}
         <div className={cn(
           "transition-all duration-300",
-          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 1 ? "opacity-100" : "opacity-60"}`
+          isDesktop ? "p-4 sm:p-6" : "ml-8 relative opacity-100"
         )}>
           {!isDesktop && (
             <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-              currentStep > 1 ? 'border-emerald-500 text-emerald-500' : 
-              currentStep === 1 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400'
+              currentStep > 2 ? 'border-primary-500 bg-primary-500 text-white' :
+              currentStep === 2 ? 'border-primary-500 bg-white text-primary-700' : 'border-gray-200 text-gray-400'
             }`}>
-              {currentStep > 1 ? <CheckCircle size={22} className="text-emerald-500" /> : <span className="font-bold text-lg">1</span>}
+              <span className="font-bold text-lg">2</span>
             </div>
           )}
 
           <div className={cn(
             "card shadow-sm border",
-            isDesktop ? "p-0" : `p-6 ${currentStep === 1 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
-            isDesktop && (currentStep === 1 ? "border-primary-300" : "border-gray-100")
+            isDesktop ? "p-0" : `p-6 ${currentStep === 2 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 2 ? "border-primary-300" : "border-gray-100")
           )}>
             <button
               type="button"
-              onClick={() => toggleStep(1)}
+              onClick={() => toggleStep(2)}
               className={cn(
                 "w-full flex items-center justify-between text-left",
                 isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
-                isDesktop && "hover:bg-gray-50 rounded-t-2xl"
+                isDesktop && "hover:bg-gray-50 rounded-t-xl"
               )}
             >
               <div className="flex items-center gap-3">
                 <div className={cn(
                   "flex h-9 w-9 items-center justify-center rounded-full border",
-                  currentStep > 1 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
-                  currentStep === 1 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep > 2 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep === 2 ? "border-primary-500 bg-white text-primary-700" :
                   "border-gray-200 text-gray-400 bg-gray-50"
                 )}>
-                  {currentStep > 1 ? <CheckCircle size={18} className="text-emerald-600" /> : <span className="font-bold">1</span>}
+                  <span className="font-bold">2</span>
                 </div>
-                <h2 className="text-lg sm:text-xl font-bold font-heading">Datos de tu Inmobiliaria</h2>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold font-heading">Datos de tu Inmobiliaria</h2>
+                </div>
               </div>
               {isDesktop && (
-                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[1] ? "rotate-180" : "")} />
+                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[2] ? "rotate-180" : "")} />
               )}
             </button>
             
-            <div className={cn(isDesktop && !expandedSteps[1] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
-            <form onSubmit={handleSaveStep1} className={currentStep > 1 && !saving ? "pointer-events-none opacity-80" : ""}>
+            <div className={cn(isDesktop && !expandedSteps[2] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
+            <form onSubmit={handleSaveStep2} className={currentStep > 2 && !saving ? "pointer-events-none opacity-80" : ""}>
               <div className="space-y-4 mb-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Nombre de la Inmobiliaria</label>
@@ -283,7 +377,7 @@ export function Onboarding() {
                     type="text" required
                     className="w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
                     value={agencyName} onChange={e => setAgencyName(e.target.value)}
-                    disabled={currentStep > 1 && !saving}
+                    disabled={currentStep > 2 && !saving}
                     placeholder="Ej. Inmobiliaria Granados"
                   />
                 </div>
@@ -297,11 +391,11 @@ export function Onboarding() {
                           key={avatar.id}
                           type="button"
                           onClick={() => setAssistantAvatarId(avatar.id)}
-                          disabled={currentStep > 1 && !saving}
+                          disabled={currentStep > 2 && !saving}
                           className={cn(
                             "rounded-btn border p-2 text-center transition-all bg-white",
                             isSelected ? "border-primary-500 ring-2 ring-primary-200" : "border-gray-200 hover:border-primary-300",
-                            currentStep > 1 && !saving && "cursor-not-allowed opacity-80 bg-gray-50"
+                            currentStep > 2 && !saving && "cursor-not-allowed opacity-80 bg-gray-50"
                           )}
                         >
                           <img
@@ -315,8 +409,8 @@ export function Onboarding() {
                       );
                     })}
                   </div>
-                  {!assistantAvatarId && currentStep === 1 && (
-                    <p className="text-xs text-orange-600 mt-2">Selecciona un avatar para continuar.</p>
+                  {!assistantAvatarId && currentStep === 2 && (
+                    <p className="text-xs text-red-600 mt-2">Selecciona un avatar para continuar.</p>
                   )}
                 </div>
 
@@ -327,11 +421,11 @@ export function Onboarding() {
                       <button
                         type="button"
                         onClick={() => setIsEmployeesDropdownOpen(!isEmployeesDropdownOpen)}
-                        disabled={currentStep > 1 && !saving}
+                        disabled={currentStep > 2 && !saving}
                         className={cn(
                           "w-full px-4 py-2 border border-gray-300 rounded-btn flex items-center justify-between text-sm transition-all bg-white",
                           isEmployeesDropdownOpen ? "ring-2 ring-primary-500 border-transparent" : "hover:border-gray-400",
-                          currentStep > 1 && !saving && "bg-gray-50 opacity-80 cursor-not-allowed"
+                          currentStep > 2 && !saving && "bg-gray-50 opacity-80 cursor-not-allowed"
                         )}
                       >
                         <span className={!employeesCount ? "text-gray-400" : "text-gray-900"}>
@@ -368,15 +462,17 @@ export function Onboarding() {
                       type="tel" required
                       className="w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
                       value={whatsappPhone} onChange={e => setWhatsappPhone(e.target.value)}
-                      disabled={currentStep > 1 && !saving}
+                      disabled={currentStep > 2 && !saving}
                       placeholder="+34 XXXXXXXX"
                     />
-                    <p className="text-xs text-gray-500 mt-1">Donde recibirás alertas de leads cualificados</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Donde recibirás alertas de leads cualificados. Podrás cambiar este número o añadir otros más adelante.
+                    </p>
                   </div>
                 </div>
               </div>
               
-              {currentStep === 1 && (
+              {currentStep === 2 && (
                 <Button
                   type="submit"
                   loading={saving}
@@ -392,103 +488,20 @@ export function Onboarding() {
           </div>
         </div>
 
-        {/* Paso 2 */}
-        <div className={cn(
-          "transition-all duration-300",
-          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 2 ? "opacity-100" : "opacity-60"}`
-        )}>
-          {!isDesktop && (
-            <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-              currentStep > 2 ? 'border-emerald-500 text-emerald-500' : 
-              currentStep === 2 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
-            }`}>
-              {currentStep > 2 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 2 ? <span className="font-bold text-lg">2</span> : <Lock size={16} />}
-            </div>
-          )}
-          
-          <div className={cn(
-            "card shadow-sm border",
-            isDesktop ? "p-0" : `p-6 ${currentStep === 2 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
-            isDesktop && (currentStep === 2 ? "border-primary-300" : "border-gray-100")
-          )}>
-            <button
-              type="button"
-              onClick={() => toggleStep(2)}
-              className={cn(
-                "w-full flex items-center justify-between text-left",
-                isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
-                isDesktop && "hover:bg-gray-50"
-              )}
-            >
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  "flex h-9 w-9 items-center justify-center rounded-full border",
-                  currentStep > 2 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
-                  currentStep === 2 ? "border-primary-500 bg-primary-500 text-white" :
-                  "border-gray-200 text-gray-400 bg-gray-50"
-                )}>
-                  {currentStep > 2 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 2 ? <span className="font-bold">2</span> : <Lock size={14} />}
-                </div>
-                <h2 className="text-lg sm:text-xl font-bold font-heading">Conectar WhatsApp Business</h2>
-              </div>
-              {isDesktop && (
-                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[2] ? "rotate-180" : "")} />
-              )}
-            </button>
-            
-            <div className={cn(isDesktop && !expandedSteps[2] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
-            <p className="text-gray-600 mb-6">
-              Conecta tu cuenta de WhatsApp Business con Meta Embedded Signup para activar la mensajería oficial en Proplead.
-            </p>
-            
-            {currentStep === 2 && (
-              <div className="flex flex-col sm:flex-row gap-3">
-                <Link to="/connect-whatsapp" className="w-full sm:w-auto">
-                  <Button className="w-full sm:w-auto flex items-center justify-center gap-2">
-                    <MessageCircle size={18} />
-                    Conectar con Facebook
-                  </Button>
-                </Link>
-                <Button
-                  variant="outline"
-                  onClick={refreshWhatsAppConnection}
-                  loading={checkingConnection}
-                  className="w-full sm:w-auto"
-                >
-                  Verificar conexión
-                </Button>
-              </div>
-            )}
-
-            {(currentStep > 2 || whatsAppConnected) && (
-              <div className="bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
-                <CheckCircle size={20} className="text-emerald-600" />
-                <span className="font-medium">WhatsApp Business conectado correctamente.</span>
-              </div>
-            )}
-            {currentStep < 2 && (
-              <div className="text-sm text-gray-500 mt-2 bg-gray-50 p-3 rounded border border-gray-100">
-                Completa el paso anterior para desbloquear la conexión.
-              </div>
-            )}
-            </div>
-          </div>
-        </div>
-
         {/* Paso 3 */}
         <div className={cn(
           "transition-all duration-300",
-          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 3 ? "opacity-100" : "opacity-60"}`
+          isDesktop ? "p-4 sm:p-6" : "ml-8 relative opacity-100"
         )}>
           {!isDesktop && (
             <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-              currentStep > 3 ? 'border-emerald-500 text-emerald-500' : 
-              currentStep === 3 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
+              currentStep > 3 ? 'border-primary-500 bg-primary-500 text-white' :
+              currentStep === 3 ? 'border-primary-500 bg-white text-primary-700' : 'border-gray-200 text-gray-400 bg-gray-50'
             }`}>
-              {currentStep > 3 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 3 ? <span className="font-bold text-lg">3</span> : <Lock size={16} />}
+              <span className="font-bold text-lg">3</span>
             </div>
           )}
-
+          
           <div className={cn(
             "card shadow-sm border",
             isDesktop ? "p-0" : `p-6 ${currentStep === 3 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
@@ -506,13 +519,15 @@ export function Onboarding() {
               <div className="flex items-center gap-3">
                 <div className={cn(
                   "flex h-9 w-9 items-center justify-center rounded-full border",
-                  currentStep > 3 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
-                  currentStep === 3 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep > 3 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep === 3 ? "border-primary-500 bg-white text-primary-700" :
                   "border-gray-200 text-gray-400 bg-gray-50"
                 )}>
-                  {currentStep > 3 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 3 ? <span className="font-bold">3</span> : <Lock size={14} />}
+                  <span className="font-bold">3</span>
                 </div>
-                <h2 className="text-lg sm:text-xl font-bold font-heading">Configurar email de leads</h2>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold font-heading">Conectar WhatsApp Business</h2>
+                </div>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[3] ? "rotate-180" : "")} />
@@ -520,78 +535,50 @@ export function Onboarding() {
             </button>
             
             <div className={cn(isDesktop && !expandedSteps[3] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
-            {currentStep >= 3 && (
-              <form onSubmit={handleSaveStep3} className={currentStep > 3 && !saving ? "pointer-events-none opacity-80" : ""}>
-                <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
-                  <h3 className="mb-3 flex items-center gap-2 font-bold text-primary-900">
-                    <Mail size={18} />
-                    Guía de reenvío de correos
-                  </h3>
-                  <ol className="list-decimal list-inside space-y-3 pl-2 text-sm text-primary-800">
-                    <li>Abre tu cuenta de correo electrónico de la Inmobiliaria.</li>
-                    <li>Ve a los ajustes de <span className="font-bold">Filtros y direcciones bloqueadas</span>.</li>
-                    <li>Crea un filtro para todos los correos que provengan de <code>idealista.com</code> con el asunto de nuevos contactos.</li>
-                    <li>Configura el reenvío automático a: <code className="mt-1 inline-block rounded border border-primary-200 bg-white px-2 py-1 font-mono font-bold">optimea.es@gmail.com</code></li>
-                  </ol>
-                </div>
-
-                <div className="space-y-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">¿Desde qué email se van a reenviar?</label>
-                    <input 
-                      type="email" required
-                      className="w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
-                      value={forwardingEmail} onChange={e => setForwardingEmail(e.target.value)}
-                      disabled={currentStep > 3 && !saving}
-                      placeholder="tucorreo@inmobiliaria.com"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Necesario para identificar tus leads y vincularlos a tu cuenta.</p>
-                  </div>
-                </div>
-
-                {currentStep === 3 && (
-                  <Button
-                    type="submit"
-                    loading={saving}
-                    className="w-full sm:w-auto flex items-center justify-center gap-2 mt-6"
-                  >
-                    Completar Onboarding
-                    <CheckCircle size={18} />
-                  </Button>
-                )}
-              </form>
-            )}
+            <p className="text-gray-600 mb-6">
+              Conecta tu cuenta de WhatsApp Business con Meta Embedded Signup para activar la mensajería oficial en Proplead.
+            </p>
             
-            {currentStep <= 3 && (
-              <div className="mt-2">
-                {currentStep < 3 ? (
-                  <div className="text-sm text-gray-500 bg-gray-50 p-3 rounded border border-gray-100">
-                    Completa los pasos anteriores para configurar la ingesta de leads.
-                  </div>
-                ) : null}
+            {!whatsAppConnected && (
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Link to="/connect-whatsapp" className="w-full sm:w-auto">
+                  <Button className="w-full sm:w-auto flex items-center justify-center gap-2">
+                    <MessageCircle size={18} />
+                    Conectar con Facebook
+                  </Button>
+                </Link>
+                <Button
+                  variant="outline"
+                  onClick={() => refreshWhatsAppConnection(loadSeqRef.current, currentStep)}
+                  loading={checkingConnection}
+                  className="w-full sm:w-auto"
+                >
+                  Verificar conexión
+                </Button>
               </div>
             )}
-            {currentStep > 3 && (
-               <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+
+            {(currentStep > 3 || whatsAppConnected) && (
+              <div className="bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
                 <CheckCircle size={20} className="text-emerald-600" />
-                <span className="font-medium">Sincronización de Idealista configurada.</span>
+                <span className="font-medium">WhatsApp Business conectado correctamente.</span>
               </div>
             )}
             </div>
           </div>
         </div>
 
-        {/* Paso 4 - Créditos */}
+        {/* Paso 4 */}
         <div className={cn(
           "transition-all duration-300",
-          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 4 ? "opacity-100" : "opacity-60"}`
+          isDesktop ? "p-4 sm:p-6" : "ml-8 relative opacity-100"
         )}>
           {!isDesktop && (
             <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-              currentStep > 4 ? 'border-emerald-500 text-emerald-500' : 
-              currentStep === 4 ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
+              currentStep > 4 ? 'border-primary-500 bg-primary-500 text-white' :
+              currentStep === 4 ? 'border-primary-500 bg-white text-primary-700' : 'border-gray-200 text-gray-400 bg-gray-50'
             }`}>
-              {currentStep > 4 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 4 ? <span className="font-bold text-lg">4</span> : <Lock size={16} />}
+              <span className="font-bold text-lg">4</span>
             </div>
           )}
 
@@ -612,13 +599,15 @@ export function Onboarding() {
               <div className="flex items-center gap-3">
                 <div className={cn(
                   "flex h-9 w-9 items-center justify-center rounded-full border",
-                  currentStep > 4 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
-                  currentStep === 4 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep > 4 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep === 4 ? "border-primary-500 bg-white text-primary-700" :
                   "border-gray-200 text-gray-400 bg-gray-50"
                 )}>
-                  {currentStep > 4 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 4 ? <span className="font-bold">4</span> : <Lock size={14} />}
+                  <span className="font-bold">4</span>
                 </div>
-                <h2 className="text-lg sm:text-xl font-bold font-heading">Suscripción y Conversaciones</h2>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold font-heading">Activar suscripción</h2>
+                </div>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[4] ? "rotate-180" : "")} />
@@ -626,117 +615,36 @@ export function Onboarding() {
             </button>
             
             <div className={cn(isDesktop && !expandedSteps[4] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
-            {currentStep >= 4 && (
-              <div className={currentStep > 4 && !saving ? "pointer-events-none opacity-80" : ""}>
-                <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
-                  <h3 className="mb-3 flex items-center gap-2 font-bold text-primary-900">
-                    <Coins size={18} />
-                    Volumen de conversaciones
-                  </h3>
-                  <p className="mb-3 text-sm text-primary-800">
-                    Tu plan incluye <strong>80 conversaciones base al mes</strong>. Si necesitas más, puedes configurar paquetes extras.
+              {
+                <div className={currentStep > 4 && !saving ? "pointer-events-none opacity-80" : ""}>
+                  <p className="text-gray-600 mb-4">
+                    Para continuar, activa una suscripción. Desde ahí podrás elegir plan y completar el pago de forma segura.
                   </p>
-                  <p className="rounded-lg border border-primary-200 bg-white p-3 text-sm text-primary-800 shadow-sm">
-                    <strong>Ejemplo práctico:</strong> Si para tus anuncios recibes 120 personas interesadas al mes, las primeras 80 están cubiertas por tu plan base, y puedes añadir un bloque extra automático de 40 conversaciones por 10€.
-                  </p>
-                </div>
 
-                {searchParams.get("payment") === "success" && (
-                  <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-3">
-                    <CheckCircle className="text-emerald-600" size={20} />
-                    <div>
-                      <p className="font-semibold text-emerald-800 text-sm">¡Pago completado!</p>
-                      <p className="text-sm text-emerald-700">Tus conversaciones y configuración se han guardado con éxito.</p>
+                  {hasActiveSubscription ? (
+                    <div className="bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+                      <CheckCircle size={20} className="text-emerald-600" />
+                      <span className="font-medium">Suscripción activa detectada. Ya puedes continuar.</span>
                     </div>
-                  </div>
-                )}
-                {searchParams.get("payment") === "cancelled" && (
-                  <div className="mb-6 p-4 bg-orange-50 border border-orange-200 rounded-lg flex items-center gap-3">
-                    <AlertCircle className="text-orange-600" size={20} />
-                    <div>
-                      <p className="font-semibold text-orange-800 text-sm">Pago cancelado</p>
-                      <p className="text-sm text-orange-700">El proceso de pago no se completó.</p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="mb-6">
-                  <h4 className="text-md font-bold text-gray-800 mb-3">Si aún no tienes un plan activo, puedes añadir un bloque extra base</h4>
-                  <div className="grid sm:grid-cols-3 gap-3">
-                    {packages.map((pkg) => (
-                      <div
-                        key={pkg.id}
-                        className={cn(
-                          "relative bg-white border-2 p-4 rounded-btn text-center transition-all cursor-pointer shadow-sm hover:shadow-md",
-                          pkg.id === "extra_40" ? "border-primary-400" : "border-gray-100 hover:border-primary-300"
-                        )}
-                        onClick={() => { if(currentStep === 4) handlePurchase(pkg.id) }}
-                      >
-                        {pkg.id === "extra_40" && (
-                          <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                            <span className="px-2 py-0.5 bg-primary-600 text-white text-[10px] font-bold rounded-full shadow-sm uppercase tracking-wide">
-                              Recomendado
-                            </span>
-                          </div>
-                        )}
-                        <div className="flex items-center justify-center gap-1 mb-1 mt-2">
-                          <Coins className="text-amber-500" size={18} />
-                          <span className="text-xl font-bold text-gray-900">{pkg.conversations}</span>
-                        </div>
-                        <p className="text-xs text-gray-500 mb-3 font-bold font-heading uppercase tracking-widest">conversaciones</p>
-                        <p className="text-lg font-bold text-primary-600 mb-3">{formatPrice(pkg.amount, pkg.currency)}</p>
-                        <Button
-                          disabled={purchaseLoading !== null || currentStep > 4}
-                          loading={purchaseLoading === pkg.id}
-                          variant={pkg.id === "extra_40" ? "primary" : "outline"}
-                          size="sm"
-                          className="w-full text-xs font-semibold"
-                        >
-                          <CreditCard size={12} />
-                          Añadir bloque
+                  ) : (
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <Link to="/suscripcion" className="w-full sm:w-auto">
+                        <Button className="w-full sm:w-auto">
+                          Ir a Suscripciones
                         </Button>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-[10px] text-gray-400 mt-2 text-center">Un bloque de 40 extra te asegura no pausar la IA • Pago seguro con Stripe</p>
-                </div>
-
-                {currentStep === 4 && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between border-t border-gray-100 mt-6 pt-5 gap-4">
-                    <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 px-3 py-1.5 rounded-md border border-gray-200">
-                      Saldo actual: <strong className="text-amber-600">{conversationsLoading ? "..." : availableConversations} conversaciones</strong>
-                    </div>
-                    <div className="flex flex-col items-end">
+                      </Link>
                       <Button
-                        onClick={() => handleSaveStep4()}
-                        disabled={availableConversations === 0}
-                        loading={saving}
-                        className="flex items-center justify-center gap-2 text-sm"
-                        title={availableConversations === 0 ? "Adquiere tu primer paquete para continuar" : ""}
+                        variant="outline"
+                        onClick={() => refreshSubscription(loadSeqRef.current, currentStep)}
+                        loading={subscriptionLoading}
+                        className="w-full sm:w-auto"
                       >
-                        Confirmar saldo y continuar
-                        <ArrowRight size={16} />
+                        Ya tengo suscripción (verificar)
                       </Button>
-                      {availableConversations === 0 && (
-                        <p className="text-xs text-orange-600 mt-1.5 font-medium">Requiere adquirir saldo primero</p>
-                      )}
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
-            
-            {currentStep < 4 && (
-              <div className="mt-2 text-sm text-gray-500 bg-gray-50 p-3 rounded border border-gray-100">
-                Paso bloqueado. Completa las configuraciones para entender el sistema de pagos.
-              </div>
-            )}
-            {currentStep > 4 && (
-               <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
-                <CheckCircle size={20} className="text-emerald-600" />
-                <span className="font-medium">Has activado tu plan base de conversaciones.</span>
-              </div>
-            )}
+                  )}
+                </div>
+              }
             </div>
           </div>
         </div>
@@ -744,21 +652,21 @@ export function Onboarding() {
         {/* Paso 5 */}
         <div className={cn(
           "transition-all duration-300",
-          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 5 ? "opacity-100" : "opacity-60"}`
+          isDesktop ? "p-4 sm:p-6" : "ml-8 relative opacity-100"
         )}>
           {!isDesktop && (
             <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
-              currentStep > 5 ? 'border-emerald-500 text-emerald-500' : 
-              currentStep === 5 ? 'border-orange-500 bg-orange-500 text-white' : 'border-gray-200 text-gray-400 bg-gray-50'
+              currentStep > 5 ? 'border-primary-500 bg-primary-500 text-white' :
+              currentStep === 5 ? 'border-primary-500 bg-white text-primary-700' : 'border-gray-200 text-gray-400 bg-gray-50'
             }`}>
-              {currentStep > 5 ? <CheckCircle size={22} className="text-emerald-500" /> : currentStep === 5 ? <span className="font-bold text-lg">5</span> : <Lock size={16} />}
+              <span className="font-bold text-lg">5</span>
             </div>
           )}
 
           <div className={cn(
             "card shadow-sm border",
-            isDesktop ? "p-0" : `p-6 ${currentStep === 5 ? "border-orange-500 ring-1 ring-orange-500" : "border-gray-100"}`,
-            isDesktop && (currentStep === 5 ? "border-orange-300" : "border-gray-100")
+            isDesktop ? "p-0" : `p-6 ${currentStep === 5 ? "border-primary-500 ring-1 ring-primary-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 5 ? "border-primary-300" : "border-gray-100")
           )}>
             <button
               type="button"
@@ -772,13 +680,15 @@ export function Onboarding() {
               <div className="flex items-center gap-3">
                 <div className={cn(
                   "flex h-9 w-9 items-center justify-center rounded-full border",
-                  currentStep > 5 ? "border-emerald-500 text-emerald-600 bg-emerald-50" :
-                  currentStep === 5 ? "border-orange-500 bg-orange-500 text-white" :
+                  currentStep > 5 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep === 5 ? "border-primary-500 bg-white text-primary-700" :
                   "border-gray-200 text-gray-400 bg-gray-50"
                 )}>
-                  {currentStep > 5 ? <CheckCircle size={18} className="text-emerald-600" /> : currentStep === 5 ? <span className="font-bold">5</span> : <Lock size={14} />}
+                  <span className="font-bold">5</span>
                 </div>
-                <h2 className="text-lg sm:text-xl font-bold font-heading">Activación del Asistente</h2>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold font-heading">Configurar email de leads</h2>
+                </div>
               </div>
               {isDesktop && (
                 <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[5] ? "rotate-180" : "")} />
@@ -786,8 +696,140 @@ export function Onboarding() {
             </button>
             
             <div className={cn(isDesktop && !expandedSteps[5] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
-            {currentStep === 5 && (
-               <div className="bg-orange-50 text-orange-800 p-5 rounded-lg border border-orange-200 animate-pulse">
+              <form onSubmit={handleSaveStep5} className={currentStep > 5 && !saving ? "pointer-events-none opacity-80" : ""}>
+                  <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-700">
+                    <p className="font-medium text-gray-900">Esto sirve para que el asistente responda automáticamente a los mensajes que entran desde Idealista (leads), no a llamadas al número de teléfono.</p>
+                    <p className="mt-1 text-gray-600">
+                      Nota: esta funcionalidad está activa por el momento <span className="font-semibold">solo para Idealista</span>.
+                    </p>
+                  </div>
+
+                  <div className="mb-6 rounded-lg border border-primary-100 bg-primary-50 p-5">
+                    <h3 className="mb-3 flex items-center gap-2 font-bold text-primary-900">
+                      <Mail size={18} />
+                      Guía de reenvío de correos (Idealista)
+                    </h3>
+                    <ol className="list-decimal list-inside space-y-3 pl-2 text-sm text-primary-800">
+                      <li>Abre la cuenta de correo electrónico donde recibes las notificaciones de nuevos mensajes recibidos en Idealista.</li>
+                      <li>Ve a los ajustes de <span className="font-bold">Filtros y direcciones bloqueadas</span> (o “Filtros”).</li>
+                      <li>Crea un filtro para los correos que provengan de <code>idealista.com</code>.</li>
+                      <li>Activa el reenvío automático a: <code className="mt-1 inline-block rounded border border-primary-200 bg-white px-2 py-1 font-mono font-bold">soporte@proplead.io</code></li>
+                    </ol>
+                  </div>
+
+                  <div className="space-y-4 mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">¿Desde qué email se van a reenviar?</label>
+                      <input
+                        type="email"
+                        required
+                        className="w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
+                        value={forwardingEmail}
+                        onChange={e => {
+                          setForwardingEmail(e.target.value);
+                          if (step5Error) setStep5Error(null);
+                        }}
+                        disabled={currentStep > 5 && !saving}
+                        placeholder="tucorreo@inmobiliaria.com"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Necesario para identificar tus leads y vincularlos a tu cuenta.</p>
+                      {step5Error && <p className="text-xs text-red-600 mt-2">{step5Error}</p>}
+                    </div>
+                  </div>
+
+                  {currentStep < 5 && (
+                    <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
+                      Paso bloqueado. Se desbloqueará al completar el paso anterior.
+                    </div>
+                  )}
+
+                  {currentStep === 5 && (
+                    <div className="mt-6 flex flex-col sm:flex-row gap-3">
+                      <Button
+                        type="submit"
+                        loading={saving}
+                        className="w-full sm:w-auto flex items-center justify-center gap-2"
+                      >
+                        Guardar y continuar
+                        <ArrowRight size={18} />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleMarkStep5Complete}
+                        loading={saving}
+                        className="w-full sm:w-auto"
+                      >
+                        Ya está completado
+                      </Button>
+                    </div>
+                  )}
+              </form>
+
+              {currentStep > 5 && (
+                <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
+                  <CheckCircle size={20} className="text-emerald-600" />
+                  <span className="font-medium">Email de leads configurado.</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Paso 6 */}
+        <div className={cn(
+          "transition-all duration-300",
+          isDesktop ? "p-4 sm:p-6" : `ml-8 relative ${currentStep >= 6 ? "opacity-100" : "opacity-60"}`
+        )}>
+          {!isDesktop && (
+            <div className={`absolute -left-13 flex h-10 w-10 items-center justify-center rounded-full ring-8 ring-gray-50 bg-white shadow-sm border ${
+              currentStep > 6 ? 'border-primary-500 bg-primary-500 text-white' :
+              currentStep === 6 ? 'border-primary-500 bg-white text-primary-700' : 'border-gray-200 text-gray-400 bg-gray-50'
+            }`}>
+              {currentStep > 6 ? <span className="font-bold text-lg">6</span> : currentStep === 6 ? <span className="font-bold text-lg">6</span> : <Lock size={16} />}
+            </div>
+          )}
+
+          <div className={cn(
+            "card shadow-sm border",
+            isDesktop ? "p-0" : `p-6 ${currentStep === 6 ? "border-orange-500 ring-1 ring-orange-500" : "border-gray-100"}`,
+            isDesktop && (currentStep === 6 ? "border-orange-300" : "border-gray-100")
+          )}>
+            <button
+              type="button"
+              onClick={() => toggleStep(6)}
+              className={cn(
+                "w-full flex items-center justify-between text-left",
+                isDesktop ? "px-4 py-4 sm:px-6" : "mb-4",
+                isDesktop && "hover:bg-gray-50"
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full border",
+                  currentStep > 6 ? "border-primary-500 bg-primary-500 text-white" :
+                  currentStep === 6 ? "border-primary-500 bg-white text-primary-700" :
+                  "border-gray-200 text-gray-400 bg-gray-50"
+                )}>
+                  {currentStep > 6 ? <span className="font-bold">6</span> : currentStep === 6 ? <span className="font-bold">6</span> : <Lock size={14} />}
+                </div>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold font-heading">Activación del Asistente</h2>
+                  {currentStep < 6 && (
+                    <p className="text-[11px] text-gray-500 font-medium mt-0.5">
+                      Se desbloqueará al completar los pasos anteriores.
+                    </p>
+                  )}
+                </div>
+              </div>
+              {isDesktop && (
+                <ChevronDown size={18} className={cn("text-gray-400 transition-transform", expandedSteps[6] ? "rotate-180" : "")} />
+              )}
+            </button>
+            
+            <div className={cn(isDesktop && !expandedSteps[6] ? "hidden" : "", isDesktop ? "px-4 pb-5 sm:px-6" : "")}>
+            {currentStep === 6 && (
+               <div className="bg-primary-50 text-primary-700 p-5 rounded-lg border border-primary-100 animate-pulse">
                 <h3 className="font-bold mb-2 flex items-center gap-2">
                   <Clock size={18} />
                   Estamos configurando tu asistente
@@ -798,12 +840,12 @@ export function Onboarding() {
               </div>
             )}
             
-            {currentStep < 5 && (
+            {currentStep < 6 && (
               <div className="mt-2 text-sm text-gray-500 bg-gray-50 p-3 rounded border border-gray-100">
                 Paso bloqueado. Completa los anteriores para solicitar la activación de tu asistente.
               </div>
             )}
-            {currentStep > 5 && (
+            {currentStep > 6 && (
                <div className="mt-4 bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm flex gap-3 items-center border border-emerald-200">
                 <CheckCircle size={20} className="text-emerald-600" />
                 <span className="font-medium">¡Asistente activado y funcionando!</span>
@@ -828,6 +870,41 @@ export function Onboarding() {
               Ir al Dashboard <ArrowRight size={18} />
             </Button>
           </Link>
+        </div>
+      )}
+
+      {isCallModalOpen && (
+        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-[80] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-primary-50/50">
+              <div>
+                <h3 className="font-bold text-gray-900 font-heading">Reserva tu onboarding call</h3>
+                <p className="text-xs text-gray-600 font-medium">Elige un hueco en el calendario.</p>
+              </div>
+              <button
+                onClick={() => setIsCallModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-btn transition-colors"
+                aria-label="Cerrar"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[calc(90vh-72px)]">
+              <CalEuInlineEmbed
+                namespace="onboarding"
+                calLink="ejpr-proplead/onboarding"
+                minHeight={isDesktop ? 520 : 650}
+              />
+              <div className="mt-4 flex flex-col sm:flex-row gap-3 justify-end">
+                <Button variant="outline" onClick={() => setIsCallModalOpen(false)}>
+                  Cerrar
+                </Button>
+                <Button onClick={handleConfirmCallScheduled} loading={saving}>
+                  Ya la he reservado
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

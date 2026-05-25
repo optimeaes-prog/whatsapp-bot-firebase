@@ -2,11 +2,12 @@ import React, { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { Tag, StickyNote, Plus, X, Save } from "lucide-react";
 import type { Lead, Conversation } from "../types";
-import { updateLead, getLeadByChatId } from "../services/leads";
+import { updateLead, getLeadByChatId, getLeadByChatIdForAgent } from "../services/leads";
 import { updateConversation } from "../services/conversations";
 import { cn } from "../lib/utils";
 import { customLeadTagMd } from "../lib/metricTheme";
 import { Button } from "./ui";
+import { useAuth } from "../contexts/AuthContext";
 
 interface LeadDetailsProps {
     lead?: Lead;
@@ -15,6 +16,7 @@ interface LeadDetailsProps {
 }
 
 export function LeadDetails({ lead: initialLead, conversation: initialConversation, onUpdate }: LeadDetailsProps) {
+    const { effectiveRole, effectiveUid, isImpersonationReadOnly } = useAuth();
     const [notes, setNotes] = useState("");
     const [tags, setTags] = useState<string[]>([]);
     const [newTag, setNewTag] = useState("");
@@ -33,7 +35,10 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
             setTags([]);
             setChatId(initialConversation.chatId);
             // Source of truth: tags belong to Lead.
-            getLeadByChatId(initialConversation.chatId).then(l => {
+            const loadLead = effectiveRole === "agent"
+                ? getLeadByChatIdForAgent(initialConversation.chatId, effectiveUid)
+                : getLeadByChatId(initialConversation.chatId);
+            loadLead.then(l => {
                 if (l) {
                     setLeadId(l.id);
                     setNotes(l.notes || initialConversation.notes || "");
@@ -41,10 +46,11 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                 }
             });
         }
-    }, [initialLead, initialConversation]);
+    }, [initialLead, initialConversation, effectiveRole, effectiveUid]);
 
     const handleAddTag = (e?: React.FormEvent) => {
         e?.preventDefault();
+        if (isImpersonationReadOnly) return;
         const candidate = newTag.trim();
         if (!candidate) return;
         if (candidate.toLowerCase() === "lead") {
@@ -59,10 +65,15 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
     };
 
     const handleRemoveTag = (tagToRemove: string) => {
+        if (isImpersonationReadOnly) return;
         setTags(tags.filter(t => t !== tagToRemove));
     };
 
     const handleSave = async () => {
+        if (isImpersonationReadOnly) {
+            toast.message("Solo lectura en modo vista como usuario");
+            return;
+        }
         setSaving(true);
         try {
             const leadData = { notes, tags };
@@ -80,7 +91,9 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
             }
 
             if (!leadId && chatId) {
-                const matchedLead = await getLeadByChatId(chatId);
+                const matchedLead = effectiveRole === "agent"
+                    ? await getLeadByChatIdForAgent(chatId, effectiveUid)
+                    : await getLeadByChatId(chatId);
                 if (matchedLead) {
                     promises.push(updateLead(matchedLead.id, leadData));
                     setLeadId(matchedLead.id);
@@ -113,7 +126,8 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     placeholder="Añade notas sobre este lead..."
-                    className="w-full text-sm border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-primary-500 focus:border-transparent min-h-[80px]"
+                    disabled={isImpersonationReadOnly}
+                    className="w-full text-sm border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-primary-500 focus:border-transparent min-h-[80px] disabled:bg-gray-50 disabled:text-gray-500"
                 />
             </div>
 
@@ -130,8 +144,10 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                         >
                             {tag}
                             <button
+                                type="button"
                                 onClick={() => handleRemoveTag(tag)}
-                                className="hover:text-primary-900"
+                                disabled={isImpersonationReadOnly}
+                                className="hover:text-primary-900 disabled:opacity-40 disabled:pointer-events-none"
                             >
                                 <X size={12} />
                             </button>
@@ -144,11 +160,12 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                         value={newTag}
                         onChange={(e) => setNewTag(e.target.value)}
                         placeholder="Nuevo tag..."
-                        className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        disabled={isImpersonationReadOnly}
+                        className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-50"
                     />
                     <button
                         type="submit"
-                        disabled={!newTag.trim()}
+                        disabled={!newTag.trim() || isImpersonationReadOnly}
                         className="p-1.5 text-primary-600 hover:bg-primary-50 rounded-btn transition-colors border border-primary-200 disabled:opacity-50"
                     >
                         <Plus size={18} />
@@ -180,6 +197,7 @@ export function LeadDetails({ lead: initialLead, conversation: initialConversati
                     type="button"
                     onClick={handleSave}
                     loading={saving}
+                    disabled={isImpersonationReadOnly}
                     className="shadow-sm"
                 >
                     {saving ? null : <Save size={16} />}

@@ -84,16 +84,13 @@ export function AuditLog() {
             case "create":
                 return "bg-emerald-100 text-emerald-700";
             case "update":
-                return "bg-sky-100 text-sky-700";
-            case "delete":
-                return "bg-rose-100 text-rose-700";
             case "status_change":
             case "qualification_change":
-                return "bg-violet-100 text-violet-700";
             case "bot_toggle":
-                return "bg-amber-100 text-amber-700";
+                return "bg-primary-100 text-primary-700";
+            case "delete":
+                return "bg-red-100 text-red-700";
             case "message_sent":
-                return "bg-cyan-100 text-cyan-700";
             default:
                 return "bg-slate-100 text-slate-700";
         }

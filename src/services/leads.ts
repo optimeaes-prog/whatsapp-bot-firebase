@@ -56,6 +56,16 @@ export async function getLeads(): Promise<Lead[]> {
   return rows;
 }
 
+export async function getLeadsForAgent(agentUid: string): Promise<Lead[]> {
+  const uid = agentUid.trim();
+  if (!uid) return [];
+  const q = query(collection(db, getLeadsCollection()), where("assignedAgentUid", "==", uid));
+  const snapshot = await getDocs(q);
+  const rows = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Lead[];
+  rows.sort((a, b) => leadRecencyMillis(b) - leadRecencyMillis(a));
+  return rows;
+}
+
 export async function getLeadById(id: string): Promise<Lead | null> {
   const docRef = doc(db, getLeadsCollection(), id);
   const snapshot = await getDoc(docRef);
@@ -67,6 +77,22 @@ export async function getLeadById(id: string): Promise<Lead | null> {
 
 export async function getLeadByChatId(chatId: string): Promise<Lead | null> {
   const q = query(collection(db, getLeadsCollection()), where("chatId", "==", chatId));
+  const snapshot = await getDocs(q);
+  if (snapshot.empty) {
+    return null;
+  }
+  const doc = snapshot.docs[0];
+  return { id: doc.id, ...doc.data() } as Lead;
+}
+
+export async function getLeadByChatIdForAgent(chatId: string, agentUid: string): Promise<Lead | null> {
+  const uid = agentUid.trim();
+  if (!uid) return null;
+  const q = query(
+    collection(db, getLeadsCollection()),
+    where("chatId", "==", chatId),
+    where("assignedAgentUid", "==", uid)
+  );
   const snapshot = await getDocs(q);
   if (snapshot.empty) {
     return null;
@@ -311,5 +337,10 @@ export function qualifiedLeadMetricTimestamp(lead: Lead): Timestamp | undefined 
 
 export async function getQualifiedLeadsByListingCode(listingCode: string): Promise<Lead[]> {
   const all = await getLeads();
+  return filterQualifiedLeads(all).filter((l) => l.listingCode === listingCode);
+}
+
+export async function getQualifiedLeadsByListingCodeForAgent(listingCode: string, agentUid: string): Promise<Lead[]> {
+  const all = await getLeadsForAgent(agentUid);
   return filterQualifiedLeads(all).filter((l) => l.listingCode === listingCode);
 }

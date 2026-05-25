@@ -1,4 +1,13 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+/* eslint-disable react-refresh/only-export-components */
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   type User,
   onAuthStateChanged,
@@ -10,18 +19,41 @@ import {
   updateProfile,
 } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { analytics } from "../lib/analytics";
 import { setOrganizationId } from "../lib/organization";
 import { getAllOrganizations, getAllOrganizationsForSuperAdmin } from "../services/organization";
+import { FUNCTIONS_BASE_URL } from "../lib/api";
 
-type AppRole = "owner" | "admin" | "member" | "super_admin" | "";
+type AppRole = "owner" | "admin" | "member" | "agent" | "super_admin" | "";
+
+export type ImpersonationSession = {
+  uid: string;
+  role: AppRole | string;
+  email?: string;
+  displayName?: string;
+};
+
+
+function normalizeImpersonatedRole(value: unknown): AppRole | string {
+  const r = typeof value === "string" ? value.trim() : "";
+  if (r === "owner" || r === "admin" || r === "member" || r === "agent" || r === "super_admin") return r;
+  return r || "member";
+}
 
 type AuthContextType = {
   user: User | null;
   loading: boolean;
   organizationId: string;
+  /** Firestore app role for the signed-in user (not overridden by impersonation). */
   role: AppRole | string;
+  effectiveRole: AppRole | string;
+  effectiveUid: string;
+  impersonation: ImpersonationSession | null;
+  isImpersonating: boolean;
+  isImpersonationReadOnly: boolean;
+  startImpersonation: (targetUid: string) => Promise<void>;
+  clearImpersonation: () => void;
   availableOrganizations: { id: string; agencyName?: string }[];
   switchOrganization: (orgId: string) => void;
   signIn: (email: string, password: string) => Promise<void>;
@@ -33,28 +65,68 @@ type AuthContextType = {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const googleProvider = new GoogleAuthProvider();
-const SUPER_ADMIN_ACTIVE_ORG_KEY = "proplead.activeOrgId";
-const FORCED_SUPER_ADMIN_EMAILS = new Set(["ejperezreyes@gmail.com"]);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [organizationId, setOrganizationIdState] = useState<string>("");
   const [role, setRole] = useState<AppRole | string>("");
+  const [impersonation, setImpersonation] = useState<ImpersonationSession | null>(null);
   const [availableOrganizations, setAvailableOrganizations] = useState<{ id: string; agencyName?: string }[]>([]);
   const resolveInFlightRef = useRef<Promise<void> | null>(null);
+  const roleRef = useRef<AppRole | string>("");
+  const orgIdRef = useRef<string>("");
 
-  const FUNCTIONS_BASE_URL = "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
+  useEffect(() => {
+    roleRef.current = role;
+  }, [role]);
+
+  useEffect(() => {
+    orgIdRef.current = organizationId;
+  }, [organizationId]);
 
   const updateOrgId = (id: string) => {
     setOrganizationId(id); // Update the global non-reactive variable for legacy services
     setOrganizationIdState(id); // Update the reactive state for components
   };
 
-  const isForcedSuperAdminEmail = (email?: string | null): boolean => {
-    const normalized = typeof email === "string" ? email.trim().toLowerCase() : "";
-    return !!normalized && FORCED_SUPER_ADMIN_EMAILS.has(normalized);
-  };
+  // Impersonation and super-admin active-org state are kept in React state only
+  // (no localStorage / sessionStorage). This means a page reload ends impersonation
+  // and resets the super-admin's active org to the default — a deliberate trade-off
+  // to keep these tokens out of reach of any XSS that might land on the page.
+  const clearImpersonation = useCallback(() => {
+    setImpersonation(null);
+  }, []);
+
+  const startImpersonation = useCallback(
+    async (targetUid: string) => {
+      const trimmed = targetUid.trim();
+      if (!trimmed) throw new Error("Usuario no válido");
+      if (roleRef.current !== "super_admin") throw new Error("Solo los super-administradores pueden usar esta función");
+      const me = auth.currentUser?.uid;
+      if (me && trimmed === me) throw new Error("No puedes ver la app como tu propio usuario");
+      const org = orgIdRef.current;
+      if (!org) throw new Error("Selecciona una organización primero");
+
+      const snap = await getDoc(doc(db, "users", trimmed));
+      if (!snap.exists()) throw new Error("Usuario no encontrado");
+      const data = snap.data();
+      const targetOrgId = typeof data.orgId === "string" ? data.orgId : "";
+      if (targetOrgId !== org) throw new Error("El usuario no pertenece a la organización activa");
+
+      const next: ImpersonationSession = {
+        uid: trimmed,
+        role: normalizeImpersonatedRole(data.role),
+        email: typeof data.email === "string" ? data.email : undefined,
+        displayName:
+          (typeof data.name === "string" && data.name) ||
+          (typeof data.displayName === "string" && data.displayName) ||
+          undefined,
+      };
+      setImpersonation(next);
+    },
+    []
+  );
 
   const resolveSuperAdminSession = async (fallbackOrgId?: string) => {
     let orgs: { id: string; agencyName?: string }[] = [];
@@ -74,28 +146,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setAvailableOrganizations(orgs);
 
-    const storedOrgId = localStorage.getItem(SUPER_ADMIN_ACTIVE_ORG_KEY) || "";
-    const defaultOrgId = orgs[0]?.id || fallbackOrgId || "";
-    const selectedOrgId = orgs.some((org) => org.id === storedOrgId) ? storedOrgId : defaultOrgId;
-
+    // Active org is kept in React state only — on reload, default to the
+    // first org in the list (or the fallback if list is empty).
+    const selectedOrgId = orgs[0]?.id || fallbackOrgId || "";
     updateOrgId(selectedOrgId);
-    if (selectedOrgId) {
-      localStorage.setItem(SUPER_ADMIN_ACTIVE_ORG_KEY, selectedOrgId);
-    } else {
-      localStorage.removeItem(SUPER_ADMIN_ACTIVE_ORG_KEY);
-    }
     setRole("super_admin");
     console.log(`[Auth-Diagnostic] Super admin resolved. activeOrgId: "${selectedOrgId}"`);
   };
 
-  const switchOrganization = (orgId: string) => {
-    if (!orgId) return;
-    if (role !== "super_admin" && orgId !== organizationId) return;
-    updateOrgId(orgId);
-    if (role === "super_admin" && orgId) {
-      localStorage.setItem(SUPER_ADMIN_ACTIVE_ORG_KEY, orgId);
-    }
-  };
+  const switchOrganization = useCallback(
+    (orgId: string) => {
+      if (!orgId) return;
+      const r = roleRef.current;
+      const currentOrg = orgIdRef.current;
+      if (r !== "super_admin" && orgId !== currentOrg) return;
+      if (r === "super_admin") {
+        setImpersonation(null);
+      }
+      updateOrgId(orgId);
+    },
+    []
+  );
 
   async function bootstrapUserOrganization(user: User, nameHint?: string) {
     const idToken = await user.getIdToken();
@@ -127,90 +198,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     setAvailableOrganizations([]);
-    localStorage.removeItem(SUPER_ADMIN_ACTIVE_ORG_KEY);
     updateOrgId(resolvedOrgId);
     setRole(resolvedRole);
   }
 
   async function resolveUserOrganizationInternal(user: User, nameHint?: string) {
     const userRef = doc(db, "users", user.uid);
-    let userSnap = await getDoc(userRef);
+    const userSnap = await getDoc(userRef);
 
     console.log(`[Auth-Diagnostic] userSnap exists: ${userSnap.exists()}, data:`, userSnap.exists() ? userSnap.data() : "NO DOCUMENT");
-
-    if (isForcedSuperAdminEmail(user.email)) {
-      // 1) Cloud Functions use Admin SDK and can write role even before rules allow client writes.
-      try {
-        const idToken = await user.getIdToken();
-        const res = await fetch(`${FUNCTIONS_BASE_URL}/listOrganizationsForSuperAdmin`, {
-          method: "GET",
-          headers: { Authorization: `Bearer ${idToken}` },
-        });
-        if (!res.ok) {
-          console.warn(
-            `[Auth] listOrganizationsForSuperAdmin returned ${res.status}. Deploy latest functions so this account can sync super_admin from the server.`
-          );
-        }
-      } catch (e) {
-        console.warn("[Auth] super-admin org list prefetch failed (network or CORS).", e);
-      }
-
-      const existingData = userSnap.exists() ? userSnap.data() : null;
-      if (!existingData || existingData.role !== "super_admin") {
-        try {
-          await setDoc(
-            userRef,
-            {
-              email: user.email,
-              name: nameHint || user.displayName || existingData?.name || "Super Admin",
-              role: "super_admin",
-              createdAt: existingData?.createdAt || new Date().toISOString(),
-            },
-            { merge: true }
-          );
-        } catch (e) {
-          console.warn(
-            "[Auth] Client role upgrade to super_admin failed. Deploy firestore rules (allowlisted self-upgrade) or set role in console.",
-            e
-          );
-        }
-      }
-
-      userSnap = await getDoc(userRef);
-      const after = userSnap.exists() ? userSnap.data() : null;
-      if (after && after.role === "super_admin") {
-        await resolveSuperAdminSession(typeof after.orgId === "string" ? after.orgId : "");
-        return;
-      }
-      console.warn(
-        "[Auth] Forced super-admin account still not super_admin in Firestore after server + client attempts. " +
-          "Deploy: firestore:rules, functions, hosting. Or set users/{uid}.role=super_admin in console."
-      );
-    }
-
-    // Paco Granados Exception - prioritize this specific customer account only.
-    // Super admins must keep their Firestore role and org-switching capabilities.
-    const pacoEmails = ["paco.granados@atlascapitalgroup.com"];
-    if (user.email && pacoEmails.some(email => user.email?.toLowerCase().includes(email.split('@')[0].toLowerCase()))) {
-      const orgId = "org_paco_granados";
-      const finalRole = "owner";
-      
-      const existingData = userSnap.exists() ? userSnap.data() : null;
-      if (!existingData || existingData.orgId !== orgId || existingData.role !== finalRole) {
-        await setDoc(userRef, {
-          email: user.email,
-          name: nameHint || user.displayName || "Owner",
-          role: finalRole,
-          orgId: orgId,
-          createdAt: existingData?.createdAt || new Date().toISOString()
-        }, { merge: true });
-      }
-      
-      updateOrgId(orgId);
-      setRole(finalRole);
-      console.log(`[Auth-Diagnostic] User resolved via Exception. orgId: "${orgId}" role: "${finalRole}"`);
-      return;
-    }
 
     if (userSnap.exists()) {
       const data = userSnap.data();
@@ -222,14 +218,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data.orgId) {
         setRole(resolvedRole);
         setAvailableOrganizations([]);
-        localStorage.removeItem(SUPER_ADMIN_ACTIVE_ORG_KEY);
         updateOrgId(data.orgId);
         console.log(`[Auth-Diagnostic] User resolved via Firestore. orgId: "${data.orgId}" role: "${resolvedRole}"`);
         return;
       }
     }
 
-    // Invitation logic
+    // Invitation fallback: if user is already logged in and opens a token link,
+    // accept it and attach the account to the org/role.
     const urlParams = new URLSearchParams(window.location.search);
     const invitationToken = urlParams.get("token");
 
@@ -304,6 +300,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         updateOrgId(""); // Reset to empty when logged out
         setRole("");
         setAvailableOrganizations([]);
+        setImpersonation(null);
       }
       setUser(currentUser);
       setLoading(false);
@@ -311,8 +308,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    if (role && role !== "super_admin" && impersonation) {
+      clearImpersonation();
+    }
+  }, [role, impersonation, clearImpersonation]);
+
   const signIn = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password);
+    const result = await signInWithEmailAndPassword(auth, email, password);
+    await resolveUserOrganization(result.user);
     analytics.trackLogin("email");
   };
 
@@ -330,9 +334,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
+    setImpersonation(null);
     await firebaseSignOut(auth);
     analytics.trackLogout();
   };
+
+  const isImpersonating = impersonation !== null;
+  const isImpersonationReadOnly = isImpersonating;
+  const effectiveRole = impersonation?.role && String(impersonation.role).length > 0 ? impersonation.role : role;
+  const effectiveUid = impersonation?.uid ? impersonation.uid : user?.uid ?? "";
 
   return (
     <AuthContext.Provider
@@ -341,6 +351,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         organizationId,
         role,
+        effectiveRole,
+        effectiveUid,
+        impersonation,
+        isImpersonating,
+        isImpersonationReadOnly,
+        startImpersonation,
+        clearImpersonation,
         availableOrganizations,
         switchOrganization,
         signIn,

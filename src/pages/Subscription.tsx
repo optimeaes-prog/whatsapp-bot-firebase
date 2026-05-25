@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button, PageHeader, SegmentedControl } from "../components/ui";
 import { cn } from "../lib/utils";
-import { getSubscription, getAvailableConversations, createSubscriptionCheckout, createCheckoutSession, previewSubscriptionChange, createBillingPortalSession } from "../services/subscription";
+  import { getSubscription, getAvailableConversations, createSubscriptionCheckout, createCheckoutSession, previewSubscriptionChange, createBillingPortalSession, activateFreePlanAndFetch } from "../services/subscription";
 import type { OrgSubscriptionInfo, SubscriptionChangePreview } from "../services/subscription";
 import { BreakdownModal, type SubscriptionChangeData } from "../components/BreakdownModal";
 import { getActiveListings } from "../services/listings";
@@ -26,6 +26,7 @@ import { useAuth } from "../contexts/AuthContext";
 const TITLE = "#402e32";
 
 const PLAN_NAMES: Record<string, string> = {
+  none: "Sin plan",
   free: "Free",
   plus: "Plus",
   pro: "Pro",
@@ -109,7 +110,7 @@ function ceilToMultiple(value: number, multiple: number): number {
 }
 
 export function Subscription() {
-  const { organizationId, role } = useAuth();
+  const { organizationId, effectiveRole, isImpersonationReadOnly } = useAuth();
   const [numListings, setNumListings] = useState(3);
   const [numLeadsPerAd, setNumLeadsPerAd] = useState(20);
   const [planBilling, setPlanBilling] = useState<"monthly" | "annual">("monthly");
@@ -139,8 +140,12 @@ export function Subscription() {
   const rawConversations = numListings * numLeadsPerAd;
   const conversations = ceilToMultiple(rawConversations, 40);
 
+  const hasActivePlan = Boolean(subscription);
+
   // Contracted conversations from subscription
-  const contractedConversations = subscription?.contractedConversations ?? (subscription?.planId === "free" ? 40 : 80);
+  const contractedConversations = !subscription
+    ? 0
+    : subscription.contractedConversations ?? (subscription.planId === "free" ? 40 : 80);
 
   const annualTotalFromMonthly = (monthly: number | null) => {
     if (monthly === null) return 0;
@@ -152,6 +157,11 @@ export function Subscription() {
   useEffect(() => {
     async function loadData() {
       if (!organizationId) return;
+      // Reset org-scoped UI state immediately when switching orgs.
+      setSubscription(null);
+      setAvailableConversations(0);
+      setHasUserInteracted(false);
+      setPlanCustomConversations({ plus: 80, pro: 80, pro_plus: 80 });
       setLoading(true);
       try {
         const [sub, creds, listings, leads] = await Promise.all([
@@ -235,6 +245,10 @@ export function Subscription() {
   };
 
   const handleSubscribe = async (planId: string, billing: "monthly" | "annual", extraBlocks: number) => {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setPurchaseLoading(planId);
     try {
       const url = await createSubscriptionCheckout(
@@ -251,7 +265,32 @@ export function Subscription() {
     }
   };
 
+  const handleActivateFree = async () => {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
+    setPurchaseLoading("free");
+    try {
+      const result = await activateFreePlanAndFetch();
+      analytics.trackCtaClick({ location: "pricing", label: "activate_free" });
+      setSubscription(result.subscription);
+      const balance = await getAvailableConversations().catch(() => 0);
+      setAvailableConversations(balance);
+      toast.success("Plan Free activado");
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudo activar el plan Free");
+    } finally {
+      setPurchaseLoading(null);
+    }
+  };
+
   const handleChangePlan = async (planId: string, planName: string, extraBlocks: number) => {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setPreviewLoading(planId);
     try {
       const billingInterval = planBilling === "annual" ? "year" as const : "month" as const;
@@ -264,7 +303,7 @@ export function Subscription() {
       setSubscriptionChangeData({
         preview,
         newPlanName: planName,
-        currentPlanName: PLAN_NAMES[subscription?.planId ?? "free"] ?? "Free",
+        currentPlanName: PLAN_NAMES[subscription?.planId ?? "none"] ?? "Sin plan",
         billingInterval,
         newExtraBlocks: extraBlocks,
       });
@@ -277,6 +316,10 @@ export function Subscription() {
   };
 
   const handleManageBilling = async () => {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
     setPortalLoading(true);
     try {
       const url = await createBillingPortalSession("/suscripcion");
@@ -303,9 +346,9 @@ export function Subscription() {
     }).finally(() => setLoading(false));
   };
 
-  const currentPlanId = subscription?.planId ?? "free";
-  const hasActivePaidSub = subscription?.status === "active" && currentPlanId !== "free";
-  const isNewUser = currentPlanId === "free" && !subscription?.stripeSubscriptionId;
+  const currentPlanId = subscription?.planId ?? "none";
+  const hasActivePaidSub = subscription?.status === "active" && currentPlanId !== "free" && currentPlanId !== "none";
+  const isNewUser = !hasActivePlan;
   
   if (loading) {
     return (
@@ -340,8 +383,7 @@ export function Subscription() {
             </span>
             <h2 className="text-2xl font-black text-gray-900 mb-3 font-heading">Empieza a automatizar tus leads hoy mismo</h2>
             <p className="text-gray-600 mb-6 leading-relaxed">
-              Actualmente estás en el plan de prueba limitado. Para disfrutar de todas las funcionalidades, mayor volumen de conversaciones y soporte prioritario, 
-              <strong> utiliza el simulador a continuación para encontrar el plan que mejor se adapte a tu agencia</strong> y contrátalo en pocos clics.
+              Actualmente <strong>no tienes ningún plan activo</strong>. Usa el simulador a continuación para elegir el plan que mejor se adapte a tu agencia y actívalo en pocos clics.
             </p>
           </div>
         </div>
@@ -437,7 +479,7 @@ export function Subscription() {
 
                       <Button
                         loading={purchaseLoading === "extra_40"}
-                        disabled={role === "member"}
+                        disabled={effectiveRole === "member" || isImpersonationReadOnly}
                         onClick={async () => {
                           try {
                             setPurchaseLoading("extra_40");
@@ -508,7 +550,7 @@ export function Subscription() {
               Usa este simulador para configurar o ajustar tu suscripción.
             </p>
           </div>
-          <div className="bg-[#2d1b0d] rounded-2xl shadow-xl border border-[#3d2b1d] overflow-hidden">
+          <div className="bg-[#2d1b0d] rounded-xl shadow-xl border border-[#3d2b1d] overflow-hidden">
             <div className="p-4 sm:p-5 flex flex-col lg:flex-row items-stretch gap-6 lg:gap-10">
               <div className="flex-1 w-full lg:w-2/3 px-2 space-y-5 flex flex-col justify-center">
 
@@ -664,7 +706,7 @@ export function Subscription() {
             return (
               <div key={plan.id} className="relative flex flex-col h-full">
                 {isRecommended && (
-                  <div className="absolute -top-8 left-0 right-0 bg-primary-500 text-white text-[10px] font-black h-8 flex items-center justify-center rounded-t-2xl uppercase tracking-widest border-2 border-primary-500 border-b-0 font-heading">
+                  <div className="absolute -top-8 left-0 right-0 bg-primary-500 text-white text-[10px] font-black h-8 flex items-center justify-center rounded-t-xl uppercase tracking-widest border-2 border-primary-500 border-b-0 font-heading">
                     Recomendado
                   </div>
                 )}
@@ -672,12 +714,12 @@ export function Subscription() {
                   className={cn(
                     "flex-1 flex flex-col p-4 transition-all duration-300 border-2",
                     isBoth
-                      ? "border-primary-500 rounded-b-2xl bg-white"
+                      ? "border-primary-500 rounded-b-xl bg-white"
                       : isRecommended
-                        ? "border-primary-500 rounded-b-2xl bg-white"
+                        ? "border-primary-500 rounded-b-xl bg-white"
                         : isCurrentPlan
-                          ? "border-primary-500 rounded-2xl bg-white"
-                          : "border-gray-100 rounded-2xl bg-white hover:border-gray-200"
+                          ? "border-primary-500 rounded-xl bg-white"
+                          : "border-gray-100 rounded-xl bg-white hover:border-gray-200"
                   )}
                 >
                   <div className="flex-1 flex flex-col">
@@ -798,13 +840,21 @@ export function Subscription() {
                     </ul>
 
                     <button
-                      disabled={role === "member" || (isCurrentPlan && !isConfigurationChanged) || purchaseLoading === plan.id || previewLoading === plan.id}
+                      disabled={
+                        effectiveRole === "member" ||
+                        isImpersonationReadOnly ||
+                        (isCurrentPlan && !isConfigurationChanged) ||
+                        purchaseLoading === plan.id ||
+                        previewLoading === plan.id
+                      }
                       onClick={() => {
                         if (plan.id === "enterprise") {
                           analytics.trackCtaClick({ location: "pricing", label: "enterprise_contact" });
                           window.location.href = "mailto:hola@proplead.com";
                         } else if (plan.priceMonthly === 0 && !isConfigurationChanged) {
-                          // free and no change — no action
+                          if (!isCurrentPlan) {
+                            void handleActivateFree();
+                          }
                         } else if (hasActivePaidSub || isConfigurationChanged) {
                           // Existing subscriber or update within same plan: show breakdown modal with proration preview
                           handleChangePlan(plan.id, plan.name, extraBlocks);

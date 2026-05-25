@@ -91,25 +91,33 @@ test("sendAgentNotificationMessage branches on window preflight (source contract
 
 test("Proplead 8-var template SID comparison is case-normalized (source contract)", () => {
   const source = readRepoFile("src/index.ts");
+  // Legacy whitelist still exists as a backwards-compat fallback for orgs that
+  // haven't been through the sender-migration flow. New orgs are detected via
+  // the per-org `agentNotificationIs8Var` flag.
   assert.match(
     source,
-    /TWILIO_AGENT_NOTIFICATION_PROPLEAD_8VAR_CONTENT_SID_NORMALIZED\s*=[\s\S]*?\.toUpperCase\(\)/,
-    "constant SID should be normalized once"
+    /TWILIO_AGENT_NOTIFICATION_8VAR_CONTENT_SIDS\s*=\s*new Set\([\s\S]*?\.toUpperCase\(\)/,
+    "approved 8-var template SIDs should be stored normalized"
   );
   assert.match(
     source,
-    /function isProplead8VarAgentNotificationSid[\s\S]*?\.toUpperCase\(\)\s*===\s*TWILIO_AGENT_NOTIFICATION_PROPLEAD_8VAR_CONTENT_SID_NORMALIZED/,
-    "Firestore SID and constant SID should be compared in the same normalized case"
+    /function isProplead8VarAgentNotification\(params:[\s\S]*?TWILIO_AGENT_NOTIFICATION_8VAR_CONTENT_SIDS\.has\(String\(params\.sid \|\| ""\)\.trim\(\)\.toUpperCase\(\)\)/,
+    "Firestore SID and approved SID set should be compared in the same normalized case; the helper now also accepts a per-org is8VarFlag"
   );
   assert.match(
     source,
-    /buildPropleadAgentNotificationTwilioVariables[\s\S]*?isProplead8VarAgentNotificationSid\(params\.templateSid\)/,
-    "8-variable builder should use the normalized SID helper"
+    /function isProplead8VarAgentNotification\(params:[\s\S]*?if \(params\.is8VarFlag === true\) return true/,
+    "per-org agentNotificationIs8Var flag should win over the legacy whitelist"
   );
   assert.match(
     source,
-    /getAgentNotificationTemplateSidForCompactAlert[\s\S]*?isProplead8VarAgentNotificationSid\(primary\)/,
-    "compact alerts should not accidentally reuse the Proplead 8-var template"
+    /buildPropleadAgentNotificationTwilioVariables[\s\S]*?isProplead8VarAgentNotification\(\{ sid: params\.templateSid, is8VarFlag: params\.is8VarFlag \}\)/,
+    "8-variable builder should pass the per-org flag through to the helper"
+  );
+  assert.match(
+    source,
+    /getAgentNotificationTemplateSidForCompactAlert[\s\S]*?isProplead8VarAgentNotification\(\{ sid: primary, is8VarFlag: twilioTemplates\.agentNotificationIs8Var \}\)/,
+    "compact alerts should consult the per-org flag when deciding whether to skip the 8-var SID"
   );
 });
 

@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// Firebase Storage rules for the default bucket.
+// Outbound/inbound audio buckets are accessed only by Cloud Functions via
+// the Admin SDK, which bypasses these rules — so we deny direct client access
+// to those paths here.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return firestore.get(/databases/realestate-whatsapp-bot/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getOrgId() {
+      return getUserData().orgId;
+    }
+
+    function getRole() {
+      return getUserData().role;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && getRole() == "super_admin";
+    }
+
+    function isOrgManager(orgId) {
+      return isAuthenticated() && (
+        isSuperAdmin() ||
+        (getOrgId() == orgId && (getRole() == "admin" || getRole() == "owner"))
+      );
+    }
+
+    // Consent proofs uploaded from the dashboard. Org members can read; only
+    // managers (owner/admin) of the same org or super_admin can write.
+    // Size capped at 10 MiB and content type restricted to images / PDFs.
+    match /organizations/{orgId}/consent-proofs/{leadId}/{fileName} {
+      allow read: if isAuthenticated() && (getOrgId() == orgId || isSuperAdmin());
+      allow write: if isOrgManager(orgId) &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        (
+          request.resource.contentType.matches("image/.*") ||
+          request.resource.contentType == "application/pdf"
+        );
+    }
+
+    // Default deny for any other path. Audio assets and any other server-managed
+    // content are written via the Admin SDK and don't need a client-facing rule.
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -34,6 +34,12 @@ export type Listing = {
   idealistaDescription?: string;          // Descripción manual de Idealista
   /** Si está activo, al resolver el anuncio se notifica al agente y se hace handoff sin cualificación */
   quickQualificationEnabled?: boolean;
+  /** UID del usuario que creó el anuncio (para scoping por rol agent). */
+  createdByUid?: string;
+  /** UID del agente asignado (para scoping por rol agent). */
+  assignedAgentUid?: string;
+  /** Nombre del agente asignado (solo para UI; no es fuente de verdad). */
+  assignedAgentName?: string;
   price?: string;                         // Precio
   m2?: string;                            // Metros cuadrados
   rooms?: string;                         // Habitaciones
@@ -70,6 +76,8 @@ export type Lead = {
   firstMessageDate?: Timestamp;
   lastMessageDate?: Timestamp;
   qualificationStatus?: QualificationStatus;
+  /** UID del agente asignado al anuncio en el momento de crear/upsert el lead. */
+  assignedAgentUid?: string;
   notes?: string;
   pets?: boolean;
   income?: number;
@@ -146,12 +154,18 @@ export type BotConfig = {
   styles: BotStyle[];
   messagingProvider?: MessagingProvider;
   orgName?: string;                       // Nombre de la inmobiliaria
+  /** Siempre reciben resúmenes de leads cualificados; ver también Equipo (agente asignado). */
   notificationNumbers?: string;
   cloudApiConfig?: CloudApiConfig;
   twilioTemplates?: {
     agentNotification?: string;
+    agentNotificationLegacy?: string;
+    /** True when `agentNotification` is the 8-variable Proplead-style format (set by migration). */
+    agentNotificationIs8Var?: boolean;
     callHandoffOrgEs?: string;
     callHandoffOrgEn?: string;
+    callHandoffOrgNoNameEs?: string;
+    callHandoffOrgNoNameEn?: string;
     voiceOptInConsent?: string;
     idealistaInitialEs?: string;
     idealistaInitialEn?: string;
@@ -169,7 +183,7 @@ export type BotConfig = {
   };
 };
 
-export type MessagingProvider = "cloud_api" | "whapi" | "twilio";
+export type MessagingProvider = "cloud_api" | "twilio";
 
 
 export type AlertSeverity = "info" | "warning" | "critical" | "healthy";

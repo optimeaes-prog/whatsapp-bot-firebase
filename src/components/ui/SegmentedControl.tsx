@@ -96,7 +96,7 @@ export function SegmentedControl<T extends string>({
               }
             }}
             className={cn(
-              "relative inline-flex min-w-[6rem] items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-bold font-heading transition-colors",
+              "relative inline-flex min-w-[6rem] items-center justify-center gap-1.5 rounded-btn px-4 py-2 text-sm font-bold font-heading transition-colors duration-200",
               "disabled:opacity-50 disabled:pointer-events-none",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
               s.focusRing,

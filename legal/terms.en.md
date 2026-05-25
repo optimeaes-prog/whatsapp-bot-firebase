@@ -1,120 +1,412 @@
-# Terms and Conditions (B2B) — Talmate Limited
+# Terms and Conditions (B2B) — Talmate Limited / Proplead
 
-**Last updated:** 2026-04-01  
-**Version:** 0.1 (draft)  
+**Effective date:** 25 May 2026
+**Version:** 1.0
 
-These Terms and Conditions (the “**Terms**”) govern access to and use of Talmate’s software platform (the “**Platform**”), including the web application, APIs and related features (WhatsApp/voice conversations, lead management, listings, credits/subscriptions, alerts, etc.).
+---
+
+These Terms and Conditions (the “**Terms**”) constitute a legally binding agreement between **Talmate Limited** (“**Talmate**”, “**we**”, “**us**”) and the Customer accessing or using the Proplead Platform (the “**Customer**”, “**you**”). By creating an account, accessing or using the Platform, the Customer agrees to be bound by these Terms.
+
+---
 
 ## 1. Provider identity
-The service is provided by **Talmate Limited** (“**Talmate**”, “**we**”), a UK company registered with Companies House under number **16733027**, with registered office at **191 King's Cross Road, Flat 2, London, WC1X 9DB, United Kingdom**.
+
+The service is provided by:
+
+**Talmate Limited** (“Talmate”)
+A company registered in England and Wales
+Companies House number: **16733027**
+Registered office: **191 King’s Cross Road, Flat 2, London, WC1X 9DB, United Kingdom**
+Email: **soporte@proplead.io**
+Website: **www.proplead.io**
+
+Talmate provides services to customers located in Spain and other European Union member states. Accordingly, and without prejudice to the laws of England and Wales as the governing law of this Agreement, the mandatory provisions of Regulation (EU) 2016/679 of the European Parliament and of the Council (GDPR) also apply, in particular Article 3(2), given that Talmate offers goods or services to data subjects located in the European Union and monitors their behaviour. In addition, Spanish Law 34/2002 of 11 July on Information Society Services and Electronic Commerce (LSSI-CE) applies to information society services provided in Spain, regardless of where the provider is established, in accordance with its Article 2.
+
+---
 
 ## 2. B2B scope
-The Platform is offered **only for business/professional use** (e.g., freelancers, agencies, real estate businesses) (the “**Customer**”).  
-The Platform is not intended for consumers.
 
-## 3. Definitions (summary)
-- **Account**: access credentials for a user authorised by the Customer.
-- **Customer Content**: data and information uploaded, sent, stored or otherwise processed by the Customer through the Platform (including conversations, leads and listings).
-- **Credits**: usage unit within the Platform (e.g., for messaging/automation), as per the then-current plan.
-- **Sub-processors**: third parties processing data on behalf of Talmate and/or the Customer (e.g., cloud, messaging, AI, payments providers).
+The Platform is intended **exclusively for businesses and professionals** acting in the course of their trade, business or profession. The Customer represents and warrants that:
 
-## 4. Registration, access and security
-- **Eligibility**: you must have authority to bind the Customer and use the Platform in compliance with applicable laws.
-- **Authorised users**: the Customer is responsible for all activities performed through its Accounts and for keeping credentials confidential.
-- **Security**: notify us promptly of any unauthorised access or security incident.
+(a) it acts as a business, real estate agency, freelance agent or other professional operator, and not as a consumer within the meaning of any applicable consumer protection legislation;
 
-## 5. Permitted use and restrictions
-### 5.1 Permitted use
-You may use the Platform to:
-- manage WhatsApp/voice conversations with contacts/leads linked to your listings
-- automate responses and lead qualification
-- manage leads, statuses, tags, and operational workflows
-- purchase credits and/or subscribe (where available) to enable Platform usage
+(b) it has full legal capacity to enter into this Agreement and, where applicable, authority to bind the legal entity on whose behalf it acts;
 
-The Platform includes AI-based qualification flows that are **designed and maintained by Talmate**. The Customer acknowledges that, in general, it **does not control or customise** the internal qualification logic (beyond the settings the Platform may offer from time to time), and agrees to supervise its use and apply its own criteria where appropriate.
+(c) the individual accepting these Terms has authority to bind the Customer.
 
-### 5.2 Restrictions and compliance
-You must not (nor allow any third party to):
-- send **spam**, unsolicited communications, or messages that breach WhatsApp/Twilio/Whapi or other provider policies
-- impersonate or mislead recipients
-- process **special category** personal data (health, political opinions, etc.) unless strictly necessary with a lawful basis and appropriate safeguards
-- submit secrets or credentials into conversation fields
-- use the Platform for unlawful activity or to infringe third-party rights
+Consumer withdrawal rights and consumer protection rules are **not applicable** to this B2B agreement. If the Customer is acting as a consumer, it is not authorised to use the Platform.
 
-The Customer is responsible for:
-- having a **lawful basis** to contact leads and process their data
-- providing privacy notices and meeting transparency/rights obligations
-- complying with marketing and electronic communications laws
+---
 
-## 6. AI features and outputs
-The Platform may use AI models to generate replies and lead summaries.  
-We **do not guarantee** that AI-generated output is accurate, complete, or fit for a particular purpose. The Customer must:
-- supervise automated messages
-- not treat outputs as legal/financial advice
-- validate critical information before acting on it
+## 3. Definitions
 
-## 7. Third-party services
-The Platform integrates third-party services (for example, **Twilio/Whapi** for messaging/voice, **OpenAI** for AI, **Stripe** for payments, **Calendly** for onboarding, and **Google/Firebase** for infrastructure).  
-Such third-party services may be subject to their own terms. Talmate is not responsible for outages or failures caused by third parties.
+In these Terms, the following words and expressions have the meanings set out below:
 
-## 8. Fees, credits and subscriptions
-### 8.1 Credits
-The Platform may offer credit packages. When purchasing credits:
-- payments are processed via **Stripe**
-- the Customer must review package, quantities and pricing before confirming
-- except where required by law, credits are **non-refundable** once consumed
+- **”Agreement”**: these Terms, together with any Order Form, DPA, privacy policy and any other document incorporated by reference.
 
-### 8.2 Subscriptions (if applicable)
-If the Customer subscribes:
-- recurring charges are handled via Stripe
-- included credits/benefits are granted according to the plan
-- the Customer may cancel per the plan settings; cancellation usually takes effect at the end of the paid period unless stated otherwise
+- **”AI Output”**: any text, summary, reply or other content automatically generated by the artificial intelligence models integrated into the Platform.
 
-### 8.3 Non-payment and suspension
-We may suspend or restrict access in case of non-payment, suspected fraud, abusive usage, or security risk.
+- **”Authorised Users”**: the employees, agents or collaborators of the Customer who are enabled by the Customer to access the Platform under the Customer’s credentials.
 
-## 9. Intellectual property
-Talmate retains all rights in and to the Platform (software, branding, UI, documentation).  
-The Customer retains rights to its Customer Content and grants Talmate a limited licence to host, process and display it solely to provide the services.
+- **”Credits”**: usage units within the Platform used to enable features such as automated message sending, lead summaries or other AI functions, in accordance with the then-current rates published at www.proplead.io.
 
-## 10. Confidentiality
-Each party will protect the other party’s confidential information and use it only to perform the agreement, unless required by law.
+- **”Customer Content”**: any data, information, text, images, voice recordings, WhatsApp conversations, real estate lead information or other material that the Customer uploads, transmits, stores or processes through the Platform, including contact and lead data.
 
-## 11. Data protection
-### 11.1 Roles
-- For **account, billing and Talmate marketing** data, Talmate acts as a **Controller**.
-- For **leads, conversations and recordings** processed for the Customer, Talmate typically acts as a **Processor**.
+- **”DPA”** or **”Data Processing Agreement”**: the data processing agreement entered into between Talmate and the Customer, available at `legal/dpa.en.md`, governing the processing of personal data carried out by Talmate on behalf of the Customer.
 
-### 11.2 DPA
-Processing on behalf of the Customer is governed by the **Data Processing Agreement (DPA)** available with the Platform (see `legal/dpa.en.md` / `legal/dpa.es.md`).
+- **”Order Form”**: any order document, offer, commercial proposal or subscription confirmation executed by the parties, which incorporates these Terms by reference.
 
-## 12. Availability, maintenance and changes
-We may modify or update the Platform and aim to minimise disruption, but we do not guarantee uninterrupted availability.
+- **”Personal Data”**: has the meaning given to it in the UK GDPR and, where applicable, the EU GDPR.
 
-## 13. Termination
-The Customer may stop using the Platform and cancel its subscription (if applicable).  
-We may terminate or suspend access for material breach, unlawful use, or security risk.
+- **”Platform”**: the Proplead web application, including its APIs, integrations, automation features, AI, CRM, conversation management, alerts, administration panel and any related components, accessible at www.proplead.io or via the application.
 
-After termination, we may delete or anonymise data in line with retention terms and the DPA, except where we must retain data by law or follow Customer instructions (where applicable).
+- **”Subscription Period”**: the period of time (monthly or annual, according to the contracted plan) for which the Customer has paid for access to the Platform.
 
-## 14. Limitation of liability (B2B)
-To the maximum extent permitted by law:
-- the Platform is provided “as is”
-- Talmate is not liable for indirect or consequential damages, loss of profits, loss of data, or business interruption arising out of use
-- Talmate’s total aggregate liability for any claim is limited to the fees paid by the Customer to Talmate in the **3 months** preceding the event giving rise to the claim (unless the law requires otherwise)
+- **”Sub-processors”**: third parties to whom Talmate subcontracts part of the processing of the Customer’s personal data.
 
-Nothing in these Terms limits liability for fraud, wilful misconduct, or where liability cannot be limited by law.
+---
 
-## 15. Indemnity
-The Customer will indemnify Talmate against third-party claims arising from:
-- Customer Content
-- the Customer’s legal non-compliance (marketing, privacy, consent, communications)
-- misuse of WhatsApp/voice or breach of third-party terms
+## 4. Licence
 
-## 16. Governing law and jurisdiction
-Unless mandatory law provides otherwise, these Terms are governed by the **laws of England and Wales**, and the parties submit to the courts of **England and Wales**.
+4.1 **Grant of licence.** Subject to compliance with these Terms and payment of applicable fees, Talmate grants the Customer a non-exclusive, non-transferable, non-sublicensable and revocable licence to access and use the Platform during the applicable Subscription Period, solely for the legitimate purposes of the Customer’s real estate business in Spain.
 
-## 17. Contact
-**Legal / privacy email:** `[LEGAL_EMAIL]`  
-**Website:** `[WEBSITE_DOMAIN]`
+4.2 **Scope.** The licence includes the right to: (i) access the Platform’s web interface; (ii) manage WhatsApp conversations with real estate leads; (iii) use the automated lead qualification and lead summary features; (iv) manage voice calls and recordings, if the Customer has subscribed to that functionality; (v) access portal integrations and manage listings, if the Customer has subscribed to that functionality; (vi) use the CRM, alerts and other features included in the contracted plan.
 
+4.3 **Authorised Users.** The Customer is responsible for ensuring that all Authorised Users are aware of and comply with these Terms. Access to the Platform is personal and non-transferable and may not be assigned or shared with third parties outside the Customer’s organisation.
+
+4.4 **Updates.** Talmate may, at its discretion, update, enhance or modify the Platform. Material updates will be communicated in accordance with clause 18.
+
+---
+
+## 5. Restrictions
+
+5.1 The Customer shall not, and shall not permit any third party to:
+
+(a) copy, reproduce, modify, adapt, translate, create derivative works from, decompile, reverse-engineer or disassemble the Platform or any part of it, except to the extent expressly permitted by mandatory applicable law;
+
+(b) sell, resell, sublicence, lease, transfer or commercially exploit the Platform or access to it for the benefit of third parties without the prior written consent of Talmate;
+
+(c) remove, obscure or alter any intellectual property rights notices, trade marks or Talmate legends;
+
+(d) access the Platform through automated means (bots, scrapers, crawlers) other than Talmate’s official APIs;
+
+(e) attempt to circumvent or defeat the security measures of the Platform, including authentication, encryption or access controls;
+
+(f) use the Platform to send spam, phishing messages, unsolicited bulk communications, or content that breaches the acceptable use policies of Meta/WhatsApp, Twilio or other integrated providers;
+
+(g) use the Platform to process special categories of personal data (Article 9 UK GDPR / EU GDPR), unless the Customer has an appropriate lawful basis, adequate technical and organisational measures in place, and has notified Talmate;
+
+(h) use the Platform for unlawful, fraudulent, discriminatory or rights-infringing activities;
+
+(i) overload, damage or interfere with the infrastructure of the Platform or its providers.
+
+5.2 Breach of any of the above restrictions constitutes a material breach of this Agreement and may result in immediate suspension or termination of access, without prejudice to any legal remedies available to Talmate.
+
+---
+
+## 6. Customer obligations
+
+6.1 **Regulatory compliance.** The Customer is solely responsible for ensuring that its use of the Platform complies with all applicable laws and regulations, including without limitation:
+
+(a) the EU GDPR, the UK GDPR and, where applicable, the Spanish Organic Law 3/2018 on Data Protection and Guarantee of Digital Rights (LOPDGDD), in particular regarding the processing of personal data of leads and contacts;
+
+(b) the LSSI-CE and, in the UK, the Privacy and Electronic Communications Regulations 2003, regarding electronic commercial communications;
+
+(c) applicable Spanish real estate sector regulations;
+
+(d) Meta’s WhatsApp Business Platform policies, including obtaining end-user consent before initiating conversations.
+
+6.2 **Lawful basis for contacting leads.** The Customer warrants that, before using the Platform to contact individuals, it has a sufficient lawful basis under the applicable GDPR (consent, legitimate interests or otherwise), and has complied with transparency obligations in respect of those individuals.
+
+6.3 **Accuracy of data.** The Customer is responsible for the accuracy, completeness and lawfulness of Customer Content input into the Platform.
+
+6.4 **Credential security.** The Customer must maintain the confidentiality of the access credentials of all Authorised Users, implement strong passwords and multi-factor authentication where available, and notify Talmate immediately of any unauthorised access or security breach.
+
+6.5 **Supervision of AI Outputs.** The Customer acknowledges that AI Outputs generated by the Platform are automated and may contain inaccuracies. The Customer takes responsibility for reviewing and supervising automated messages before they are sent, or, where it opts for fully automated flows, for having assessed and accepted the associated risks. Talmate accepts no liability for decisions made by the Customer on the basis of AI Outputs without adequate human oversight.
+
+6.6 **Voice recordings.** If the Customer uses the call recording functionality, it is responsible for informing callers that the call may be recorded, obtaining any necessary consents, and complying with applicable recording laws.
+
+6.7 **Cooperation.** The Customer will cooperate reasonably with Talmate in resolving technical incidents, information requests from authorities and any other circumstances requiring its collaboration.
+
+---
+
+## 7. AI features
+
+7.1 **Description.** The Platform incorporates artificial intelligence features designed, maintained and updated by Talmate, including: automated qualification of real estate leads, generation of conversation and lead summaries, reply suggestions, and detection of lead status and intent.
+
+7.2 **Design and control.** The AI models and flows are designed and maintained by Talmate. The Customer does not control or customise the internal logic of the AI models beyond the configuration options made available by the Platform from time to time (for example, adjusting the level of automation, enabling or disabling specific features).
+
+7.3 **No guarantee of accuracy.** Talmate does not warrant that AI Outputs are accurate, complete, up-to-date, unbiased, or suitable for any particular purpose. The Customer should not base business, legal or financial decisions exclusively on AI Outputs without adequate human oversight.
+
+7.4 **Model updates.** Talmate may update, replace or withdraw AI models integrated into the Platform. Where such updates materially affect functionality available to the Customer, Talmate will communicate this in accordance with clause 18.
+
+7.5 **Responsible use.** The Customer undertakes to use AI features ethically, and not to use them to generate misleading, discriminatory or rights-infringing content. The Customer is responsible for how it uses or disseminates AI Outputs generated from its Customer Content.
+
+7.6 **AI providers.** Talmate may use APIs of third-party AI model providers (currently, OpenAI, LLC). Customer Content may be transmitted to such providers to generate AI Outputs, subject to the contractual safeguards set out in the DPA. Talmate will select AI providers that offer adequate safeguards in compliance with applicable data protection law.
+
+---
+
+## 8. Third-party integrations
+
+8.1 **Integrated providers.** The Platform integrates with the following third-party providers to deliver its services:
+
+- **Twilio, Inc.**: WhatsApp messaging and voice services (calls, recordings). The Customer acknowledges that use of the WhatsApp functionality is subject to Meta Platforms, Inc.’s WhatsApp Business Platform policies and Twilio’s terms of service.
+- **OpenAI, LLC**: AI models for lead qualification, summaries and reply generation.
+- **Stripe, Inc.**: payment processing and subscription and credit management.
+- **Calendly, LLC**: onboarding meeting scheduling.
+- **Google LLC / Firebase**: cloud infrastructure, database, authentication and serverless functions.
+
+8.2 **Third-party terms.** Use of the above integrations may be subject to each provider’s own terms and policies. The Customer is responsible for complying with such terms to the extent they apply directly to its use. Talmate accepts no responsibility for the terms, conditions or actions of third-party providers.
+
+8.3 **Third-party outages.** Talmate shall not be liable for outages, failures, service degradations or data losses attributable to the third-party providers listed in clause 8.1 or to other third parties outside Talmate’s reasonable control.
+
+8.4 **Changes to integrations.** Talmate may add, modify or remove third-party integrations at any time. Where a change materially affects the features contracted by the Customer, Talmate will notify the Customer in accordance with clause 18.
+
+---
+
+## 9. Fees, credits and subscriptions
+
+### 9.1 Fees
+
+9.1.1 Subscription plan prices and credit package prices are published at www.proplead.io and/or set out in the applicable Order Form. All prices are stated exclusive of applicable taxes unless otherwise expressly stated.
+
+9.1.2 The Customer is responsible for all taxes, levies or duties arising from its use of the Platform, including VAT or other applicable indirect taxes. Where Talmate has a legal obligation to charge VAT or equivalent, it will be shown on the relevant invoice.
+
+9.1.3 Payment of all amounts due is made in advance (monthly or annually, depending on the contracted plan) via the payment methods supported by Stripe.
+
+### 9.2 Credits
+
+9.2.1 **Purchase.** Credits may be purchased in packages through the Platform. Payment is processed via Stripe. Before confirming a purchase, the Customer must verify the selected package, the number of credits and the total price.
+
+9.2.2 **Consumption.** Credits are deducted from the Customer’s account as Platform features that consume Credits are used (for example, automated WhatsApp messages, voice calls, AI summaries or other charged actions).
+
+9.2.3 **Non-refundability of consumed credits.** Credits that have been consumed (in whole or in part) are **non-refundable** in all circumstances, except where a mandatory statutory obligation applicable to Talmate requires otherwise.
+
+9.2.4 **Refund of unconsumed credits.** Credits that have been purchased but have not been consumed in any respect may be refunded if the Customer requests a refund in writing to soporte@proplead.io within **14 calendar days** of the date of purchase. After that period, unconsumed Credits are also non-refundable. This refund right does not apply to Credits included in a subscription plan.
+
+9.2.5 **Expiry.** Unused Credits expire in accordance with the terms of the purchased plan or package, or, in the absence of specific terms, at the end of the applicable Subscription Period or, for one-off credit purchases, 12 months from the date of purchase.
+
+### 9.3 Subscriptions
+
+9.3.1 **Automatic renewal.** Subscriptions automatically renew at the end of each Subscription Period (monthly or annual, as applicable) for the same period at the then-current price, unless the Customer cancels before the renewal date. The charge will be applied automatically to the payment method registered with Stripe at the start of each new Subscription Period.
+
+9.3.2 **Cancellation by the Customer.** The Customer may cancel its subscription at any time through the Platform’s administration panel or in writing to soporte@proplead.io. Cancellation takes effect at the end of the current, already-paid Subscription Period; the Customer will not receive a refund for the remainder of the current period, except as provided in clause 9.3.4.
+
+9.3.3 **No pro-rata refunds.** Except as expressly stated in these Terms or required by law, paid subscription fees are non-refundable, including annual fees.
+
+9.3.4 **Termination by Talmate.** If Talmate terminates the Customer’s subscription for reasons other than the Customer’s breach, Talmate will refund the Customer a pro-rata portion of the subscription fee corresponding to the remaining time of the current Subscription Period, as the Customer’s sole remedy.
+
+### 9.4 Price changes
+
+Talmate may change its prices on **60 calendar days’ notice** by notifying the Customer in accordance with clause 18. If the Customer does not accept the new prices, it may cancel its subscription before the change takes effect; otherwise it will be deemed to have accepted the new prices.
+
+### 9.5 Late payment and interest
+
+9.5.1 In the event of non-payment of any amount due, Talmate may, at its election: (i) suspend the Customer’s access to the Platform until the outstanding amount is settled; (ii) accelerate the subscription; (iii) terminate the Agreement for material breach, without prejudice to claiming any applicable damages.
+
+9.5.2 Overdue amounts will bear interest from the due date until the date of actual payment at the rate applicable under the **Late Payment of Commercial Debts (Interest) Act 1998**, currently 8% per annum over the Bank of England base rate, unless the parties expressly agree a different rate.
+
+9.5.3 Talmate shall also be entitled to claim a fixed sum as compensation for debt recovery costs pursuant to that Act.
+
+---
+
+## 10. Intellectual property
+
+10.1 **Talmate’s ownership.** Talmate is the owner or licensee of all intellectual property rights in and to the Platform, including without limitation: the software and source code, AI models, algorithms, user interface, designs, the Proplead trade mark, documentation and any other related works or creations. These Terms do not transfer any ownership rights in the Platform to the Customer, beyond the limited licence in clause 4.
+
+10.2 **Customer’s ownership.** The Customer retains all intellectual property rights in its Customer Content. The Customer hereby grants Talmate a non-exclusive, worldwide, royalty-free licence for the period necessary to: (i) host, store, transmit, reproduce and display Customer Content solely to the extent necessary to provide the Platform services; (ii) comply with legal obligations or requests from competent authorities.
+
+10.3 **Aggregated and anonymised data.** Talmate may use statistical, aggregated and anonymised data derived from use of the Platform to improve its services, develop new features and produce industry reports, provided that such data does not identify the Customer or any individual.
+
+10.4 **Feedback.** If the Customer provides comments, suggestions or ideas about the Platform (“Feedback”), Talmate may use it freely for any purpose without any obligation of compensation or confidentiality.
+
+---
+
+## 11. Confidentiality
+
+11.1 **Definition.** “Confidential Information” means any technical, commercial, financial, operational or other information that a party (the “disclosing party”) communicates to the other party (the “receiving party”) in connection with this Agreement, whether orally or in writing, and which is identified as confidential or which by its nature should reasonably be understood to be confidential. Talmate’s Confidential Information includes, without limitation, the Platform architecture, algorithms, AI models, unpublished pricing data and product roadmap. The Customer’s Confidential Information includes Customer Content.
+
+11.2 **Obligations.** Each party undertakes to: (i) keep the other party’s Confidential Information in strict confidence; (ii) not use it for any purpose other than performing this Agreement; (iii) not disclose it to third parties without the prior written consent of the disclosing party, except to its employees, officers, advisers or subcontractors who need to know it for the purposes of the Agreement and who are bound by equivalent confidentiality obligations.
+
+11.3 **Exceptions.** Confidentiality obligations do not apply to information that: (i) is or becomes publicly available without breach of this Agreement; (ii) was known to the receiving party before disclosure, without restriction; (iii) is independently developed by the receiving party without use of Confidential Information; (iv) is disclosed by a third party without confidentiality restriction and without breach of any obligation to the disclosing party.
+
+11.4 **Legal disclosure.** The receiving party may disclose Confidential Information to the extent required by law, court order or regulatory authority, provided that, to the extent permitted by law, it gives prior notice to the disclosing party so that it may seek appropriate protection.
+
+11.5 **Duration.** Confidentiality obligations remain in force during the term of the Agreement and for **3 years** following its termination.
+
+---
+
+## 12. Data protection
+
+12.1 **Reference to the DPA.** The processing of personal data of leads, contacts, conversations and recordings carried out by Talmate on behalf of the Customer (acting as Data Controller) is governed entirely by the **Data Processing Agreement (DPA)** available at `legal/dpa.en.md`. The DPA forms an integral part of this Agreement and, in the event of conflict on data protection matters, shall prevail over these Terms.
+
+12.2 **Processing roles.** In general:
+- For account, billing and Talmate’s own marketing data, Talmate acts as **Data Controller**.
+- For personal data of leads, contacts and third parties that the Customer inputs or manages in the Platform, Talmate acts as the Customer’s **Data Processor**.
+
+12.3 **Applicable law.** Personal data processing is carried out in compliance with the UK GDPR, the EU GDPR (Article 3(2)), the LOPDGDD (where applicable) and any other applicable data protection legislation.
+
+12.4 **Privacy policy.** Processing of the Customer’s account and identification data is described in the Proplead Privacy Policy, available at www.proplead.io/legal/privacy.
+
+12.5 **Customer’s responsibility.** The Customer is the Data Controller of the personal data of its leads and contacts. The Customer is solely responsible for: (i) having a lawful basis for processing; (ii) complying with transparency, consent and data subject rights obligations; (iii) ensuring that its use of the Platform to process such data complies with applicable law.
+
+---
+
+## 13. Availability and service levels
+
+13.1 **Commercially reasonable availability.** Talmate will use commercially reasonable efforts to make the Platform continuously available and will deliver the services with reasonable professional skill and care. However, Talmate does not guarantee 100% uninterrupted availability or that the Platform will be error-free.
+
+13.2 **Maintenance.** Talmate may carry out maintenance, updates and improvements to the Platform that may cause temporary interruptions. Where reasonably practicable, Talmate will carry out maintenance outside peak usage hours and will give the Customer reasonable advance notice.
+
+13.3 **Force majeure.** Talmate shall not be liable for interruptions or service degradations caused by events outside its reasonable control, including third-party infrastructure failures (in particular those listed in clause 8.1), telecommunications outages, regulatory decisions, natural disasters, acts of war, external cyber-attacks or other force majeure events under English law.
+
+13.4 **No guaranteed SLA.** Unless expressly agreed in a specific Order Form, Talmate does not offer any service level agreement (SLA) with guaranteed uptime commitments.
+
+---
+
+## 14. Termination
+
+14.1 **Termination by the Customer.** The Customer may cancel its subscription at any time in accordance with clause 9.3.2. Cancellation of the subscription results in cessation of access to plan features at the end of the paid Subscription Period.
+
+14.2 **Termination by Talmate for convenience.** Talmate may terminate the Agreement on **30 days’ written notice** without cause.
+
+14.3 **Termination for cause.** Either party may terminate the Agreement immediately by written notice to the other party if:
+
+(a) the other party commits a material breach of this Agreement and fails to remedy it within **15 business days** of written notice of the breach; or
+
+(b) the other party becomes subject to insolvency proceedings, administration, liquidation or any equivalent process.
+
+14.4 **Precautionary suspension.** Without prejudice to termination, Talmate may immediately suspend the Customer’s access to the Platform without notice where there is: (i) a serious risk to the security of the Platform or third parties; (ii) unlawful or abusive use; (iii) non-payment persisting for more than 7 calendar days from the due date; (iv) a requirement from a competent authority.
+
+14.5 **Effects of termination.** Upon termination of the Agreement for any reason:
+
+(a) All Customer access and usage rights to the Platform cease immediately.
+
+(b) Talmate will retain Customer Content for a maximum period of **90 days** following the effective date of termination, during which the Customer may request the export or delivery of its data (subject to the export functionalities available in the Platform at that time). After that period, Talmate will delete or anonymise Customer Content, except where it is required by law to retain it.
+
+(c) Provisions of these Terms that by their nature should survive termination will remain in force, including without limitation: Definitions, Intellectual property, Confidentiality, Data protection, Limitation of liability, Indemnity and Governing law.
+
+(d) Amounts owed up to the date of termination become immediately due and payable.
+
+---
+
+## 15. Warranties
+
+15.1 **Talmate’s warranties.** Talmate represents and warrants that: (i) it has full legal capacity to enter into this Agreement; (ii) it will provide the services with reasonable professional skill and care; (iii) it will implement appropriate technical and organisational measures to protect Customer Content in accordance with the DPA.
+
+15.2 **Exclusion of implied warranties.** To the maximum extent permitted by the laws of England and Wales and applicable mandatory rules, the Platform is provided **”as is”** and **”as available”**. Talmate excludes, to the fullest extent permitted by law, any implied warranties of merchantability, fitness for a particular purpose, satisfactory quality, accuracy, non-infringement of third-party rights, freedom from viruses or other malicious code, and continuity of service.
+
+15.3 **Customer’s warranties.** The Customer represents and warrants that: (i) it has full legal capacity to enter into this Agreement; (ii) its use of the Platform complies and will comply with all applicable laws; (iii) Customer Content does not infringe third-party rights or violate applicable law.
+
+15.4 **No results guarantee.** Talmate does not guarantee any specific commercial outcome from use of the Platform, including lead generation, contact conversion, success in selling properties or effectiveness of marketing campaigns.
+
+---
+
+## 16. Limitation of liability
+
+16.1 **Exclusion of indirect loss.** To the maximum extent permitted by the laws of England and Wales, Talmate shall not be liable to the Customer for:
+
+(a) loss of profits, loss of revenue, loss of business opportunity or loss of contracts;
+
+(b) loss or corruption of data or Customer Content;
+
+(c) indirect, consequential, incidental, punitive or special damages;
+
+(d) business interruption or loss of goodwill;
+
+even if Talmate had been advised of the possibility of such loss.
+
+16.2 **Aggregate liability cap.** Talmate’s total aggregate liability to the Customer, arising out of or in connection with this Agreement (whether in contract, tort, warranty or otherwise), shall be limited to **the total fees and amounts actually paid by the Customer to Talmate in the 3 months immediately preceding** the event or first circumstances giving rise to the claim.
+
+16.3 **Exceptions.** Nothing in these Terms excludes or limits Talmate’s liability for:
+
+(a) death or personal injury caused by Talmate’s negligence;
+
+(b) fraud or fraudulent misrepresentation by Talmate;
+
+(c) any other liability that cannot be excluded or limited under the laws of England and Wales.
+
+16.4 **Risk allocation.** The Customer acknowledges that the liability limitations in this clause reflect a reasonable allocation of risk between the parties in light of the applicable fees, and that Talmate would not have entered into this Agreement without such limitations.
+
+---
+
+## 17. Indemnity
+
+17.1 The Customer shall indemnify, defend and hold harmless Talmate, its officers, employees, agents and subcontractors, against any third-party claims, demands, actions, damages, losses, costs or expenses (including reasonable legal fees) arising out of or in connection with:
+
+(a) Customer Content or the Customer’s use of it through the Platform;
+
+(b) the Customer’s failure to comply with its legal obligations regarding data protection, privacy, electronic marketing or commercial communications;
+
+(c) the Customer’s breach of Meta/WhatsApp, Twilio or other third-party provider policies applicable to the Platform;
+
+(d) any false representation or warranty made by the Customer under this Agreement;
+
+(e) the Customer’s use of the Platform in breach of these Terms or applicable law;
+
+(f) claims by the Customer’s leads or contacts arising from the Customer’s acts or omissions.
+
+17.2 Talmate will promptly notify the Customer of any claim in respect of which it invokes the indemnity in this clause and will cooperate reasonably with the Customer in its defence. Talmate reserves the right to assume sole control of the defence of any such claim, without affecting the Customer’s indemnification obligation.
+
+---
+
+## 18. Amendments
+
+18.1 **General amendments.** Talmate may amend these Terms at any time. Amendments will be communicated to the Customer by: (i) email to the registered contact address; (ii) a prominent notice in the Platform; or (iii) both.
+
+18.2 **Notice period.** For amendments involving a material change to service conditions or prices, Talmate will provide at least **60 calendar days’ notice** (price changes) or **30 calendar days’ notice** (other material changes) before the amendment takes effect.
+
+18.3 **Deemed acceptance.** If the Customer continues to use the Platform after the effective date of an amendment, it will be deemed to have accepted the amended Terms. If the Customer does not accept the amendment, it may cancel its subscription before the effective date, without any early cancellation penalty arising solely from that amendment.
+
+18.4 **Amendments without notice.** Talmate may amend these Terms without notice to: (i) comply with legal or regulatory obligations; (ii) correct typographical errors or clarifications that have no material impact on the Customer’s rights.
+
+---
+
+## 19. Governing law and jurisdiction
+
+19.1 **Governing law.** This Agreement is governed by and construed in accordance with the **laws of England and Wales**, without regard to conflict of law principles.
+
+19.2 **Mandatory EU and Spanish law.** The foregoing does not affect the application of mandatory provisions of European Union law (including the EU GDPR and other data protection rules) or mandatory provisions of Spanish law applicable by virtue of EU law or the LSSI-CE, to the extent that such provisions cannot be derogated from by agreement.
+
+19.3 **Jurisdiction.** For the resolution of any dispute, claim or controversy arising out of or in connection with this Agreement (including disputes as to its existence, validity or termination), the parties submit to the **exclusive jurisdiction of the courts of England and Wales**, without prejudice to Talmate’s right to seek enforcement before any competent court or to obtain interim relief.
+
+19.4 **Amicable resolution.** The parties will attempt in good faith to resolve any dispute through direct negotiation for a period of at least **30 days** before commencing legal proceedings, except where urgent interim relief is necessary.
+
+---
+
+## 20. General provisions
+
+20.1 **Entire agreement.** This Agreement, together with the DPA, the Privacy Policy and any applicable Order Form, constitutes the entire agreement between the parties relating to its subject matter and supersedes all prior agreements, communications or understandings, whether oral or written.
+
+20.2 **Severance.** If any provision of these Terms is held to be void, invalid or unenforceable by a court of competent jurisdiction, that provision will be deleted or modified to the minimum extent necessary, and the remaining provisions will continue in full force and effect.
+
+20.3 **Waiver.** The failure by either party to exercise or enforce any right or provision of these Terms does not constitute a waiver of that right or provision. Any waiver must be in writing and signed by an authorised representative of the waiving party.
+
+20.4 **Assignment.** The Customer may not assign or transfer its rights or obligations under this Agreement without the prior written consent of Talmate. Talmate may assign this Agreement to an affiliate, group company or in the context of a merger, acquisition or asset sale, with notice to the Customer.
+
+20.5 **Force majeure.** Neither party shall be liable for any delay or failure to perform due to circumstances outside its reasonable control (force majeure), provided it notifies the other party as soon as reasonably practicable and takes reasonable steps to mitigate the impact.
+
+20.6 **Notices.** Formal notices under this Agreement must be in writing and sent by email to soporte@proplead.io (for notices to Talmate) or to the Customer’s registered email address. Email notices are deemed received when the sender receives a delivery confirmation or, in the absence of such confirmation, on the next business day after sending.
+
+20.7 **No agency.** Nothing in these Terms creates any agency, partnership, joint venture or employment relationship between the parties.
+
+20.8 **Headings.** Section headings are included for reference purposes only and shall not affect the interpretation of these Terms.
+
+---
+
+## 21. Contact
+
+For any questions about these Terms, use of the Platform or legal and privacy matters:
+
+**Talmate Limited**
+191 King’s Cross Road, Flat 2
+London, WC1X 9DB
+United Kingdom
+
+**Email:** soporte@proplead.io
+**Website:** www.proplead.io
+
+---
+
+*Effective date: 25 May 2026 — Version 1.0*
+*© 2026 Talmate Limited. All rights reserved.*

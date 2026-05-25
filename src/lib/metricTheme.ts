@@ -71,6 +71,12 @@ export const customLeadTagMd =
 export const qualifiedListPill =
   "inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-100 text-emerald-700";
 
+/** Pill “Pendiente” / warning (estado pendiente de acción) */
+export const pendingPillSm =
+  "px-2 py-0.5 text-[10px] font-black rounded-full bg-amber-100 text-amber-700 uppercase tracking-tighter";
+export const pendingPillMd =
+  "inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-amber-50 text-amber-700 border border-amber-100";
+
 /** Estado conversación en cabeceras de chat */
 export const conversationHeaderPills = {
   finalized: "px-2 py-0.5 text-xs font-medium rounded-full bg-slate-200 text-slate-700",
