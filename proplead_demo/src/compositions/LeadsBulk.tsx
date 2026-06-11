@@ -96,25 +96,13 @@ export function LeadsBulk() {
   const typedText = MESSAGE_TEXT.slice(0, charCount);
   const showCursor = frame >= typingStart && frame < typingEnd + 8 && Math.floor(frame / 6) % 2 === 0;
 
-  // Sending state
+  // Sending state — once the user clicks Send, the modal switches to the
+  // "Mensaje enviado" success view and stays there for the rest of the video.
   const sendClickAt = 535;
-  const sentState = frame >= sendClickAt && frame < sendClickAt + 18;
-  const modalDismissAt = sendClickAt + 18;
-  const modalAlive = modalVisible && frame < modalDismissAt + 8;
-  const modalCloseProgress = interpolate(frame, [modalDismissAt, modalDismissAt + 8], [1, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
-
-  // Toast
-  const toastAt = modalDismissAt;
-  const toastProgress = spring({
-    frame: frame - toastAt,
-    fps,
-    config: { damping: 18, stiffness: 130 },
-    durationInFrames: 22,
-  });
-  const toastVisible = frame >= toastAt;
+  const sentState = frame >= sendClickAt;
+  const modalAlive = modalVisible; // never dismisses
+  const modalCloseProgress = 1;
+  // Toast removed — the success modal is the final state.
 
   return (
     <AbsoluteFill style={{ fontFamily, background: "white" }}>
@@ -213,31 +201,8 @@ export function LeadsBulk() {
         </>
       )}
 
-      {/* Toast */}
-      {toastVisible && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 32,
-            right: 32,
-            transform: `translateY(${interpolate(toastProgress, [0, 1], [40, 0])}px)`,
-            opacity: toastProgress,
-            zIndex: 60,
-          }}
-        >
-          <div className="flex items-center gap-4 rounded-xl border border-emerald-200 bg-white px-6 py-5 shadow-xl">
-            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-100">
-              <CheckCircle2 size={26} className="text-emerald-600" />
-            </div>
-            <div>
-              <p className="text-lg font-bold text-gray-900">Mensaje enviado a 3 leads</p>
-              <p className="text-base text-gray-500">Las respuestas aparecerán en Conversaciones.</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <Cursor keyframes={CURSOR} frame={frame} />
+      {/* Cursor — hidden during the final success state so the modal stands alone. */}
+      {!sentState && <Cursor keyframes={CURSOR} frame={frame} />}
     </AbsoluteFill>
   );
 }

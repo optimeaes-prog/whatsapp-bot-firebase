@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
-import type { Lead, LeadFormData } from "../types";
+import type { Lead, LeadFormData, Activity } from "../types";
 import { deleteConversationByChatId } from "./conversations";
 import { updateConversation } from "./conversations";
 import { auth } from "../lib/firebase";
@@ -34,7 +34,8 @@ function normalizeLeadTags(tags: string[]): string[] {
   );
 }
 
-function leadRecencyMillis(lead: Lead): number {
+/** Para ordenar: lo más recientemente tocado primero (creación o último mensaje). */
+export function leadRecencyMillis(lead: Lead): number {
   const created = lead.createdAt && typeof (lead.createdAt as { toMillis?: () => number }).toMillis === "function"
     ? (lead.createdAt as { toMillis: () => number }).toMillis()
     : 0;
@@ -157,7 +158,7 @@ export async function updateLeadQualificationStatus(
 
 export async function updateLead(
   id: string,
-  data: Partial<Pick<Lead, "notes" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus" | "consent" | "pets" | "income" | "paymentMethod">>
+  data: Partial<Pick<Lead, "notes" | "email" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus" | "consent" | "pets" | "income" | "paymentMethod" | "nextActionDate" | "lastContactAt" | "activities" | "followUpStatus">>
 ): Promise<void> {
   const docRef = doc(db, getLeadsCollection(), id);
   const normalized = data.tags ? { ...data, tags: normalizeLeadTags(data.tags) } : data;
@@ -165,6 +166,56 @@ export async function updateLead(
     Object.entries(normalized).filter(([, value]) => value !== undefined)
   );
   await updateDoc(docRef, payload);
+}
+
+/** Firestore rechaza `undefined`: dejamos solo las claves con valor. */
+function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
+/**
+ * Registrar un contacto de seguimiento sobre un lead COMPRADOR (llamada, WhatsApp…).
+ * Añade la actividad al historial y fija lastContactAt. A diferencia de los propietarios,
+ * NO auto-avanza ninguna etapa: el estado del comprador (followUpStatus) se gestiona aparte.
+ */
+export async function addLeadActivity(
+  id: string,
+  activity: Omit<Activity, "id" | "at">
+): Promise<void> {
+  const lead = await getLeadById(id);
+  if (!lead) throw new Error(`Lead ${id} not found`);
+  const now = Timestamp.now();
+  const entry = stripUndefined({
+    ...activity,
+    id: crypto.randomUUID(),
+    at: now,
+  }) as Activity;
+  await updateDoc(doc(db, getLeadsCollection(), id), {
+    activities: [...(lead.activities || []), entry],
+    lastContactAt: now,
+  });
+}
+
+/** Fijar (o limpiar) la próxima acción de un lead comprador + el recordatorio (minutos antes). */
+export async function setLeadNextAction(
+  id: string,
+  date: Date | null,
+  reminderMinutes: number | null = null
+): Promise<void> {
+  await updateDoc(doc(db, getLeadsCollection(), id), {
+    nextActionDate: date ? Timestamp.fromDate(date) : null,
+    reminderMinutesBefore: date && reminderMinutes != null ? reminderMinutes : null,
+    reminderSentAt: null, // cambiar la próxima acción reactiva el recordatorio
+  });
+}
+
+/** ¿El lead tiene una próxima acción vencida o para hoy y sigue activo (no cerrado)? */
+export function isLeadDueToday(lead: Lead): boolean {
+  if (!lead.nextActionDate) return false;
+  if (lead.followUpStatus === "cerrado") return false;
+  const end = new Date();
+  end.setHours(23, 59, 59, 999);
+  return lead.nextActionDate.toMillis() <= end.getTime();
 }
 
 const FUNCTIONS_BASE_URL = "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";

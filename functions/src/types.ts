@@ -13,6 +13,12 @@ export type PendingItem = {
 
 export type OperationType = "Venta" | "Alquiler";
 
+/**
+ * Sub-tipo de alquiler. Aplica solo si operationType === "Alquiler".
+ * Para "Venta" (o si el agente no quiere clasificar) se usa "No aplica".
+ */
+export type RentalSubtype = "Vacacional" | "Temporada" | "Larga temporada" | "No aplica";
+
 export type ConversationType = "lead" | "non-lead";
 
 export type ConversationState = {
@@ -27,6 +33,8 @@ export type ConversationState = {
   features?: string;
   /** Full Idealista description text for this listing (if stored) */
   idealistaDescription?: string;
+  /** Rental sub-type (only meaningful when operationType === "Alquiler"). */
+  rentalSubtype?: RentalSubtype;
   profitabilityReportAvailable?: boolean;
   profitabilityReport?: string;
   /** Simple workflow step for deterministic parts (e.g., Idealista Si/No confirmation) */
@@ -176,10 +184,18 @@ export type ListingRow = {
   profitabilityReportAvailable: boolean;
   profitabilityReport: string;
   idealistaDescription?: string;
+  /** Rental sub-type (only meaningful when operationType === "Alquiler"). */
+  rentalSubtype?: RentalSubtype;
   quickQualificationEnabled?: boolean;
   createdByUid?: string;
   assignedAgentUid?: string;
   assignedAgentName?: string;
+  /**
+   * IDs into `organizations/{orgId}/notificationNumbers` to which qualified-lead
+   * summaries are sent. Drives the new listing-scoped resolver; absent on legacy
+   * listings until backfill runs.
+   */
+  notificationNumberIds?: string[];
   price?: string;
   m2?: string;
   rooms?: string;
@@ -274,6 +290,20 @@ export type TwilioTransportConfig = {
   whatsappNumber?: string;
   smsSenderId?: string;
   authTokenSecretName?: string;
+  /** Twilio Senders API resource SID (XE…) for the WhatsApp sender. */
+  senderSid?: string;
+  /** Meta WABA ID associated with this sender (granted via Embedded Signup). */
+  wabaId?: string;
+  /** Meta phone_number_id for graph/profile calls during onboarding. */
+  phoneNumberId?: string;
+  /** Display number in digits-only E.164 form (e.g. "34669354177"). */
+  displayPhoneNumber?: string;
+  /** Optional assistant persona metadata selected during onboarding. */
+  assistantAvatarId?: string;
+  assistantAvatarName?: string;
+  assistantAvatarUrl?: string;
+  /** Custom uploaded photo (e.g. agency logo). When set, overrides assistantAvatarUrl for WA profile. */
+  assistantPhotoUrl?: string;
 };
 
 export type GlobalMessagingPolicy = {
@@ -304,6 +334,8 @@ export type CloudApiConfig = {
   assistantAvatarId?: string;
   assistantAvatarName?: string;
   assistantAvatarUrl?: string;
+  /** Custom uploaded photo (e.g. agency logo). When set, overrides assistantAvatarUrl for WA profile. */
+  assistantPhotoUrl?: string;
   /** Template names created programmatically, keyed by purpose+language. */
   templates?: CloudApiTemplateNames;
 };

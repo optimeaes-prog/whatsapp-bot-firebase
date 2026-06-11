@@ -532,7 +532,89 @@ export function Alerts() {
                         <p className="text-xs text-gray-500">Todo funciona correctamente</p>
                     </div>
                 ) : (
-                    <div className="overflow-x-auto">
+                  <>
+                    {/* Mobile: stacked cards (sm:hidden) */}
+                    <div className="sm:hidden divide-y divide-gray-100">
+                        {alerts.map((alert) => {
+                            const isOpen = expandedAlertId === alert.id;
+                            const when = alert.timestamp ? formatDate(alert.timestamp.toDate()) : "—";
+                            const chatIds = extractAllChatIds(alert.details);
+                            return (
+                                <div key={alert.id} className={cn("p-4", isOpen && "bg-primary-50")}>
+                                    <button
+                                        type="button"
+                                        onClick={() => setExpandedAlertId(isOpen ? null : alert.id)}
+                                        className="w-full text-left flex flex-col gap-2"
+                                    >
+                                        <div className="flex items-start justify-between gap-2">
+                                            <span className={cn(
+                                                "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border font-heading shrink-0",
+                                                getSeverityStyles(alert.severity)
+                                            )}>
+                                                {getSeverityIcon(alert.severity)}
+                                                {alert.severity}
+                                            </span>
+                                            <button
+                                                onClick={(e) => handleDeleteAlert(e, alert.id)}
+                                                className="text-gray-400 hover:text-red-500 p-1.5 rounded-btn hover:bg-red-50 transition-colors shrink-0"
+                                                title="Eliminar alerta"
+                                                aria-label="Eliminar alerta"
+                                            >
+                                                <Trash2 size={14} />
+                                            </button>
+                                        </div>
+                                        <div className="font-bold text-gray-900 font-heading break-words">{alert.subject}</div>
+                                        <div className="text-xs text-gray-500 font-body">
+                                            <span>{when}</span>
+                                            <span className="mx-1.5 text-gray-300">·</span>
+                                            <span className="font-mono">ID: {alert.id}</span>
+                                        </div>
+                                    </button>
+                                    {isOpen ? (
+                                        <div className="mt-3 space-y-4">
+                                            <div>
+                                                <div className="text-[11px] font-black text-gray-400 uppercase tracking-widest mb-2 font-heading">
+                                                    Detalles técnicos
+                                                </div>
+                                                <div className="bg-gray-50 rounded-lg p-3 font-mono text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap border border-gray-100" style={{ overflowWrap: 'anywhere' }}>
+                                                    {typeof alert.details === "string"
+                                                        ? alert.details
+                                                        : JSON.stringify(alert.details, null, 2)}
+                                                </div>
+                                            </div>
+                                            {chatIds.length > 0 ? (
+                                                <div className="border-t pt-3">
+                                                    <div className="text-[11px] font-black text-gray-400 uppercase tracking-widest mb-2 font-heading">
+                                                        Acciones por chatId
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        {chatIds.map((id) => (
+                                                            <div key={id} className="flex items-center justify-between gap-2 p-2.5 bg-gray-50 rounded-lg border border-gray-100">
+                                                                <span className="font-mono text-xs text-gray-600 font-medium break-all min-w-0">{id}</span>
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleIgnoreChat(id);
+                                                                    }}
+                                                                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-gray-200 text-gray-700 rounded-btn text-[11px] font-bold hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-all shadow-sm shrink-0"
+                                                                >
+                                                                    <ShieldOff size={12} />
+                                                                    Ignorar
+                                                                </button>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Desktop: table */}
+                    <div className="hidden sm:block overflow-x-auto">
                         <table className="min-w-full text-sm">
                             <thead className="bg-gray-50 text-[11px] uppercase tracking-wider text-gray-500">
                                 <tr>
@@ -631,6 +713,7 @@ export function Alerts() {
                             </tbody>
                         </table>
                     </div>
+                  </>
                 )}
             </div>
         </PageContainer>

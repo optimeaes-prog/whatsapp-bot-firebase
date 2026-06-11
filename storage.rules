@@ -47,6 +47,30 @@ service firebase.storage {
         );
     }
 
+    // Assistant profile photo (e.g. agency logo) used on the WhatsApp Business
+    // profile. Public-read so Meta/Twilio can fetch the URL when applying it to
+    // the sender profile; only org managers can write. JPG/PNG, max 5 MiB.
+    match /organizations/{orgId}/assistant-photo/{fileName} {
+      allow read: if true;
+      allow write: if isOrgManager(orgId) &&
+        request.resource.size < 5 * 1024 * 1024 &&
+        (
+          request.resource.contentType == "image/jpeg" ||
+          request.resource.contentType == "image/png"
+        );
+    }
+
+    // Captación photos uploaded from the dashboard. Any org member (agents create
+    // captaciones too, not only managers) can read/write/delete their org's photos.
+    // Images only, max 10 MiB.
+    match /organizations/{orgId}/captacion-photos/{captacionId}/{fileName} {
+      allow read: if isAuthenticated() && (getOrgId() == orgId || isSuperAdmin());
+      allow write: if isAuthenticated() && (getOrgId() == orgId || isSuperAdmin()) &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        request.resource.contentType.matches("image/.*");
+      allow delete: if isAuthenticated() && (getOrgId() == orgId || isSuperAdmin());
+    }
+
     // Default deny for any other path. Audio assets and any other server-managed
     // content are written via the Admin SDK and don't need a client-facing rule.
     match /{path=**} {

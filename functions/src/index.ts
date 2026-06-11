@@ -5,6 +5,7 @@ import JSZip from "jszip";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import { SendMessageSchema, SendMassMessageSchema, NewLeadSchema } from "./schemas";
 import { sendEmailToUser } from "./services/emailService";
+import { runDueReminders } from "./services/reminderService";
 import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
@@ -25,6 +26,8 @@ import {
   TwilioTemplateNames,
 } from "./types";
 import { organizationDisplayNameFromOrgDoc } from "./utils/organizationDisplayName";
+import { clientIpKey, enforceRateLimit } from "./utils/rateLimit";
+import { verifyCloudTasksOidc } from "./utils/cloudTasksAuth";
 import {
   fetchListingByCode,
   fetchListingGlobally,
@@ -81,7 +84,7 @@ import {
   getEffectiveProviderForOrg,
   invalidateProviderCache,
 } from "./services/messagingProvider";
-import { createContentTemplate, createVoiceCall, fetchContentTemplate, renderTwilioTemplateBody } from "./services/twilioClient";
+import { createContentTemplate, createVoiceCall, fetchContentTemplate, getOrgTwilioAuthToken, renderTwilioTemplateBody } from "./services/twilioClient";
 import {
   checkCloudApiHealth,
   createMessageTemplate as createCloudApiMessageTemplate,
@@ -98,6 +101,7 @@ import {
   extractClientName,
   translateTextToBritishEnglish,
   checkLeadPassesFilters,
+  resolveReplyLanguageWithAgent,
 } from "./services/openaiClient";
 import { scheduleBufferTask, scheduleImmediateHttpTask, BUFFER_DELAY_SECONDS, REGION } from "./shared";
 import {
@@ -113,19 +117,32 @@ import { sendAlert, sendHealthReport } from "./services/alertService";
 import { isOptOutMessage, applyOptOut } from "./services/optOut";
 import { ALERT_CATALOG } from "./services/alertCatalog";
 import { syncConversations, retryFailedMessages, queueFailedMessage } from "./services/conversationSyncService";
-import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, STRIPE_PRICE_TOPUP_40_CONVS, SENDGRID_API_KEY, META_APP_ID, META_APP_SECRET, META_FB_LOGIN_CONFIG_ID, META_VERIFY_TOKEN, ELEVENLABS_KEY, MAKE_WEBHOOK_SHARED_SECRET } from "./secrets";
+import { ADMIN_TEMPLATE_TOKEN, OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_ACCOUNT_SID, TWILIO_PARTNER_SOLUTION_ID, TWILIO_VERIFY_SERVICE_SID, PROPLEAD_TEMPLATE_SOURCE_ORG, STRIPE_PRICE_TOPUP_40_CONVS, TWILIO_API_KEY, TWILIO_API_SECRET, META_APP_ID, META_APP_SECRET, META_FB_LOGIN_CONFIG_ID, META_VERIFY_TOKEN, ELEVENLABS_KEY, MAKE_WEBHOOK_SHARED_SECRET } from "./secrets";
+import {
+  startVerification as twilioVerifyStart,
+  checkVerification as twilioVerifyCheck,
+  isTwilioVerifyRateLimited,
+  twilioVerifyErrorMessage,
+} from "./services/twilioVerify";
+import {
+  normalizeToE164,
+  upsertPendingNumber,
+  markVerified as markNotificationNumberVerified,
+  incrementVerificationAttempts,
+  getNumber as getNotificationNumber,
+  deleteNumber as deleteNotificationNumberDoc,
+} from "./services/notificationNumbersService";
 import { EMAIL_UNSUBSCRIBE_SECRET } from "./emailUnsubscribeParams";
+import { APP_BASE_URL } from "./appConfig";
 import { emailPreferencesApiHandler, emailUnsubscribeHandler } from "./emailPreferenceEndpoints";
 import {
   exchangeCodeForToken,
-  registerPhoneNumber,
-  subscribeAppToWaba,
-  setWhatsAppProfilePhoto,
   storeAccessTokenInSecretManager,
   persistCloudApiConfigForOrg,
-  generateRegistrationPin,
   fetchDisplayPhoneNumber,
+  fetchPhoneNumberWaba,
 } from "./services/embeddedSignup";
+import { onboardTwilioTechProviderSender } from "./services/twilioOnboarding";
 import { buildAvatarPublicUrl, getAssistantAvatarById } from "./services/assistantAvatars";
 import {
   addOrgConversations,
@@ -156,6 +173,7 @@ import {
   grantSubscriptionConversations,
   PLAN_BASE_CONVERSATIONS,
   calculateProratedConversations,
+  getMaxListingNotificationNumbers,
 } from "./services/subscriptionService";
 import type { SubscriptionPlanId } from "./types";
 import {
@@ -167,7 +185,7 @@ import {
 } from "./utils";
 import { normalizeForSearch } from "./utils/addressNormalize";
 import { getActiveOrgId, requestContext } from "./services/requestContext";
-import { sendInvitationNotification, sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
+import { sendInvitationNotification, sendNewSignupAlert, sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
 import { generateSpeechMp3 } from "./services/elevenLabsClient";
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
@@ -396,6 +414,36 @@ function verifyTwilioSignature(
   const expBuf = Buffer.from(expected);
   if (sigBuf.length !== expBuf.length) return false;
   return crypto.timingSafeEqual(sigBuf, expBuf);
+}
+
+/**
+ * Twilio signs each webhook over the EXACT callback URL configured on the
+ * sender, which varies across this fleet:
+ *   - Some senders point at the Cloud Run URL (https://<svc>.a.run.app) —
+ *     Twilio appends "/" and signs that. reconstructRequestUrl reproduces it
+ *     because the request hits Cloud Run directly (host = run.app, path = "/").
+ *   - Others point at the public function URL
+ *     (https://<region>-<project>.cloudfunctions.net/twilioWebhook). Google
+ *     proxies that to Cloud Run, rewriting host + stripping the function path,
+ *     so reconstructRequestUrl yields the run.app form and can NEVER match the
+ *     cloudfunctions.net string Twilio signed.
+ * To verify regardless of how the sender was configured, we try the
+ * reconstructed URL plus the canonical public function URL.
+ */
+function twilioSignedUrlCandidates(req: { headers: Record<string, string | string[] | undefined>; originalUrl: string }): string[] {
+  const reconstructed = reconstructRequestUrl(req);
+  const canonical = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/twilioWebhook`;
+  return Array.from(new Set([reconstructed, canonical]));
+}
+
+/** True if the signature matches for ANY of the candidate URLs. */
+function verifyTwilioSignatureAnyUrl(
+  authToken: string,
+  signatureHeader: string | undefined,
+  urls: string[],
+  body: Record<string, unknown> | undefined
+): boolean {
+  return urls.some((u) => verifyTwilioSignature(authToken, signatureHeader, u, body));
 }
 
 async function resolveOrgIdFromToken(authHeader?: string): Promise<string> {
@@ -1479,6 +1527,7 @@ async function hydrateConversationListingFieldsIfNeeded(conv: ConversationState)
     address: conv.address || listing.address,
     features: hasFeaturesField ? conv.features : featuresText,
     idealistaDescription: conv.idealistaDescription ?? listing.idealistaDescription ?? "",
+    rentalSubtype: conv.rentalSubtype ?? listing.rentalSubtype,
     profitabilityReportAvailable: conv.profitabilityReportAvailable ?? listing.profitabilityReportAvailable ?? false,
     profitabilityReport: conv.profitabilityReport ?? listing.profitabilityReport ?? "",
     description: conv.description || listing.description,
@@ -1490,6 +1539,7 @@ async function hydrateConversationListingFieldsIfNeeded(conv: ConversationState)
     merged.address !== conv.address ||
     merged.features !== conv.features ||
     merged.idealistaDescription !== conv.idealistaDescription ||
+    merged.rentalSubtype !== conv.rentalSubtype ||
     merged.profitabilityReportAvailable !== conv.profitabilityReportAvailable ||
     merged.profitabilityReport !== conv.profitabilityReport ||
     merged.description !== conv.description ||
@@ -1501,6 +1551,7 @@ async function hydrateConversationListingFieldsIfNeeded(conv: ConversationState)
       address: merged.address,
       features: merged.features,
       idealistaDescription: merged.idealistaDescription,
+      rentalSubtype: merged.rentalSubtype,
       profitabilityReportAvailable: merged.profitabilityReportAvailable,
       profitabilityReport: merged.profitabilityReport,
       description: merged.description,
@@ -1983,6 +2034,7 @@ async function executeCrossOrgCallHandoff(
       address: listing.address,
       features: featuresForHandoff,
       idealistaDescription: listing.idealistaDescription || "",
+      rentalSubtype: listing.rentalSubtype,
       profitabilityReportAvailable: listing.profitabilityReportAvailable,
       profitabilityReport: listing.profitabilityReport,
       type: "lead",
@@ -2105,8 +2157,22 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
   console.log(`Processing ${sortedMessages.length} buffered message(s) for ${state.chatId}`);
 
+  // Decide which language to reply in. We ask a cheap model (gpt-4o-mini) to look at the
+  // recent conversation plus the new messages and decide, with a STICKY policy: keep the
+  // established language unless the lead clearly switched. If the model call fails for any
+  // reason we fall back to the old token heuristic so a reply is never blocked.
   const fallbackLanguage: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
-  const inferredLanguage = resolveReplyLanguageFromMessages(sortedMessages, fallbackLanguage);
+  let inferredLanguage: InitialLanguage = fallbackLanguage;
+  try {
+    inferredLanguage = await resolveReplyLanguageWithAgent({
+      history: state.history,
+      newMessages: sortedMessages.map((m) => m.text),
+      currentLanguage: fallbackLanguage,
+    });
+  } catch (err) {
+    console.warn("language router failed, falling back to token heuristic", err);
+    inferredLanguage = resolveReplyLanguageFromMessages(sortedMessages, fallbackLanguage);
+  }
   if (state.language !== inferredLanguage) {
     state.language = inferredLanguage;
     await upsertConversation(state.chatId, { language: inferredLanguage });
@@ -2169,6 +2235,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     state.address = listing.address;
     state.features = featuresText;
     state.idealistaDescription = listing.idealistaDescription || "";
+    state.rentalSubtype = listing.rentalSubtype;
     state.profitabilityReportAvailable = listing.profitabilityReportAvailable;
     state.profitabilityReport = listing.profitabilityReport;
     state.type = "lead";
@@ -2200,6 +2267,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       address: listing.address,
       features: featuresText,
       idealistaDescription: listing.idealistaDescription || "",
+      rentalSubtype: listing.rentalSubtype,
       profitabilityReportAvailable: listing.profitabilityReportAvailable,
       profitabilityReport: listing.profitabilityReport,
       tags: state.tags,
@@ -2928,7 +2996,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
 
 export const webhook = onRequest(
-  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_API_KEY, TWILIO_API_SECRET] },
   async (req, res) => {
   try {
     // Handle GET requests (webhook verification)
@@ -2944,14 +3012,40 @@ export const webhook = onRequest(
       return;
     }
 
-    console.log("--- DEBUG WEBHOOK START ---");
-    console.log("Method:", req.method);
-    console.log("Headers:", JSON.stringify(req.headers, null, 2));
-    console.log("Body Type:", typeof req.body);
-    console.log("Body JSON:", JSON.stringify(req.body, null, 2));
-    console.log("--- DEBUG WEBHOOK END ---");
-
-    console.log("Webhook POST received", JSON.stringify(req.body, null, 2));
+    // Require a valid X-Twilio-Signature on every POST. Without this anyone on
+    // the internet could inject fake inbound messages and trigger bot replies
+    // (OpenAI + Twilio cost per request). Twilio's signature is computed over
+    // the form-urlencoded body; for JSON callers Twilio omits the signature.
+    const twilioSig = req.header("x-twilio-signature") || "";
+    const signedUrls = twilioSignedUrlCandidates(req);
+    const signedBody = (req.body && typeof req.body === "object")
+      ? (req.body as Record<string, unknown>)
+      : {};
+    // Orgs onboarded as Twilio Tech Provider live on per-org subaccounts, and
+    // Twilio signs those webhooks with the subaccount auth token — the master
+    // TWILIO_AUTH_TOKEN can never match them. Try the master token first
+    // (cheap, no Firestore reads), then the token of the org that owns the
+    // destination number. Each is checked against every candidate URL (see
+    // twilioSignedUrlCandidates) so either callback configuration verifies.
+    let signatureValid = verifyTwilioSignatureAnyUrl(TWILIO_AUTH_TOKEN.value(), twilioSig, signedUrls, signedBody);
+    let signatureOrgId: string | undefined;
+    if (!signatureValid && twilioSig) {
+      signatureOrgId = await resolveOrgIdByTwilioToNumber(req.body?.To);
+      if (signatureOrgId) {
+        const orgAuthToken = await getOrgTwilioAuthToken(signatureOrgId);
+        if (orgAuthToken) {
+          signatureValid = verifyTwilioSignatureAnyUrl(orgAuthToken, twilioSig, signedUrls, signedBody);
+        }
+      }
+    }
+    if (!signatureValid) {
+      console.warn("webhook: invalid or missing X-Twilio-Signature", {
+        to: typeof req.body?.To === "string" ? req.body.To : undefined,
+        resolvedOrgId: signatureOrgId,
+      });
+      res.status(401).send("Unauthorized");
+      return;
+    }
 
     const inboundMessages = extractInboundMessages(req.body);
     if (inboundMessages.length === 0) {
@@ -2974,24 +3068,21 @@ export const webhook = onRequest(
     await Promise.all(
       Array.from(messagesByChatId.entries()).map(async ([chatId, messages]) => {
         try {
-          // Tiered organization resolution:
-          // 1. Explicit query parameter/body orgId (highest priority)
-          // 2. Twilio destination number (`To`) — owns the inbound for that org
-          // 3. Recency-based lookup by chatId across all organizations
-          const orgQueryId = req.query.orgId as string | undefined;
-          const orgBodyId = typeof req.body?.orgId === "string" ? req.body.orgId : undefined;
-          let orgId = orgQueryId || orgBodyId;
-          const twilioToOrgId = orgId ? undefined : await resolveOrgIdByTwilioToNumber(req.body?.To);
-          if (!orgId && twilioToOrgId) orgId = twilioToOrgId;
+          // Tiered organization resolution. We no longer accept orgId from
+          // request query/body — those were attacker-controllable before
+          // signature verification, and even with the signature check
+          // letting Twilio (or any signed caller) pin org via JSON body is
+          // weaker than deriving it from the destination number Twilio
+          // assigned to the org.
+          //   1. Twilio destination number (`To`) — owns the inbound for that org
+          //   2. Recency-based lookup by chatId across all organizations
+          const twilioToOrgId = signatureOrgId ?? await resolveOrgIdByTwilioToNumber(req.body?.To);
+          let orgId: string | undefined = twilioToOrgId;
           if (!orgId) {
             orgId = await findOrgIdByChatId(chatId) || undefined;
           }
 
-          if (orgQueryId) {
-            console.log(`Using explicit orgId from query: ${orgQueryId} for chatId ${chatId}`);
-          } else if (orgBodyId) {
-            console.log(`Using explicit orgId from body: ${orgBodyId} for chatId ${chatId}`);
-          } else if (twilioToOrgId) {
+          if (twilioToOrgId) {
             console.log(`Resolved orgId via Twilio To=${req.body?.To} for chatId ${chatId}: ${twilioToOrgId}`);
           } else if (orgId) {
             console.log(`Resolved orgId via chatId lookup for chatId ${chatId}: ${orgId}`);
@@ -3058,7 +3149,17 @@ export const webhook = onRequest(
               state.history.push({ role: "user", text: msg.text, timestamp: msg.timestamp });
               existingKeys.add(key);
             }
-            await upsertConversation(canonicalChatId, { history: state.history });
+            // Include type/tags/phone so non-lead inbounds get the right
+            // category written to Firestore on first contact (otherwise the
+            // UI filter at Conversations.tsx:416 treats them as leads because
+            // `conv.tags?.includes("non-lead")` is undefined).
+            await upsertConversation(canonicalChatId, {
+              history: state.history,
+              type: state.type,
+              tags: state.tags,
+              phone: state.phone,
+              language: state.language,
+            });
 
             // Mirror inbound on lead metadata immediately (hasResponse + implicit consent).
             if (sorted.length > 0) {
@@ -3364,7 +3465,15 @@ async function dispatchCloudApiInbound(orgId: string, inboundMessages: Array<{ c
             state.history.push({ role: "user", text: msg.text, timestamp: msg.timestamp });
             existingKeys.add(key);
           }
-          await upsertConversation(canonicalChatId, { history: state.history });
+          // See twilioWebhook above: persist type/tags/phone so non-lead
+          // inbounds land in the correct UI category on first contact.
+          await upsertConversation(canonicalChatId, {
+            history: state.history,
+            type: state.type,
+            tags: state.tags,
+            phone: state.phone,
+            language: state.language,
+          });
 
           if (sorted.length > 0) {
             await markLeadAsResponded(canonicalChatId);
@@ -3549,13 +3658,23 @@ export const voiceGatherCallback = onRequest(
             // the destination org 2 credits (1 for this intake send, idempotency key
             // `intakeOutboundCreditsDeducted`; 1 for the org's own first template,
             // idempotency key `initialOutboundCreditsDeducted`).
-            await sendInitialTemplateMessage({
+            const sendResult = await sendInitialTemplateMessage({
               to: phone,
               chatId,
               language: "es",
               variables: {},
               templateSid,
             });
+            // Persist the ACTUAL message Twilio rendered/sent (not a hardcoded
+            // placeholder) into the conversation history so it shows up in the
+            // UI and the exported transcript. Runs in the intake org context.
+            const deliveredText = sendResult.deliveredText?.trim();
+            if (deliveredText) {
+              const existing = await getConversationByChatId(chatId);
+              const history = existing?.history ? [...existing.history] : [];
+              history.push({ role: "assistant", text: deliveredText, timestamp: Date.now() });
+              await upsertConversation(chatId, { history });
+            }
           });
         }
       } catch (err) {
@@ -3691,7 +3810,7 @@ export const sendCallHandoffMessage = onRequest({ cors: true, region: REGION, se
 /**
  * Process buffered messages - called by Cloud Tasks after buffer delay expires
  */
-export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] }, async (req, res) => {
+export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_API_KEY, TWILIO_API_SECRET] }, async (req, res) => {
   try {
     // Only accept POST from Cloud Tasks
     if (req.method !== "POST") {
@@ -3699,14 +3818,24 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
       return;
     }
 
-    // Verify the request is from Cloud Tasks (optional but recommended)
+    // Verify Cloud Tasks OIDC bearer token. Without this, any internet
+    // caller can POST `{ orgId, chatId }` and drive OpenAI/Twilio spend in
+    // an arbitrary tenant (the legacy code only logged a warning).
+    if (process.env.FUNCTIONS_EMULATOR !== "true") {
+      // Buffer tasks are created with this cloudfunctions.net URL, which becomes
+      // the token's `aud`. Pass it explicitly because the function (on Cloud Run)
+      // cannot reconstruct it from the proxied request.
+      const v = await verifyCloudTasksOidc(req, {
+        expectedAudiences: [`https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/processBuffer`],
+      });
+      if (!v.ok) {
+        console.warn("processBuffer: rejecting non-Cloud-Tasks request:", v.reason);
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+    }
     const taskName = req.headers["x-cloudtasks-taskname"];
     const queueName = req.headers["x-cloudtasks-queuename"];
-
-    if (!taskName && process.env.FUNCTIONS_EMULATOR !== "true") {
-      console.warn("Request not from Cloud Tasks, but allowing in production for flexibility");
-    }
-
     console.log(`processBuffer called by task: ${taskName} from queue: ${queueName}`);
 
     const { chatId, orgId } = req.body as { chatId?: string; orgId?: string };
@@ -3785,7 +3914,7 @@ export const processBuffer = onRequest({ cors: true, region: REGION, secrets: [O
  * using the no-name template variant.
  */
 export const processCallNameTimeout = onRequest(
-  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY] },
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_API_KEY, TWILIO_API_SECRET] },
   async (req, res) => {
     try {
       if (req.method !== "POST") {
@@ -4209,6 +4338,7 @@ async function runIdealistaConfirmPipeline(params: {
     ...state,
     type: "lead",
     idealistaDescription: listingData.idealistaDescription || "",
+    rentalSubtype: listingData.rentalSubtype,
   });
 
   try {
@@ -4975,7 +5105,7 @@ export const outboundConsentStatusCallback = onRequest(
   }
 );
 
-export const newLead = onRequest({ cors: false, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY, MAKE_WEBHOOK_SHARED_SECRET] }, async (req, res) => {
+export const newLead = onRequest({ cors: false, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_API_KEY, TWILIO_API_SECRET, MAKE_WEBHOOK_SHARED_SECRET] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -5011,6 +5141,33 @@ export const newLead = onRequest({ cors: false, region: REGION, secrets: [OPENAI
   if (!allowed) {
     res.status(429).json({ error: "Rate limited: este lead ya fue procesado recientemente." });
     return;
+  }
+
+  // Per-org ceiling: even with the shared secret an attacker can't burn through
+  // an org's credit balance by spraying unique synthetic phones. 200/hour leaves
+  // huge headroom for real bursts (Idealista campaigns) but caps abuse cost.
+  if (orgId) {
+    const rlDb = getFirestore(admin.app(), "realestate-whatsapp-bot");
+    const orgLimit = await enforceRateLimit(rlDb, `newLead:org:${orgId}`, {
+      windowSec: 60 * 60,
+      max: 200,
+    });
+    if (!orgLimit.allowed) {
+      res.setHeader("Retry-After", String(orgLimit.retryAfterSec));
+      res.status(429).json({ error: "Rate limited: org hourly cap reached." });
+      return;
+    }
+    // Per-IP cap so a single attacker can't focus on one tenant.
+    const ipHash = clientIpKey(req);
+    const ipLimit = await enforceRateLimit(rlDb, `newLead:ip:${ipHash}`, {
+      windowSec: 60,
+      max: 20,
+    });
+    if (!ipLimit.allowed) {
+      res.setHeader("Retry-After", String(ipLimit.retryAfterSec));
+      res.status(429).json({ error: "Rate limited: too many requests from this client." });
+      return;
+    }
   }
 
   // 1. Resolve organization from listing code. orgId is REQUIRED — we no
@@ -5131,7 +5288,7 @@ export const newLead = onRequest({ cors: false, region: REGION, secrets: [OPENAI
  * sends the initial WhatsApp template first (Twilio/Cloud API),
  * then continues normal chat flow on inbound replies.
  */
-export const newLeadLegacy = onRequest({ cors: false, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, SENDGRID_API_KEY, MAKE_WEBHOOK_SHARED_SECRET] }, async (req, res) => {
+export const newLeadLegacy = onRequest({ cors: false, region: REGION, secrets: [OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_API_KEY, TWILIO_API_SECRET, MAKE_WEBHOOK_SHARED_SECRET] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -5294,14 +5451,30 @@ export const sendMessage = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, se
     const authHeader = req.headers.authorization;
     const orgId = await resolveOrgIdFromToken(authHeader);
 
-    // Per-org rate limit: ~60/min (1 per second) to cap admin-account abuse.
-    const allowed = await checkAndRecordRateLimit({
+    // Burst guard: at most 1 per second per org.
+    const burstAllowed = await checkAndRecordRateLimit({
       bucket: "sendMessage",
       key: orgId,
       windowMs: 1000,
     });
-    if (!allowed) {
+    if (!burstAllowed) {
       res.status(429).json({ error: "Rate limited: too many outbound messages, slow down." });
+      return;
+    }
+    // Longer-window per-org caps so a leaked admin token can't drive 86k
+    // messages/day. 30/min and 500/h give legitimate bulk-reply UX plenty of
+    // headroom while bounding abuse cost.
+    const rlDb = getFirestore(admin.app(), "realestate-whatsapp-bot");
+    const perMin = await enforceRateLimit(rlDb, `sendMessage:org:${orgId}:1m`, { windowSec: 60, max: 30 });
+    if (!perMin.allowed) {
+      res.setHeader("Retry-After", String(perMin.retryAfterSec));
+      res.status(429).json({ error: "Rate limited: org outbound cap (per-minute) reached." });
+      return;
+    }
+    const perHour = await enforceRateLimit(rlDb, `sendMessage:org:${orgId}:1h`, { windowSec: 60 * 60, max: 500 });
+    if (!perHour.allowed) {
+      res.setHeader("Retry-After", String(perHour.retryAfterSec));
+      res.status(429).json({ error: "Rate limited: org outbound cap (hourly) reached." });
       return;
     }
 
@@ -5357,6 +5530,17 @@ export const sendMassMessage = onRequest({ cors: WEB_CLIENT_CORS, region: REGION
     // Hard cap on the per-call broadcast size to limit blast radius.
     if (chatIds.length > 500) {
       res.status(400).json({ error: "chatIds limit exceeded (max 500 per call)" });
+      return;
+    }
+
+    // Per-org sustained cap so a leaked token can't loop 6 mass-sends/min ×
+    // 500 chats each = 180k messages/h. 5 runs/hour is plenty for legitimate
+    // bulk announcements and bounds runaway abuse to ~2500 chats/hour.
+    const rlMassDb = getFirestore(admin.app(), "realestate-whatsapp-bot");
+    const massPerHour = await enforceRateLimit(rlMassDb, `sendMassMessage:org:${orgId}:1h`, { windowSec: 60 * 60, max: 5 });
+    if (!massPerHour.allowed) {
+      res.setHeader("Retry-After", String(massPerHour.retryAfterSec));
+      res.status(429).json({ error: "Rate limited: org mass-send hourly cap reached." });
       return;
     }
 
@@ -5561,10 +5745,28 @@ export const syncMissedMessages = onRequest({
  * Security: requires `?token=...` matching ADMIN_TEMPLATE_TOKEN.
  */
 export const createTwilioTemplates = onRequest({ cors: true, region: REGION, secrets: [ADMIN_TEMPLATE_TOKEN, TWILIO_AUTH_TOKEN] }, async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  if (!token || token !== ADMIN_TEMPLATE_TOKEN.value()) {
+  // Read the admin token from a header (not query) so it doesn't end up in
+  // Cloud Run access logs / browser history. Fall back to the legacy query
+  // form during the rollout window — remove once external callers migrate.
+  const tokenHeader = req.header("x-admin-token") || "";
+  const tokenQuery = typeof req.query.token === "string" ? req.query.token : "";
+  const token = tokenHeader || tokenQuery;
+  const expected = ADMIN_TEMPLATE_TOKEN.value();
+  const tokenBuf = Buffer.from(token);
+  const expectedBuf = Buffer.from(expected);
+  if (
+    !token ||
+    !expected ||
+    tokenBuf.length !== expectedBuf.length ||
+    !crypto.timingSafeEqual(tokenBuf, expectedBuf)
+  ) {
     res.status(403).json({ error: "Forbidden" });
     return;
+  }
+  if (tokenQuery && !tokenHeader) {
+    console.warn(
+      "createTwilioTemplates: admin token supplied via query string — please switch to the X-Admin-Token header to keep it out of access logs."
+    );
   }
 
   try {
@@ -6524,19 +6726,36 @@ export const pollPendingTwilioMigrations = onSchedule(
 );
 
 /**
- * Embedded Signup: exchange the short-lived `code` from the FB JS SDK for a
- * long-lived business_integration_system_user_access_token, register the
- * phone number on Cloud API, subscribe our app to the WABA's webhooks, and
- * persist everything so sendText / sendTemplate work immediately after.
+ * Embedded Signup: complete WhatsApp onboarding via Twilio Tech Provider.
  *
- * Returns public config for the UI (phone number id, waba id, graph version)
- * but never leaks the access token to the client.
+ * Because we pass our Twilio Partner Solution ID to FB.login, Meta has already
+ * shared the customer's WABA with Twilio by the time the popup closes. The only
+ * remaining work is:
+ *   1. Exchange the short-lived `code` for a Meta access token JUST to fetch
+ *      the customer's display phone number (Meta postMessage only returns
+ *      phone_number_id, not the E.164). Token is discarded immediately.
+ *   2. Create a Twilio subaccount for this org.
+ *   3. Create a WhatsApp sender on the subaccount, bound to (waba_id, E.164).
+ *   4. Poll until sender.status === ONLINE.
+ *   5. Persist twilioConfig + set messagingProvider="twilio" on the org.
+ *
+ * Returns public sender info for the UI. Never leaks tokens or auth tokens.
  */
 export const exchangeEmbeddedSignupCode = onRequest(
   {
     cors: true,
     region: REGION,
-    secrets: [META_APP_ID, META_APP_SECRET, META_VERIFY_TOKEN],
+    // 120s timeout: sender provisioning via Twilio Tech Provider can take
+    // 30-90s while Twilio waits for Meta to propagate the WABA share, then we
+    // still need ~10s for the template clone job. Default 60s was too tight.
+    timeoutSeconds: 120,
+    secrets: [
+      META_APP_ID,
+      META_APP_SECRET,
+      TWILIO_ACCOUNT_SID,
+      TWILIO_AUTH_TOKEN,
+      PROPLEAD_TEMPLATE_SOURCE_ORG,
+    ],
   },
   async (req, res) => {
     if (req.method !== "POST") {
@@ -6545,7 +6764,8 @@ export const exchangeEmbeddedSignupCode = onRequest(
     }
     try {
       const authHeader = req.headers.authorization;
-      const orgId = await resolveOrgIdFromToken(authHeader);
+      const userContext = await resolveUserContextFromToken(authHeader);
+      const orgId = userContext.orgId;
 
       const body = (req.body || {}) as {
         code?: string;
@@ -6553,6 +6773,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
         wabaId?: string;
         assistantAvatarId?: string;
         assistantAvatarUrl?: string;
+        assistantPhotoUrl?: string;
       };
       const code = typeof body.code === "string" ? body.code.trim() : "";
       const phoneNumberId = typeof body.phoneNumberId === "string" ? body.phoneNumberId.trim() : "";
@@ -6560,6 +6781,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
       const assistantAvatarId =
         typeof body.assistantAvatarId === "string" ? body.assistantAvatarId.trim().toLowerCase() : "";
       const assistantAvatarUrl = typeof body.assistantAvatarUrl === "string" ? body.assistantAvatarUrl.trim() : "";
+      const assistantPhotoUrl = typeof body.assistantPhotoUrl === "string" ? body.assistantPhotoUrl.trim() : "";
       if (!code || !phoneNumberId || !wabaId) {
         res.status(400).json({ error: "code, phoneNumberId and wabaId are required" });
         return;
@@ -6567,56 +6789,48 @@ export const exchangeEmbeddedSignupCode = onRequest(
 
       const appId = META_APP_ID.value();
       const appSecret = META_APP_SECRET.value();
+      const twilioMasterSid = TWILIO_ACCOUNT_SID.value();
+      const twilioMasterAuth = TWILIO_AUTH_TOKEN.value();
       if (!appId || !appSecret) {
         res.status(500).json({ error: "Meta app credentials are not configured on the server" });
         return;
       }
-
-      const accessToken = await exchangeCodeForToken({ code, appId, appSecret });
-      const appSecretProof = crypto.createHmac("sha256", appSecret).update(accessToken).digest("hex");
-
-      const accessTokenSecretName = await storeAccessTokenInSecretManager({
-        orgId,
-        accessToken,
-      });
-
-      const pin = generateRegistrationPin();
-      try {
-        await registerPhoneNumber({ phoneNumberId, accessToken, pin, appSecretProof });
-      } catch (error) {
-        // Already-registered numbers raise an error; don't block onboarding if
-        // the root cause is a prior registration. Surface other failures.
-        const message =
-          axios.isAxiosError(error)
-            ? error.response?.data?.error?.message || error.message
-            : error instanceof Error
-            ? error.message
-            : String(error);
-        const alreadyRegistered =
-          /already\s*(been)?\s*registered/i.test(message) ||
-          /pin\s*mismatch/i.test(message);
-        if (!alreadyRegistered) {
-          console.error("[embeddedSignup] Phone registration failed", message);
-          res.status(502).json({ error: `Phone registration failed: ${message}` });
-          return;
-        }
-        console.warn("[embeddedSignup] Phone already registered; continuing.", message);
-      }
-
-      try {
-        await subscribeAppToWaba({ wabaId, accessToken, appSecretProof });
-      } catch (error) {
-        const message =
-          axios.isAxiosError(error)
-            ? error.response?.data?.error?.message || error.message
-            : error instanceof Error
-            ? error.message
-            : String(error);
-        console.error("[embeddedSignup] subscribed_apps failed", message);
-        res.status(502).json({ error: `WABA subscription failed: ${message}` });
+      if (!twilioMasterSid || !twilioMasterAuth) {
+        res.status(500).json({ error: "Twilio master credentials are not configured on the server" });
         return;
       }
 
+      // 1. Resolve the display phone number via a short-lived Meta token.
+      const accessToken = await exchangeCodeForToken({ code, appId, appSecret });
+      const appSecretProof = crypto.createHmac("sha256", appSecret).update(accessToken).digest("hex");
+
+      // Cross-check the body's wabaId against the WABA Meta says owns this
+      // phoneNumberId. The accessToken's scope is bound to the user's own
+      // WABAs, so a mismatch indicates either a misconfiguration or a
+      // malicious caller trying to poison wabaIndex with a victim's wabaId.
+      const metaWabaId = await fetchPhoneNumberWaba({ phoneNumberId, accessToken, appSecretProof });
+      if (!metaWabaId) {
+        res.status(502).json({ error: "Could not resolve owning WABA for the phone number from Meta" });
+        return;
+      }
+      if (metaWabaId !== wabaId) {
+        console.warn(
+          `exchangeEmbeddedSignupCode: wabaId mismatch (body=${wabaId}, meta=${metaWabaId}) for phoneNumberId=${phoneNumberId}, orgId=${orgId}`
+        );
+        res.status(400).json({ error: "wabaId does not match the WhatsApp Business Account that owns this phone number" });
+        return;
+      }
+
+      const displayDigits = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken, appSecretProof });
+      if (!displayDigits) {
+        res.status(502).json({ error: "Could not resolve customer's WhatsApp phone number from Meta" });
+        return;
+      }
+      const senderE164 = `+${displayDigits}`;
+
+      // 2. Validate avatar selection if provided. (We no longer push the avatar
+      // to Meta's WhatsApp Business Profile here — Twilio owns the WABA now;
+      // profile updates go through Twilio's sender profile API in a follow-up.)
       let selectedAvatarId: string | undefined;
       let selectedAvatarName: string | undefined;
       let selectedAvatarUrl: string | undefined;
@@ -6627,8 +6841,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
           return;
         }
         const avatarFromClient = assistantAvatarUrl || "";
-        const avatarFromClientMatchesPath = avatarFromClient.endsWith(selectedAvatar.imagePath);
-        if (avatarFromClient && !avatarFromClientMatchesPath) {
+        if (avatarFromClient && !avatarFromClient.endsWith(selectedAvatar.imagePath)) {
           res.status(400).json({ error: "assistantAvatarUrl does not match assistantAvatarId" });
           return;
         }
@@ -6637,52 +6850,88 @@ export const exchangeEmbeddedSignupCode = onRequest(
         const inferredOrigin = avatarFromClient.replace(new RegExp(`${selectedAvatar.imagePath}$`), "");
         const origin = inferredOrigin || "https://real-estate-idealista-bot.web.app";
         selectedAvatarUrl = buildAvatarPublicUrl(origin, selectedAvatar.imagePath);
+      }
 
+      // Custom uploaded photo (agency logo) wins over the stock avatar URL
+      // when downstream services (Twilio sender profile, etc.) read the photo.
+      const profilePhotoUrl = assistantPhotoUrl || selectedAvatarUrl;
+
+      // 3-5. Subaccount + sender + persistence, all in one service call.
+      // Inbound webhook URL stays the existing twilioWebhook endpoint.
+      const inboundWebhookUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/twilioWebhook`;
+      const result = await onboardTwilioTechProviderSender({
+        orgId,
+        masterCreds: { accountSid: twilioMasterSid, authToken: twilioMasterAuth },
+        wabaId,
+        phoneNumberId,
+        senderE164,
+        inboundWebhookUrl,
+        assistantAvatarId: selectedAvatarId,
+        assistantAvatarName: selectedAvatarName,
+        assistantAvatarUrl: profilePhotoUrl,
+      });
+
+      // Auto-clone WhatsApp Content templates from the "golden source" org
+      // (currently org_paco_granados) into the new subaccount and submit them
+      // for WhatsApp approval. WhatsApp review takes hours/days — the
+      // scheduled `pollPendingTwilioMigrations` cron finishes the job and
+      // writes approved SIDs into botConfig.twilioTemplates when ready.
+      //
+      // Failures here do NOT fail onboarding: the sender already works for
+      // freeform messages. Admins can rerun the migration job manually.
+      const sourceOrgId = PROPLEAD_TEMPLATE_SOURCE_ORG.value()?.trim();
+      let templateCloneSummary: {
+        jobId?: string;
+        totalTemplates?: number;
+        submittedTemplates?: number;
+        error?: string;
+      } = {};
+      if (!sourceOrgId) {
+        console.warn(
+          "[embeddedSignup] PROPLEAD_TEMPLATE_SOURCE_ORG is unset; skipping template clone."
+        );
+      } else if (sourceOrgId === orgId) {
+        console.warn(
+          `[embeddedSignup] sourceOrgId equals targetOrgId (${orgId}); skipping template clone.`
+        );
+      } else {
         try {
-          await setWhatsAppProfilePhoto({
-            phoneNumberId,
-            accessToken,
-            profilePictureUrl: selectedAvatarUrl,
-            appSecretProof,
+          const migration = await startMigration({
+            targetOrgId: orgId,
+            sourceOrgId,
+            newAccountSid: result.subaccountSid,
+            newAuthToken: result.subaccountAuthToken,
+            actor: { uid: userContext.uid, email: userContext.email },
           });
-        } catch (error) {
+          const submitResult = await submitMigrationTemplates(migration.jobId);
+          templateCloneSummary = {
+            jobId: migration.jobId,
+            totalTemplates: submitResult.total,
+            submittedTemplates: submitResult.submitted,
+          };
+          console.log(
+            `[embeddedSignup] Template clone kicked off for org=${orgId} jobId=${migration.jobId} ` +
+              `total=${submitResult.total} submitted=${submitResult.submitted} skipped=${submitResult.skipped}`
+          );
+        } catch (cloneError) {
           const message =
-            axios.isAxiosError(error)
-              ? error.response?.data?.error?.message || error.message
-              : error instanceof Error
-              ? error.message
-              : String(error);
-          console.error("[embeddedSignup] whatsapp_business_profile failed", message);
-          res.status(502).json({ error: `WABA profile update failed: ${message}` });
-          return;
+            cloneError instanceof Error ? cloneError.message : String(cloneError);
+          console.error(
+            `[embeddedSignup] Template clone failed for org=${orgId}: ${message}`
+          );
+          templateCloneSummary = { error: message };
         }
       }
 
-      const verifyToken = META_VERIFY_TOKEN.value();
-      if (!verifyToken) {
-        res.status(500).json({ error: "META_VERIFY_TOKEN is not configured on the server" });
-        return;
-      }
-      const displayPhoneNumber = await fetchDisplayPhoneNumber({ phoneNumberId, accessToken, appSecretProof });
-      await persistCloudApiConfigForOrg({
-        orgId,
-        phoneNumberId,
-        wabaId,
-        accessTokenSecretName,
-        verifyToken,
-        displayPhoneNumber,
-        assistantAvatarId: selectedAvatarId,
-        assistantAvatarName: selectedAvatarName,
-        assistantAvatarUrl: selectedAvatarUrl,
-      });
-
-      invalidateCloudApiCredentialsCache(orgId);
-
       res.status(200).json({
         ok: true,
+        provider: "twilio",
         phoneNumberId,
         wabaId,
-        graphApiVersion: "v23.0",
+        senderSid: result.senderSid,
+        senderStatus: result.status,
+        displayPhoneNumber: result.displayPhoneNumber,
+        templateClone: templateCloneSummary,
       });
     } catch (error) {
       console.error("exchangeEmbeddedSignupCode error", error);
@@ -6703,7 +6952,7 @@ export const exchangeEmbeddedSignupCode = onRequest(
  * bundle at build time. Requires an authenticated user.
  */
 export const getEmbeddedSignupConfig = onRequest(
-  { cors: true, region: REGION, secrets: [META_APP_ID, META_FB_LOGIN_CONFIG_ID] },
+  { cors: true, region: REGION, secrets: [META_APP_ID, META_FB_LOGIN_CONFIG_ID, TWILIO_PARTNER_SOLUTION_ID] },
   async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
@@ -6712,6 +6961,7 @@ export const getEmbeddedSignupConfig = onRequest(
         appId: META_APP_ID.value(),
         configId: META_FB_LOGIN_CONFIG_ID.value(),
         graphApiVersion: "v23.0",
+        twilioPartnerSolutionId: TWILIO_PARTNER_SOLUTION_ID.value(),
       });
     } catch (error) {
       if (error instanceof Error && error.message === "Unauthorized") {
@@ -6725,7 +6975,8 @@ export const getEmbeddedSignupConfig = onRequest(
 
 /**
  * Admin-only fallback for internal operators to manually set Cloud API credentials.
- * This path is intentionally restricted to owner users in ADMIN_EMAILS.
+ * Restricted to super_admin role; the previous hardcoded-email allowlist made a
+ * single Gmail account a single point of failure for cross-org takeover.
  */
 export const setManualCloudApiConfig = onRequest(
   { cors: true, region: REGION, secrets: [META_VERIFY_TOKEN, META_APP_SECRET] },
@@ -6735,16 +6986,19 @@ export const setManualCloudApiConfig = onRequest(
       return;
     }
     try {
-      const { orgId, role, email } = await resolveUserContextFromToken(req.headers.authorization);
-      const adminEmails = (process.env.ADMIN_EMAILS || "ejperezreyes@gmail.com")
-        .split(",")
-        .map((v) => v.trim().toLowerCase())
-        .filter(Boolean);
-      const isAllowed = role === "owner" && adminEmails.includes(email);
-      if (!isAllowed) {
+      const { role } = await resolveUserContextFromToken(req.headers.authorization);
+      if (role !== "super_admin") {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
+      // The org being configured is always supplied in the body for super_admin
+      // operations — it is *not* the caller's own org.
+      const targetOrgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : "";
+      if (!targetOrgId) {
+        res.status(400).json({ error: "orgId is required" });
+        return;
+      }
+      const orgId = targetOrgId;
 
       const body = (req.body || {}) as {
         accessToken?: string;
@@ -7223,7 +7477,11 @@ export const reconcileAgentScopeForOrganization = onRequest(
  * Idempotent: if the user already has orgId/role, returns existing context.
  */
 export const bootstrapUserOrganization = onRequest(
-  { cors: true, region: REGION },
+  {
+    cors: true,
+    region: REGION,
+    secrets: [TWILIO_API_KEY, TWILIO_API_SECRET, EMAIL_UNSUBSCRIBE_SECRET],
+  },
   async (req, res) => {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
@@ -7299,6 +7557,21 @@ export const bootstrapUserOrganization = onRequest(
           created: true,
         };
       });
+
+      if (result.created && email) {
+        const displayName =
+          requestedName ||
+          fallbackName ||
+          (typeof decoded.name === "string" ? decoded.name : "") ||
+          "Owner";
+        // Fire-and-forget: never let email failures block signup
+        sendWelcomeNotification(email, displayName).catch((err) =>
+          console.error("sendWelcomeNotification on signup failed:", err)
+        );
+        sendNewSignupAlert({ userId: uid, email, displayName }).catch((err) =>
+          console.error("sendNewSignupAlert on signup failed:", err)
+        );
+      }
 
       res.status(200).json(result);
     } catch (error) {
@@ -7515,7 +7788,7 @@ export const deleteMyOrganization = onRequest(
  * requester via SendGrid.
  */
 export const exportMyData = onRequest(
-  { cors: true, region: REGION, secrets: [SENDGRID_API_KEY] },
+  { cors: true, region: REGION, secrets: [TWILIO_API_KEY, TWILIO_API_SECRET] },
   async (req, res) => {
     try {
       if (req.method !== "POST") {
@@ -7527,6 +7800,13 @@ export const exportMyData = onRequest(
       const db = getFirestore(admin.app(), DATABASE_ID);
 
       const orgDoc = await db.doc(`organizations/${orgId}`).get();
+      // Refuse to export a half-deleted org: deleteMyOrganization sets
+      // `deletedAt` and starts revoking subscriptions / removing indices.
+      // A concurrent export against that state ships inconsistent data.
+      if (orgDoc.exists && orgDoc.data()?.deletedAt) {
+        res.status(409).json({ error: "Organization deletion in progress; export unavailable." });
+        return;
+      }
       const subcollections = ["leads", "conversations", "listings", "auditLogs", "botConfig", "system_config"];
       const data: Record<string, unknown> = {
         orgId,
@@ -7678,45 +7958,14 @@ export const waRedirect = onRequest(
           orgId = leadSnap.docs[0].ref.path.split("/")[1];
         }
       }
-      if (!orgId) {
-        // Legacy links without org/lead metadata: fallback to global listing lookup.
-        try {
-          const snap = await db
-            .collectionGroup("listings")
-            .where("listingCode", "==", listingCode)
-            .limit(1)
-            .get();
-          if (!snap.empty) {
-            orgId = snap.docs[0].ref.path.split("/")[1];
-          }
-        } catch (error) {
-          const code = (error as { code?: number })?.code;
-          if (code !== 9) {
-            throw error;
-          }
-          console.warn(
-            `waRedirect fallback triggered: missing collectionGroup precondition for listingCode=${listingCode}`
-          );
-        }
-      }
-      if (!orgId) {
-        // Final fallback with no collectionGroup dependency: scan org subcollections.
-        const orgsSnap = await db.collection("organizations").limit(300).get();
-        for (const orgDoc of orgsSnap.docs) {
-          const listingSnap = await db
-            .collection(`organizations/${orgDoc.id}/listings`)
-            .where("listingCode", "==", listingCode)
-            .limit(1)
-            .get();
-          if (!listingSnap.empty) {
-            const data = listingSnap.docs[0].data() as { isActive?: boolean };
-            if (data.isActive !== false) {
-              orgId = orgDoc.id;
-              break;
-            }
-          }
-        }
-      }
+      // The cross-org fallback scans (collectionGroup over listings and the
+      // per-org loop over up to 300 organizations) were removed. They let an
+      // anonymous caller enumerate orgId↔phone associations by brute-forcing
+      // the 3–20-char listingCode space, and could 302 to the wrong org's
+      // WhatsApp number when two tenants reused the same code. Modern WA
+      // deep links always embed `o=<orgId>` (or `l=<leadId>` for first-touch
+      // links), so requiring one of those parameters covers production
+      // traffic without leaking tenant data.
       if (!orgId) {
         res.status(404).send("Listing not found");
         return;
@@ -7897,54 +8146,30 @@ export const checkFollowUps = onSchedule({
   }
 });
 
-export const testAlert = onRequest({ cors: true, region: REGION, secrets: [SENDGRID_API_KEY] }, async (_req, res) => {
+/**
+ * Envía por email los recordatorios de "próxima acción" del Seguimiento (propietarios y
+ * compradores) cuyo recordatorio está vencido y no se ha enviado. Cada 15 minutos.
+ */
+export const sendDueReminders = onSchedule({
+  schedule: "*/15 * * * *",
+  region: REGION,
+  timeZone: "Europe/Madrid",
+  secrets: [TWILIO_API_KEY, TWILIO_API_SECRET],
+}, async () => {
   try {
-    console.log("Iniciando prueba manual de alerta...");
-    await sendAlert(
-      "Prueba Manual de Alerta",
-      "Si estás leyendo esto, el sistema de notificaciones por correo electrónico está configurado CORRECTAMENTE.",
-      {
-        timestamp: new Date().toISOString(),
-        info: "Prueba solicitada por el usuario"
-      }
-    );
-    res.status(200).json({ success: true, message: "Alerta enviada correctamente" });
+    const res = await runDueReminders(Date.now());
+    console.log(`[sendDueReminders] sent=${res.sent} scanned=${res.scanned}`);
   } catch (error) {
-    console.error("Error en testAlert:", error);
-    res.status(500).json({ success: false, error: String(error) });
+    console.error("[sendDueReminders] fatal error:", error);
   }
 });
 
-/**
- * Manual trigger for testing the welcome email.
- * Usage: https://.../testWelcomeEmail?email=user@example.com&name=Eddy
- */
-export const testWelcomeEmail = onRequest(
-  {
-    cors: true,
-    region: REGION,
-    secrets: [SENDGRID_API_KEY, EMAIL_UNSUBSCRIBE_SECRET]
-  },
-  async (req, res) => {
-    try {
-      const email = (req.query.email as string) || "eddyperez1221@gmail.com";
-      const name = (req.query.name as string) || "Eddy";
-
-      console.log(`Sending test welcome email to ${email}...`);
-
-      const { sendWelcomeEmail } = await import("./services/authTriggers");
-      await sendWelcomeEmail(email, name);
-      
-      res.status(200).json({ 
-        success: true, 
-        message: `Test welcome email sent to ${email} successfully.` 
-      });
-    } catch (error) {
-      console.error("Error in testWelcomeEmail:", error);
-      res.status(500).json({ success: false, error: String(error) });
-    }
-  }
-);
+// `testAlert` and `testWelcomeEmail` previously lived here. They were removed
+// because both endpoints accepted unauthenticated GETs and let anyone trigger
+// outbound emails from Proplead's SMTP — a phishing pretext and an
+// email-reputation risk. If a manual smoke test is needed, run the underlying
+// service functions from a script (`functions/src/scripts/`) executed with the
+// Admin SDK rather than re-exposing them as public HTTP endpoints.
 
 /** JSON API: GET ?action=status|unsubscribe|resubscribe&token= */
 export const emailPreferencesApi = onRequest(
@@ -8558,6 +8783,16 @@ export const createStripeCheckout = onRequest({ cors: WEB_CLIENT_CORS, region: R
         return;
       }
 
+      if (packageId === "extra_40") {
+        const sub = await getOrgSubscription(orgId);
+        const subPlanId = sub?.planId ?? "none";
+        const hasActivePaidSub = sub?.status === "active" && subPlanId !== "free" && subPlanId !== "none";
+        if (!hasActivePaidSub) {
+          res.status(403).json({ error: "Active paid plan required to purchase extra packs" });
+          return;
+        }
+      }
+
       const parsedQty =
         rawQty === undefined || rawQty === null
           ? 1
@@ -8848,7 +9083,7 @@ export const updateSubscriptionPlan = onRequest(
 export const stripeWebhook = onRequest({
   cors: false,
   region: REGION,
-  secrets: ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PLUS_PRICE_ID", "STRIPE_PRO_PRICE_ID", "STRIPE_PRO_PLUS_PRICE_ID", SENDGRID_API_KEY],
+  secrets: ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PLUS_PRICE_ID", "STRIPE_PRO_PRICE_ID", "STRIPE_PRO_PLUS_PRICE_ID", TWILIO_API_KEY, TWILIO_API_SECRET],
 }, async (req, res) => {
   try {
     if (req.method !== "POST") {
@@ -9090,8 +9325,21 @@ export const getAlertCatalogStatus = onRequest({ cors: true, region: REGION }, a
   }
 
   try {
+    // Require an authenticated org manager. Previously this only used
+    // getActiveOrgId() from AsyncLocalStorage, which is empty for unauth
+    // calls — the endpoint would error out but still reveal that it exists.
+    // Make the access control explicit.
+    const callerCtx = await resolveUserContextFromToken(req.headers.authorization);
+    if (callerCtx.role !== "owner" && callerCtx.role !== "admin" && callerCtx.role !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     const databaseId = "realestate-whatsapp-bot";
-    const orgId = getActiveOrgId();
+    const orgId = callerCtx.orgId || getActiveOrgId();
+    if (!orgId) {
+      res.status(400).json({ error: "Missing organization context" });
+      return;
+    }
     const db = getFirestore(admin.app(), databaseId);
     const alertsRef = db.collection("organizations").doc(orgId).collection("system_alerts");
     const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
@@ -9274,6 +9522,13 @@ export const runAlertCheck = onRequest({ cors: true, region: REGION }, async (re
   }
 
   try {
+    // Require authenticated manager. See getAlertCatalogStatus for the same
+    // reasoning — getActiveOrgId() alone is not access control.
+    const callerCtx = await resolveUserContextFromToken(req.headers.authorization);
+    if (callerCtx.role !== "owner" && callerCtx.role !== "admin" && callerCtx.role !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     const body = (req.body && typeof req.body === "object") ? (req.body as { key?: string }) : {};
     const key = typeof body.key === "string" ? body.key.trim() : "";
     if (!key) {
@@ -9289,7 +9544,11 @@ export const runAlertCheck = onRequest({ cors: true, region: REGION }, async (re
     const checkedAtMsBase = Date.now();
 
     const databaseId = "realestate-whatsapp-bot";
-    const orgId = getActiveOrgId();
+    const orgId = callerCtx.orgId || getActiveOrgId();
+    if (!orgId) {
+      res.status(400).json({ error: "Missing organization context" });
+      return;
+    }
     const db = getFirestore(admin.app(), databaseId);
     const settingsRef = db.collection("organizations").doc(orgId).collection("system_config").doc("alert_settings");
     const alertsRef = db.collection("organizations").doc(orgId).collection("system_alerts");
@@ -9550,7 +9809,7 @@ function parseEditableTeamRole(role: unknown): "admin" | "member" | "agent" | nu
   return null;
 }
 
-export const sendInvitation = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, secrets: [SENDGRID_API_KEY] }, async (req, res) => {
+export const sendInvitation = onRequest({ cors: WEB_CLIENT_CORS, region: REGION, secrets: [TWILIO_API_KEY, TWILIO_API_SECRET] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -10139,6 +10398,43 @@ export const onListingWritten = onDocumentWritten({
           }
         }
       }
+
+      // Plan-limit enforcement: truncate notificationNumberIds to the plan cap.
+      // This is the authoritative backend gate — the UI selector mirrors the
+      // same cap and the listings service truncates client-side too, but a
+      // tampered client could bypass both. Reads the latest plan from
+      // org_subscriptions so a downgrade applied seconds before this write
+      // is respected.
+      try {
+        const rawIds = (after as { notificationNumberIds?: unknown }).notificationNumberIds;
+        if (Array.isArray(rawIds) && rawIds.length > 0) {
+          const ids = rawIds.filter((v): v is string => typeof v === "string" && v.trim() !== "");
+          const sub = await getOrgSubscription(event.params.orgId);
+          const max = getMaxListingNotificationNumbers(sub?.planId);
+          if (ids.length > max) {
+            const truncated = ids.slice(0, max);
+            console.warn(
+              `[onListingWritten] Truncating notificationNumberIds for listing=${event.params.listingId} ` +
+                `plan=${sub?.planId || "free"} max=${max} requested=${ids.length}`
+            );
+            await event.data!.after.ref.set(
+              { notificationNumberIds: truncated, updatedAt: new Date() },
+              { merge: true }
+            );
+          } else if (ids.length !== rawIds.length) {
+            // Cleanup-only — strip non-string entries without re-triggering a length change.
+            await event.data!.after.ref.set(
+              { notificationNumberIds: ids, updatedAt: new Date() },
+              { merge: true }
+            );
+          }
+        }
+      } catch (limitErr) {
+        console.error(
+          `[onListingWritten] plan-limit enforcement failed for listing=${event.params.listingId}`,
+          limitErr
+        );
+      }
     }
   });
 });
@@ -10164,34 +10460,362 @@ export const onConfigWritten = onDocumentWritten({
   });
 });
 
-export const testEmailTemplates = onRequest({ cors: true, region: REGION, secrets: [SENDGRID_API_KEY, EMAIL_UNSUBSCRIBE_SECRET] }, async (req, res) => {
-  const type = typeof req.body?.type === "string" ? req.body.type : "";
-  const testEmail = typeof req.body?.email === "string" && req.body.email.trim()
-    ? req.body.email.trim()
-    : "eddyperez1221@gmail.com";
-
+export const testEmailTemplates = onRequest({ cors: true, region: REGION, secrets: [TWILIO_API_KEY, TWILIO_API_SECRET, EMAIL_UNSUBSCRIBE_SECRET] }, async (req, res) => {
+  // Authenticated super_admin only — this endpoint sends real emails from
+  // Proplead's SMTP to an arbitrary recipient and was previously
+  // unauthenticated (same class of vuln as the deleted testWelcomeEmail /
+  // testAlert). Without this gate any third party can drive a phishing /
+  // SMTP-reputation attack via the production sender.
   try {
-    if (type === "welcome") {
-      await sendWelcomeNotification(testEmail, "User Test", "Proplead Org Test");
-    } else if (type === "low_balance") {
-      // Mock data for test
+    const ctx = await resolveUserContextFromToken(req.headers.authorization);
+    if (ctx.role !== "super_admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+  } catch (e) {
+    res.status(401).json({ error: e instanceof Error && e.message === "Unauthorized" ? "Unauthorized" : "Unauthorized" });
+    return;
+  }
+
+  // Accept type/email from either query (GET) or body (POST) to make ad-hoc testing easier.
+  const source = (req.method === "GET" ? req.query : req.body) || {};
+  const rawType = typeof (source as Record<string, unknown>).type === "string" ? String((source as Record<string, unknown>).type) : "";
+  const rawEmail = typeof (source as Record<string, unknown>).email === "string" ? String((source as Record<string, unknown>).email).trim() : "";
+  const type = rawType.toLowerCase();
+  const testEmail = rawEmail || "ejperezreyes@gmail.com";
+
+  const sendOne = async (kind: string): Promise<void> => {
+    if (kind === "welcome") {
+      await sendWelcomeNotification(testEmail, "User Test");
+    } else if (kind === "low_balance") {
       const { formatLowBalanceEmail } = await import("./services/emailTemplates");
       const { sendEmailToUser } = await import("./services/emailService");
       const html = formatLowBalanceEmail({ name: "User Test", balance: 8 });
-      await sendEmailToUser({ to: testEmail, subject: "Pausa programada del Agente Virtual ⏳", html });
-    } else if (type === "payment_failed") {
+      await sendEmailToUser({ to: testEmail, subject: "Pausa programada del asistente ⏳", html });
+    } else if (kind === "payment_failed") {
       const { formatPaymentFailedEmail } = await import("./services/emailTemplates");
       const { sendEmailToUser } = await import("./services/emailService");
       const html = formatPaymentFailedEmail({ name: "User Test", orgName: "Proplead Org Test", lastPaymentAmount: "39.00€" });
       await sendEmailToUser({ to: testEmail, subject: "Fallo en la renovación 💳", html });
+    } else if (kind === "invitation") {
+      await sendInvitationNotification({
+        email: testEmail,
+        name: "User Test",
+        orgName: "Proplead Org Test",
+        inviterName: "Eddy",
+        token: "test-invitation-token-1234567890",
+      });
+    } else if (kind === "password_reset") {
+      const { sendPasswordResetNotification } = await import("./services/emailService");
+      // Try to generate a real Firebase Auth reset link so the email lands at /reset-password.
+      // Falls back to a placeholder URL when the test address doesn't exist as a Firebase user.
+      let resetUrl = `${APP_BASE_URL.value().trim().replace(/\/+$/, "")}/reset-password?oobCode=test-placeholder`;
+      try {
+        resetUrl = await admin.auth().generatePasswordResetLink(testEmail, {
+          url: `${APP_BASE_URL.value().trim().replace(/\/+$/, "")}/login`,
+        });
+      } catch (e) {
+        console.warn(`password_reset test: could not generate real reset link for ${testEmail}, using placeholder. ${String(e)}`);
+      }
+      await sendPasswordResetNotification(testEmail, resetUrl);
+    } else if (kind === "new_signup_alert") {
+      await sendNewSignupAlert({
+        userId: "test-uid-1234567890",
+        email: testEmail,
+        displayName: "User Test",
+      });
+    } else if (kind === "support_inquiry") {
+      const { sendSupportInquiryNotification } = await import("./services/emailService");
+      await sendSupportInquiryNotification({
+        name: "User Test",
+        email: testEmail,
+        subject: "Consulta de prueba",
+        message: "Hola, esto es un email de prueba enviado desde testEmailTemplates para verificar el formato de soporte.",
+        userId: "test-uid-1234567890",
+        locale: "es",
+        sourcePage: "/configuracion",
+        userAgent: "Test runner",
+        ip: "n/a",
+      });
     } else {
-      res.status(400).send("Specify type: welcome, low_balance, or payment_failed");
+      throw new Error(`Unknown email type: ${kind}`);
+    }
+  };
+
+  const allTypes = ["welcome", "low_balance", "payment_failed", "invitation", "password_reset", "new_signup_alert", "support_inquiry"];
+
+  try {
+    if (type === "all") {
+      const results: Record<string, string> = {};
+      for (const k of allTypes) {
+        try {
+          await sendOne(k);
+          results[k] = "sent";
+        } catch (e) {
+          results[k] = `error: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+      res.status(200).json({ success: true, to: testEmail, results });
       return;
     }
-    
+
+    if (!type) {
+      res.status(400).json({
+        error: "Specify type",
+        validTypes: [...allTypes, "all"],
+      });
+      return;
+    }
+
+    await sendOne(type);
     res.status(200).json({ success: true, message: `Email ${type} sent to ${testEmail}` });
   } catch (error) {
     console.error("Test email error:", error);
     res.status(500).json({ error: String(error) });
   }
 });
+
+// ============================================================================
+// Notification numbers verification (Twilio Verify, SMS channel)
+// ============================================================================
+//
+// Three HTTPS endpoints — all called from the web client.
+//
+// * startNotificationNumberVerification: Twilio sends a 6-digit code via SMS.
+//   We persist a pending notificationNumbers doc with the verificationSid;
+//   if the same phone is already verified for this org, we short-circuit.
+// * checkNotificationNumberVerification: client posts the 6-digit code; on
+//   approval we flip `verified: true` and clear the SID. The first verified
+//   number in the org also becomes the org default (used as onboarding's
+//   default sender for legacy `whatsappSummariesPhone`).
+// * deleteNotificationNumber: managers only. Centralised so we can layer
+//   audit on top later — rules also permit direct deletes by managers.
+//
+// All three require `role in ["owner", "admin", "super_admin"]`.
+
+type NotificationNumberManagerCheck = {
+  uid: string;
+  orgId: string;
+  role: string;
+  email: string;
+};
+
+function isNotificationNumberManager(ctx: NotificationNumberManagerCheck): boolean {
+  return ctx.role === "owner" || ctx.role === "admin" || ctx.role === "super_admin";
+}
+
+const VERIFY_ATTEMPTS_HARD_LIMIT = 5;
+
+export const startNotificationNumberVerification = onRequest(
+  {
+    cors: WEB_CLIENT_CORS,
+    region: REGION,
+    secrets: [TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID],
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const ctx = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isNotificationNumberManager(ctx)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const body = (req.body || {}) as { phone?: string; label?: string; source?: string };
+      const e164 = normalizeToE164(body.phone);
+      if (!e164) {
+        res.status(400).json({ error: "Invalid phone number; expected E.164 (e.g. +34612345678)" });
+        return;
+      }
+      const label = typeof body.label === "string" ? body.label.trim().slice(0, 60) : undefined;
+      const source =
+        body.source === "onboarding" || body.source === "team_add" ? body.source : "team_add";
+
+      const accountSid = TWILIO_ACCOUNT_SID.value();
+      const authToken = TWILIO_AUTH_TOKEN.value();
+      const serviceSid = TWILIO_VERIFY_SERVICE_SID.value();
+      if (!accountSid || !authToken || !serviceSid) {
+        res.status(500).json({ error: "Twilio Verify is not configured on the server" });
+        return;
+      }
+
+      let verification;
+      try {
+        verification = await twilioVerifyStart({
+          credentials: { accountSid, authToken, serviceSid },
+          to: e164,
+          channel: "sms",
+          locale: "es",
+        });
+      } catch (error) {
+        if (isTwilioVerifyRateLimited(error)) {
+          res.status(429).json({ error: "Demasiados intentos. Inténtalo de nuevo en unos minutos." });
+          return;
+        }
+        console.error("Twilio Verify start failed", twilioVerifyErrorMessage(error));
+        res.status(502).json({ error: "No se pudo enviar el código de verificación" });
+        return;
+      }
+
+      const { numberId, alreadyVerified } = await upsertPendingNumber({
+        orgId: ctx.orgId,
+        e164,
+        label,
+        createdBy: ctx.uid,
+        source,
+        verificationSid: verification.sid,
+      });
+
+      res.status(200).json({ numberId, alreadyVerified, e164 });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("startNotificationNumberVerification error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+export const checkNotificationNumberVerification = onRequest(
+  {
+    cors: WEB_CLIENT_CORS,
+    region: REGION,
+    secrets: [TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID],
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const ctx = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isNotificationNumberManager(ctx)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const body = (req.body || {}) as { numberId?: string; code?: string };
+      const numberId = typeof body.numberId === "string" ? body.numberId.trim() : "";
+      const code = typeof body.code === "string" ? body.code.trim() : "";
+      if (!numberId || !code) {
+        res.status(400).json({ error: "numberId and code are required" });
+        return;
+      }
+      if (!/^\d{4,8}$/.test(code)) {
+        res.status(400).json({ error: "Invalid code format" });
+        return;
+      }
+
+      const doc = await getNotificationNumber(ctx.orgId, numberId);
+      if (!doc) {
+        res.status(404).json({ error: "Notification number not found" });
+        return;
+      }
+      if (doc.verified) {
+        res.status(200).json({ verified: true, status: "approved" });
+        return;
+      }
+      if ((doc.verificationAttempts || 0) >= VERIFY_ATTEMPTS_HARD_LIMIT) {
+        res.status(429).json({ error: "Demasiados intentos. Solicita un código nuevo." });
+        return;
+      }
+
+      const accountSid = TWILIO_ACCOUNT_SID.value();
+      const authToken = TWILIO_AUTH_TOKEN.value();
+      const serviceSid = TWILIO_VERIFY_SERVICE_SID.value();
+      if (!accountSid || !authToken || !serviceSid) {
+        res.status(500).json({ error: "Twilio Verify is not configured on the server" });
+        return;
+      }
+
+      let result;
+      try {
+        result = await twilioVerifyCheck({
+          credentials: { accountSid, authToken, serviceSid },
+          to: doc.e164,
+          code,
+        });
+      } catch (error) {
+        if (isTwilioVerifyRateLimited(error)) {
+          res.status(429).json({ error: "Demasiados intentos. Inténtalo de nuevo en unos minutos." });
+          return;
+        }
+        console.error("Twilio Verify check failed", twilioVerifyErrorMessage(error));
+        res.status(502).json({ error: "No se pudo verificar el código" });
+        return;
+      }
+
+      if (result.valid) {
+        await markNotificationNumberVerified({ orgId: ctx.orgId, numberId });
+        res.status(200).json({ verified: true, status: result.status });
+        return;
+      }
+
+      const attempts = await incrementVerificationAttempts({ orgId: ctx.orgId, numberId });
+      res.status(200).json({
+        verified: false,
+        status: result.status,
+        attemptsRemaining: Math.max(0, VERIFY_ATTEMPTS_HARD_LIMIT - attempts),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("checkNotificationNumberVerification error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+export const deleteNotificationNumber = onRequest(
+  { cors: WEB_CLIENT_CORS, region: REGION },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      const ctx = await resolveUserContextFromToken(req.headers.authorization);
+      if (!isNotificationNumberManager(ctx)) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const body = (req.body || {}) as { numberId?: string };
+      const numberId = typeof body.numberId === "string" ? body.numberId.trim() : "";
+      if (!numberId) {
+        res.status(400).json({ error: "numberId is required" });
+        return;
+      }
+      const doc = await getNotificationNumber(ctx.orgId, numberId);
+      if (!doc) {
+        res.status(200).json({ ok: true, alreadyDeleted: true });
+        return;
+      }
+      await deleteNotificationNumberDoc({ orgId: ctx.orgId, numberId });
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("deleteNotificationNumber error:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+);
+
+export const passwordResetRequest = onRequest(
+  {
+    cors: true,
+    region: REGION,
+    secrets: [TWILIO_API_KEY, TWILIO_API_SECRET, EMAIL_UNSUBSCRIBE_SECRET],
+  },
+  async (req, res) => {
+    const { passwordResetRequestHandler } = await import("./passwordResetEndpoints");
+    await passwordResetRequestHandler(req, res);
+  }
+);

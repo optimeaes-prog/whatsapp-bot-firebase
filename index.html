@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
@@ -10,6 +10,15 @@
       content="897nbn8jqzwa8nn89sg08qyztqyh2b"
     />
     <title>Proplead</title>
+
+    <!-- GA4 + Meta Pixel consent bootstrap. Loaded as an external file so the
+         hosting CSP can drop 'unsafe-inline' on script-src. The async gtag.js
+         loader is whitelisted by domain in the CSP. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-7JTKQSCGPH"></script>
+    <script src="/analytics-bootstrap.js"></script>
+    <noscript><img height="1" width="1" style="display:none"
+      src="https://www.facebook.com/tr?id=1292774496305674&ev=PageView&noscript=1"
+    /></noscript>
   </head>
   <body>
     <div id="root"></div>

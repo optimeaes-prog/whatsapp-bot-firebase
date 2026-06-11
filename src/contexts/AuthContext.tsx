@@ -20,7 +20,7 @@ import {
 } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
-import { analytics } from "../lib/analytics";
+import { analytics, hashIdSync } from "../lib/analytics";
 import { setOrganizationId } from "../lib/organization";
 import { getAllOrganizations, getAllOrganizationsForSuperAdmin } from "../services/organization";
 import { FUNCTIONS_BASE_URL } from "../lib/api";
@@ -314,6 +314,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [role, impersonation, clearImpersonation]);
 
+  // Set user_id + non-PII user_properties in GA4 once we have the full session.
+  // Re-runs when org or role changes (e.g. super_admin switches org).
+  useEffect(() => {
+    if (!user?.uid) return;
+    analytics.identify({
+      user_id: user.uid,
+      role: typeof role === "string" ? role : undefined,
+      org_id_hash: organizationId ? hashIdSync(organizationId) : undefined,
+    });
+  }, [user?.uid, role, organizationId]);
+
   const signIn = async (email: string, password: string) => {
     const result = await signInWithEmailAndPassword(auth, email, password);
     await resolveUserOrganization(result.user);
@@ -337,6 +348,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setImpersonation(null);
     await firebaseSignOut(auth);
     analytics.trackLogout();
+    analytics.reset();
   };
 
   const isImpersonating = impersonation !== null;

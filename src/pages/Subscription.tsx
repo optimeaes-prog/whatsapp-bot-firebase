@@ -42,9 +42,12 @@ const SUBSCRIPTION_PLANS = [
     conversationsMonthly: 40,
     listingsIdeal: "1 anuncio activo/mes",
     benefits: [
-      "Respuesta de soporte maximo 72h",
       "Acceso: 1 agente",
-      "Solo leads de mensajes",
+      "Asistencia a leads provenientes de llamadas",
+      "Panel de conversaciones y leads en vivo",
+      "El asistente recopila 6 datos por lead",
+      "Tono de voz del asistente predefinido",
+      "Envía alertas de leads cualificados a un número por anuncio",
     ],
   },
   {
@@ -53,11 +56,12 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: 39,
     conversationsMonthly: 80,
     listingsIdeal: "2-4 anuncios activos/mes",
+    inheritsFromName: "Free",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
-      "Respuesta de soporte maximo 24h",
-      "Acceso: 1 agente",
-      "Asistencia a leads provenientes de mensajes o llamadas",
+      "Asistencia a leads provenientes de llamadas y mensajes",
+      "Ingesta automática de leads de Idealista",
+      "El asistente recopila 15+ datos por lead",
     ],
   },
   {
@@ -66,12 +70,11 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: 69,
     conversationsMonthly: 80,
     listingsIdeal: "3–6 anuncios activos/mes",
+    inheritsFromName: "Plus",
     benefits: [
-      "Compra 40 conversaciones por 10€ cuando quieras",
-      "Respuesta de soporte maximo 12h",
       "Acceso multi-agente",
-      "Asistencia a leads provenientes de mensajes o llamadas",
-      "Promoción de marca en cualificación",
+      "Envío de mensajes masivos",
+      "Tono de voz del asistente personalizado",
     ],
   },
   {
@@ -80,13 +83,12 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: 99,
     conversationsMonthly: 80,
     listingsIdeal: "6–12 anuncios activos/mes",
+    inheritsFromName: "Pro",
     benefits: [
-      "Compra 40 conversaciones por 10€ cuando quieras",
+      "Gestión automática de agendado de visitas y recordatorios",
+      "Importación masiva de anuncios y leads",
+      "Alertas de leads cualificados a múltiples números",
       "Soporte dedicado 1 a 1",
-      "Acceso multi-agente",
-      "Asistencia a leads provenientes de mensajes o llamadas",
-      "Promoción de marca en cualificación",
-      "Tu propio Avatar en vez de Marcos.",
     ],
   },
   {
@@ -95,6 +97,7 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: null as number | null,
     conversationsMonthly: 0,
     listingsIdeal: "A medida",
+    inheritsFromName: "Pro+",
     benefits: [
       "Soporte personalizado",
       "Acceso ilimitado",
@@ -390,7 +393,7 @@ export function Subscription() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-12">
-        <div className="lg:col-span-2 card p-6 bg-gradient-to-br from-white to-primary-50/30 border border-primary-100 flex flex-col justify-center">
+        <div className="lg:col-span-2 card p-6 bg-white border border-primary-100 flex flex-col justify-center">
             <h3 className="text-sm font-bold text-gray-500 uppercase tracking-widest font-heading mb-4">Balance de Conversaciones</h3>
             {(() => {
               const contracted = contractedConversations;
@@ -399,74 +402,78 @@ export function Subscription() {
               const consumedPct = contracted > 0 ? Math.min(100, (consumed / contracted) * 100) : 0;
               const strokeColor = "#F59E0B";
               return (
-                <div className="flex items-center gap-6">
-                  <div className="w-20 h-20 shrink-0 relative flex items-center justify-center">
-                    <svg className="w-full h-full -rotate-90 absolute inset-0">
-                      <circle cx="40" cy="40" r="36" fill="none" stroke="#F1F5F9" strokeWidth="6" />
-                      <circle
-                        cx="40" cy="40" r="36" fill="none"
-                        stroke="#FEF3C7"
-                        strokeWidth="6" strokeDasharray={226}
-                        strokeDashoffset={226 - (consumedPct * 226) / 100}
-                        strokeLinecap="round"
-                      />
-                      <circle
-                        cx="40" cy="40" r="36" fill="none"
-                        stroke={strokeColor}
-                        strokeWidth="6" strokeDasharray={226}
-                        strokeDashoffset={226 - (availablePct * 226) / 100}
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                    <MessageSquare className="text-primary-600" size={24} />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex flex-wrap gap-x-8 gap-y-2">
-                      <div>
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Contratadas</p>
-                        <p className="text-2xl font-bold text-gray-900 font-heading tabular-nums">{contracted.toLocaleString()}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Consumidas</p>
-                        <p className="text-2xl font-bold text-gray-700 font-heading tabular-nums">{consumed.toLocaleString()}</p>
-                      </div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
+                  <div className="flex items-center gap-4 sm:gap-6 min-w-0">
+                    <div className="w-20 h-20 shrink-0 relative flex items-center justify-center">
+                      <svg className="w-full h-full -rotate-90 absolute inset-0">
+                        <circle cx="40" cy="40" r="36" fill="none" stroke="#F1F5F9" strokeWidth="6" />
+                        <circle
+                          cx="40" cy="40" r="36" fill="none"
+                          stroke="#FEF3C7"
+                          strokeWidth="6" strokeDasharray={226}
+                          strokeDashoffset={226 - (consumedPct * 226) / 100}
+                          strokeLinecap="round"
+                        />
+                        <circle
+                          cx="40" cy="40" r="36" fill="none"
+                          stroke={strokeColor}
+                          strokeWidth="6" strokeDasharray={226}
+                          strokeDashoffset={226 - (availablePct * 226) / 100}
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                      <MessageSquare className="text-primary-600" size={24} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      {/* Disponibles is the headline — big primary-color value. Contratadas/Consumidas are secondary, smaller. */}
                       <div>
                         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Disponibles</p>
-                        <p className="text-2xl font-bold tabular-nums font-heading text-primary-600">{availableConversations.toLocaleString()}</p>
+                        <p className="text-3xl sm:text-4xl font-bold tabular-nums font-heading text-primary-600 leading-none">{availableConversations.toLocaleString()}</p>
                       </div>
+                      <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-gray-500 font-medium">
+                        <span>
+                          <span className="text-gray-400">Contratadas:</span>{" "}
+                          <span className="text-gray-700 font-semibold tabular-nums">{contracted.toLocaleString()}</span>
+                        </span>
+                        <span>
+                          <span className="text-gray-400">Consumidas:</span>{" "}
+                          <span className="text-gray-700 font-semibold tabular-nums">{consumed.toLocaleString()}</span>
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-2 font-medium">
+                        Renovación: {(() => {
+                          const raw = subscription?.currentPeriodEnd;
+                          if (!raw) return "Ilimitado";
+                          const date = (raw as any)?.toDate ? (raw as any).toDate() : new Date(raw as any);
+                          return isNaN(date.getTime()) ? "---" : date.toLocaleDateString("es-ES");
+                        })()}
+                      </p>
                     </div>
-                    <p className="text-xs text-gray-400 mt-2 font-medium">
-                      Renovación: {(() => {
-                        const raw = subscription?.currentPeriodEnd;
-                        if (!raw) return "Ilimitado";
-                        const date = (raw as any)?.toDate ? (raw as any).toDate() : new Date(raw as any);
-                        return isNaN(date.getTime()) ? "---" : date.toLocaleDateString("es-ES");
-                      })()}
-                    </p>
                   </div>
 
                   {/* Quantity Selector Style similar to Plans */}
-                  <div className="shrink-0 border-l border-primary-100 pl-6 ml-6 flex flex-col justify-center min-w-[240px]">
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading mb-3">Compra Puntual</p>
-                    
-                    <div className="flex flex-col gap-4">
-                      <div className="flex flex-col gap-1.5">
+                  <div className="shrink-0 w-full sm:w-auto sm:min-w-[240px] border-t sm:border-t-0 sm:border-l border-primary-100 pt-4 sm:pt-0 sm:pl-6 sm:ml-6 flex flex-col justify-center items-center sm:items-stretch">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading mb-3 text-center sm:text-left">Compra Puntual</p>
+
+                    <div className="flex flex-col gap-4 items-center sm:items-stretch w-full">
+                      <div className="flex flex-col gap-1.5 items-center sm:items-start">
                         <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-heading">Añadir packs (40 convs.)</label>
-                        <div className="flex items-center gap-3">
+                        <div className={`flex items-center gap-3 ${!hasActivePaidSub ? "opacity-50" : ""}`}>
                           <div className="flex items-center bg-white border border-gray-200 rounded-lg p-1 shadow-sm">
-                            <button 
+                            <button
                               onClick={() => setExtraPackQty(prev => Math.max(1, prev - 1))}
-                              disabled={extraPackQty <= 1}
-                              className="p-1 px-2 text-gray-400 hover:text-primary-600 disabled:opacity-30 transition-colors"
+                              disabled={!hasActivePaidSub || extraPackQty <= 1}
+                              className="p-1 px-2 text-gray-400 hover:text-primary-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                             >
                               <Minus size={14} strokeWidth={3} />
                             </button>
                             <span className="text-sm font-black font-heading px-3 min-w-[40px] text-center text-primary-600">
                               {extraPackQty}
                             </span>
-                            <button 
+                            <button
                               onClick={() => setExtraPackQty(prev => prev + 1)}
-                              className="p-1 px-2 text-gray-400 hover:text-primary-600 transition-colors"
+                              disabled={!hasActivePaidSub}
+                              className="p-1 px-2 text-gray-400 hover:text-primary-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                             >
                               <Plus size={14} strokeWidth={3} />
                             </button>
@@ -479,7 +486,7 @@ export function Subscription() {
 
                       <Button
                         loading={purchaseLoading === "extra_40"}
-                        disabled={effectiveRole === "member" || isImpersonationReadOnly}
+                        disabled={!hasActivePaidSub || effectiveRole === "member" || isImpersonationReadOnly}
                         onClick={async () => {
                           try {
                             setPurchaseLoading("extra_40");
@@ -498,7 +505,9 @@ export function Subscription() {
                         {!purchaseLoading && <Rocket size={16} />}
                         <span>Comprar {(extraPackQty * 40).toLocaleString()} convs.</span>
                       </Button>
-                      <p className="text-[10px] text-gray-400 italic text-center">Las conversaciones extra no expiran</p>
+                      <p className="text-[10px] text-gray-400 italic text-center">
+                        {hasActivePaidSub ? "Las conversaciones extra no expiran" : "Activa un plan para comprar conversaciones extra"}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -674,10 +683,12 @@ export function Subscription() {
           </div>
         </div>
 
-        <div className="mt-8 pt-8 border-t border-gray-100 mb-8">
+        <div className="mt-8 pt-8 border-t border-gray-100 mb-6">
+          <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 font-heading">Planes</h2>
+          <p className="text-sm text-gray-500 mt-1">Elige el plan que mejor se adapte a tus necesidades</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2 max-w-[1500px] mx-auto">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2 max-w-[1500px] mx-auto pt-8">
           {SUBSCRIPTION_PLANS.map((plan) => {
             const isEnterprise = plan.id === "enterprise";
             const isFree = plan.id === "free";
@@ -704,7 +715,7 @@ export function Subscription() {
             const isBoth = isCurrentPlan && isRecommended;
 
             return (
-              <div key={plan.id} className="relative flex flex-col h-full">
+              <div key={plan.id} className={cn("relative flex flex-col sm:h-full", isRecommended && "mt-8 sm:mt-0")}>
                 {isRecommended && (
                   <div className="absolute -top-8 left-0 right-0 bg-primary-500 text-white text-[10px] font-black h-8 flex items-center justify-center rounded-t-xl uppercase tracking-widest border-2 border-primary-500 border-b-0 font-heading">
                     Recomendado
@@ -807,7 +818,7 @@ export function Subscription() {
                             {/* Recommended Guidance Tag */}
                             {!isFree && (
                               <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold text-gray-400">Recomendado x simulador:</span>
+                                <span className="text-[10px] font-bold text-gray-400">Recomendado por simulador:</span>
                                 <span className={cn(
                                   "text-[10px] font-black px-1.5 py-0.5 rounded",
                                   contractedValue >= recommendedValue 
@@ -830,14 +841,21 @@ export function Subscription() {
                       </div>
                     )}
 
-                    <ul className={cn("mb-4 flex-1 space-y-2 pt-3", !isEnterprise && "border-t border-gray-100")}>
-                      {plan.benefits.map((line) => (
-                        <li key={line} className="flex gap-2 text-xs text-gray-600 leading-snug">
-                          <Check className="shrink-0 text-emerald-500 mt-0.5" size={14} aria-hidden />
-                          <span>{line}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className={cn("mb-4 flex-1 pt-3", !isEnterprise && "border-t border-gray-100")}>
+                      {"inheritsFromName" in plan && plan.inheritsFromName && (
+                        <p className="text-xs font-medium text-gray-500 mb-2">
+                          Todo lo de {plan.inheritsFromName}, y además:
+                        </p>
+                      )}
+                      <ul className="space-y-2">
+                        {plan.benefits.map((line) => (
+                          <li key={line} className="flex gap-2 text-xs text-gray-600 leading-snug">
+                            <Check className="shrink-0 text-emerald-500 mt-0.5" size={14} aria-hidden />
+                            <span>{line}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
 
                     <button
                       disabled={

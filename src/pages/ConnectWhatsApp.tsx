@@ -6,6 +6,7 @@ import { Button, PageContainer, PageHeader } from "../components/ui";
 import { runEmbeddedSignup } from "../services/embeddedSignup";
 import { getBotConfig } from "../services/botConfig";
 import { getOrganizationSettings, updateOrganizationSettings } from "../services/organization";
+import { analytics } from "../lib/analytics";
 
 type ConnectedState = {
   phoneNumberId: string;
@@ -20,8 +21,8 @@ export function ConnectWhatsApp() {
     try {
       const settings = await getOrganizationSettings();
       const currentStep = settings.onboardingStep || 1;
-      if (currentStep <= 3) {
-        await updateOrganizationSettings({ onboardingStep: 4 });
+      if (currentStep <= 4) {
+        await updateOrganizationSettings({ onboardingStep: 5 });
       }
     } catch (error) {
       console.error("Could not update onboarding step after connection:", error);
@@ -30,13 +31,16 @@ export function ConnectWhatsApp() {
 
   async function handleConnect() {
     setLoading(true);
+    analytics.trackWhatsappConnectStarted("cloud_api");
     try {
       const settings = await getOrganizationSettings();
       const result = await runEmbeddedSignup({
-        assistantAvatarId: settings.assistantAvatarId,
-        assistantAvatarUrl: settings.assistantAvatarUrl,
+        assistantAvatarId: settings.assistantAvatarId ?? undefined,
+        assistantAvatarUrl: settings.assistantAvatarUrl ?? undefined,
+        assistantPhotoUrl: settings.assistantPhotoUrl ?? undefined,
       });
       setConnected({ phoneNumberId: result.phoneNumberId, wabaId: result.wabaId });
+      analytics.trackWhatsappConnected("cloud_api");
       await advanceOnboardingAfterConnect();
       toast.success("WhatsApp Business conectado correctamente");
     } catch (error) {

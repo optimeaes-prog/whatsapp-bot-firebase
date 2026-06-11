@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Users as UsersIcon, Search, Calendar, UserPlus, ShieldCheck, Shield, Trash2, X, Plus, Pencil, Eye } from "lucide-react";
+import { Users as UsersIcon, Search, Calendar, UserPlus, ShieldCheck, Shield, Trash2, X, Plus, Pencil, Eye, Building2, Bell } from "lucide-react";
 import {
   getOrgMembers,
   getOrgInvitations,
@@ -12,12 +12,65 @@ import {
   type Invitation,
   type UpdateTeamMemberParams,
 } from "../services/users";
+import {
+  getOrganizationSettings,
+  updateOrganizationSettings,
+  type OrganizationSettings,
+} from "../services/organization";
+import { getBotConfig, updateNotificationNumbers, updateOrgName } from "../services/botConfig";
 import { formatDate } from "../lib/utils";
 import { PageHeader, FilterCard, PageLoading, Button } from "../components/ui";
 import { pendingPillSm } from "../lib/metricTheme";
 import { useAuth } from "../contexts/AuthContext";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
+import { isNotificationNumbersV2Enabled } from "../lib/featureFlags";
+import { NotificationNumbersPanel } from "../components/NotificationNumbersPanel";
+
+type OrgDetailsForm = {
+  agencyName: string;
+  legalName: string;
+  agencyTaxId: string;
+  agencyAddress: string;
+  employeesCount: string;
+  contactPhone: string;
+  website: string;
+};
+
+const EMPTY_ORG_FORM: OrgDetailsForm = {
+  agencyName: "",
+  legalName: "",
+  agencyTaxId: "",
+  agencyAddress: "",
+  employeesCount: "",
+  contactPhone: "",
+  website: "",
+};
+
+function settingsToForm(s: OrganizationSettings | null): OrgDetailsForm {
+  if (!s) return EMPTY_ORG_FORM;
+  return {
+    agencyName: s.agencyName ?? "",
+    legalName: s.legalName ?? "",
+    agencyTaxId: s.agencyTaxId ?? "",
+    agencyAddress: s.agencyAddress ?? "",
+    employeesCount: s.employeesCount ?? "",
+    contactPhone: s.contactPhone ?? "",
+    website: s.website ?? "",
+  };
+}
+
+function formsEqual(a: OrgDetailsForm, b: OrgDetailsForm): boolean {
+  return (
+    a.agencyName === b.agencyName &&
+    a.legalName === b.legalName &&
+    a.agencyTaxId === b.agencyTaxId &&
+    a.agencyAddress === b.agencyAddress &&
+    a.employeesCount === b.employeesCount &&
+    a.contactPhone === b.contactPhone &&
+    a.website === b.website
+  );
+}
 
 type EditableTeamRole = "member" | "agent" | "admin";
 
@@ -30,7 +83,7 @@ type EditMemberForm = {
   qualifiedLeadNotificationNumbers: string;
 };
 
-export function TeamManagement() {
+export function Organizacion() {
   const navigate = useNavigate();
   const {
     organizationId,
@@ -46,6 +99,18 @@ export function TeamManagement() {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+
+  // Organization details (top card).
+  const [orgSettingsLoaded, setOrgSettingsLoaded] = useState<OrgDetailsForm>(EMPTY_ORG_FORM);
+  const [orgForm, setOrgForm] = useState<OrgDetailsForm>(EMPTY_ORG_FORM);
+  const [savingOrgDetails, setSavingOrgDetails] = useState(false);
+
+  // Legacy central WhatsApp summaries (moved from Configuración).
+  // TODO: consolidate with the v2 NotificationNumbersPanel and the duplicate
+  // agencyName/orgName storage (organizations doc vs botConfig doc) in a follow-up.
+  const [centralNumbersLoaded, setCentralNumbersLoaded] = useState("");
+  const [centralNumbers, setCentralNumbers] = useState("");
+  const [savingCentralNumbers, setSavingCentralNumbers] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteName, setInviteName] = useState("");
@@ -70,17 +135,116 @@ export function TeamManagement() {
     if (!organizationId) return;
     try {
       setLoading(true);
-      const [membersData, invitationsData] = await Promise.all([
+      const [membersData, invitationsData, orgSettings, botCfg] = await Promise.all([
         getOrgMembers(organizationId),
-        getOrgInvitations(organizationId)
+        // Invitations contain invitee emails (PII) and are restricted to
+        // managers in firestore.rules. Agents/members hit this code path via
+        // the same page; swallow the permission-denied and show an empty list.
+        getOrgInvitations(organizationId).catch((err) => {
+          console.warn("Skipping invitations load (likely permission-denied):", err);
+          return [] as Invitation[];
+        }),
+        getOrganizationSettings().catch((err) => {
+          console.error("Error loading organization settings:", err);
+          return null;
+        }),
+        getBotConfig().catch((err) => {
+          console.error("Error loading bot config:", err);
+          return null;
+        }),
       ]);
       setMembers(membersData);
       setInvitations(invitationsData);
+      const orgFormFromDb = settingsToForm(orgSettings);
+      // If the organizations doc didn't have agencyName but botConfig did, prefer botConfig's value
+      // so the user sees the same name they edited previously.
+      if (!orgFormFromDb.agencyName && botCfg?.orgName) {
+        orgFormFromDb.agencyName = botCfg.orgName;
+      }
+      setOrgSettingsLoaded(orgFormFromDb);
+      setOrgForm(orgFormFromDb);
+      const centralFromDb = botCfg?.notificationNumbers ?? "";
+      setCentralNumbersLoaded(centralFromDb);
+      setCentralNumbers(centralFromDb);
     } catch (error) {
       console.error("Error loading team data:", error);
       toast.error("Error al cargar los datos del equipo");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSaveOrgDetails(e: React.FormEvent) {
+    e.preventDefault();
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
+    if (effectiveRole === "member") return;
+    if (formsEqual(orgForm, orgSettingsLoaded)) return;
+
+    const trimmed: OrgDetailsForm = {
+      agencyName: orgForm.agencyName.trim(),
+      legalName: orgForm.legalName.trim(),
+      agencyTaxId: orgForm.agencyTaxId.trim(),
+      agencyAddress: orgForm.agencyAddress.trim(),
+      employeesCount: orgForm.employeesCount.trim(),
+      contactPhone: orgForm.contactPhone.trim(),
+      website: orgForm.website.trim(),
+    };
+
+    setSavingOrgDetails(true);
+    try {
+      // Only send changed keys to keep the write minimal and avoid clobbering.
+      const patch: Partial<OrganizationSettings> = {};
+      if (trimmed.agencyName !== orgSettingsLoaded.agencyName) patch.agencyName = trimmed.agencyName;
+      if (trimmed.legalName !== orgSettingsLoaded.legalName) patch.legalName = trimmed.legalName || null;
+      if (trimmed.agencyTaxId !== orgSettingsLoaded.agencyTaxId) patch.agencyTaxId = trimmed.agencyTaxId || null;
+      if (trimmed.agencyAddress !== orgSettingsLoaded.agencyAddress) patch.agencyAddress = trimmed.agencyAddress || null;
+      if (trimmed.employeesCount !== orgSettingsLoaded.employeesCount) patch.employeesCount = trimmed.employeesCount;
+      if (trimmed.contactPhone !== orgSettingsLoaded.contactPhone) patch.contactPhone = trimmed.contactPhone || null;
+      if (trimmed.website !== orgSettingsLoaded.website) patch.website = trimmed.website || null;
+      await updateOrganizationSettings(patch);
+      // Dual-write agencyName → botConfig.orgName to keep both stores in sync while
+      // the duplication still exists (see TODO above).
+      if (patch.agencyName !== undefined) {
+        try {
+          await updateOrgName(trimmed.agencyName);
+        } catch (mirrorErr) {
+          console.warn("orgName mirror to botConfig failed (non-fatal):", mirrorErr);
+        }
+      }
+      setOrgSettingsLoaded(trimmed);
+      setOrgForm(trimmed);
+      toast.success("Datos de la inmobiliaria guardados");
+    } catch (error) {
+      console.error("Error saving organization details:", error);
+      toast.error(error instanceof Error ? error.message : "No se pudieron guardar los datos");
+    } finally {
+      setSavingOrgDetails(false);
+    }
+  }
+
+  async function handleSaveCentralNumbers(e: React.FormEvent) {
+    e.preventDefault();
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
+    if (effectiveRole === "member") return;
+    const trimmed = centralNumbers.trim();
+    if (trimmed === centralNumbersLoaded.trim()) return;
+    setSavingCentralNumbers(true);
+    try {
+      await updateNotificationNumbers(trimmed);
+      setCentralNumbersLoaded(trimmed);
+      setCentralNumbers(trimmed);
+      toast.success("Números centrales guardados");
+    } catch (error) {
+      console.error("Error saving central WhatsApp numbers:", error);
+      toast.error("No se pudieron guardar los números centrales");
+    } finally {
+      setSavingCentralNumbers(false);
     }
   }
 
@@ -248,17 +412,22 @@ export function TeamManagement() {
       m.name?.toLowerCase().includes(searchLower)
     );
   });
+  const notificationNumbersV2 = isNotificationNumbersV2Enabled();
   if (loading) {
-    return <PageLoading message="Cargando equipo..." className="h-64" />;
+    return <PageLoading message="Cargando organización..." className="h-64" />;
   }
+
+  const orgDetailsReadOnly = effectiveRole === "member" || isImpersonationReadOnly;
+  const orgDetailsDirty = !formsEqual(orgForm, orgSettingsLoaded);
+  const centralNumbersDirty = centralNumbers.trim() !== centralNumbersLoaded.trim();
 
   return (
     <div className="max-w-6xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <PageHeader
-          title="Gestión de Equipo"
-          subtitle="Administra los usuarios y permisos de tu organización"
-          icon={<UsersIcon className="text-primary-600" size={32} />}
+          title="Organización"
+          subtitle="Datos de tu inmobiliaria, equipo y notificaciones"
+          icon={<Building2 className="text-primary-600" size={32} />}
         />
         {canManageTeam && (
           <Button
@@ -272,12 +441,152 @@ export function TeamManagement() {
         )}
       </div>
 
+      {/* Organization details */}
+      <section className="card mb-8">
+        <div className="flex items-center gap-2 mb-5">
+          <Building2 className="text-primary-500" size={24} />
+          <h2 className="text-lg font-bold text-gray-900 font-heading">Datos de la inmobiliaria</h2>
+        </div>
+        <form onSubmit={handleSaveOrgDetails}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nombre comercial</label>
+              <input
+                type="text"
+                value={orgForm.agencyName}
+                onChange={(e) => setOrgForm((p) => ({ ...p, agencyName: e.target.value }))}
+                disabled={orgDetailsReadOnly}
+                className="input"
+                placeholder="Ej: Atlas Capital Group"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Razón social</label>
+              <input
+                type="text"
+                value={orgForm.legalName}
+                onChange={(e) => setOrgForm((p) => ({ ...p, legalName: e.target.value }))}
+                disabled={orgDetailsReadOnly}
+                className="input"
+                placeholder="Ej: Atlas Capital Group SL"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">CIF / NIF</label>
+              <input
+                type="text"
+                value={orgForm.agencyTaxId}
+                onChange={(e) => setOrgForm((p) => ({ ...p, agencyTaxId: e.target.value }))}
+                disabled={orgDetailsReadOnly}
+                className="input"
+                placeholder="Ej: B12345678"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nº de empleados</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                value={orgForm.employeesCount}
+                onChange={(e) => setOrgForm((p) => ({ ...p, employeesCount: e.target.value }))}
+                disabled={orgDetailsReadOnly}
+                className="input"
+                placeholder="Ej: 8"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Dirección</label>
+              <input
+                type="text"
+                value={orgForm.agencyAddress}
+                onChange={(e) => setOrgForm((p) => ({ ...p, agencyAddress: e.target.value }))}
+                disabled={orgDetailsReadOnly}
+                className="input"
+                placeholder="Calle, número, ciudad, código postal"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Teléfono de contacto</label>
+              <input
+                type="tel"
+                value={orgForm.contactPhone}
+                onChange={(e) => setOrgForm((p) => ({ ...p, contactPhone: e.target.value }))}
+                disabled={orgDetailsReadOnly}
+                className="input"
+                placeholder="Ej: +34 600 123 456"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Sitio web</label>
+              <input
+                type="url"
+                value={orgForm.website}
+                onChange={(e) => setOrgForm((p) => ({ ...p, website: e.target.value }))}
+                disabled={orgDetailsReadOnly}
+                className="input"
+                placeholder="https://tu-inmobiliaria.com"
+              />
+            </div>
+          </div>
+          {!orgDetailsReadOnly && (
+            <div className="flex justify-end mt-6">
+              <Button type="submit" loading={savingOrgDetails} disabled={!orgDetailsDirty}>
+                Guardar cambios
+              </Button>
+            </div>
+          )}
+        </form>
+      </section>
+
+      {/* Central WhatsApp numbers (legacy — only when v2 panel is OFF) */}
+      {!isNotificationNumbersV2Enabled() && (
+        <section id="notification-numbers" className="card mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <Bell className="text-amber-500" size={24} />
+            <h2 className="text-lg font-bold text-gray-900 font-heading">Números centrales de WhatsApp</h2>
+          </div>
+          <p className="text-gray-600 mb-4 text-sm">
+            Estos números de la organización <strong>siempre</strong> reciben el resumen cuando un lead es{" "}
+            <strong>cualificado</strong>. Además, si el anuncio tiene un agente asignado con su propio número configurado
+            en el equipo, también se notifica allí (sin duplicar si es el mismo número). Separa varios números con comas.
+          </p>
+          <form onSubmit={handleSaveCentralNumbers} className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Números centrales (formato internacional, ej: 34696000111)
+              </label>
+              <input
+                type="text"
+                value={centralNumbers}
+                onChange={(e) => setCentralNumbers(e.target.value)}
+                disabled={effectiveRole === "member" || isImpersonationReadOnly}
+                className="input"
+                placeholder="34696000111, 34600112233"
+              />
+            </div>
+            {effectiveRole !== "member" && (
+              <div className="flex items-end">
+                <Button
+                  type="submit"
+                  variant="outline"
+                  disabled={isImpersonationReadOnly || !centralNumbersDirty}
+                  loading={savingCentralNumbers}
+                >
+                  Guardar números
+                </Button>
+              </div>
+            )}
+          </form>
+        </section>
+      )}
+
       {/* Stats & Search */}
       <FilterCard className="mb-8">
         <p className="text-sm text-gray-600 font-body mb-4">
           Los roles distintos de <span className="font-semibold text-gray-800">member</span> pueden indicar un WhatsApp para recibir{" "}
-          resúmenes de leads cualificados cuando les corresponda un anuncio asignado. Los números configurados en{" "}
-          <span className="font-semibold text-gray-800">Configuración</span> siempre reciben todas las notificaciones.
+          resúmenes de leads cualificados cuando les corresponda un anuncio asignado. Los{" "}
+          <span className="font-semibold text-gray-800">números centrales</span> de arriba siempre reciben todas las notificaciones.
         </p>
         <div className="flex flex-col md:flex-row items-center gap-6">
           <div className="relative flex-1 w-full">
@@ -304,6 +613,12 @@ export function TeamManagement() {
       </FilterCard>
 
       <div className="space-y-10">
+        {notificationNumbersV2 && (
+          <div id="notification-numbers">
+            <NotificationNumbersPanel canManage={canManageTeam} />
+          </div>
+        )}
+
         {/* Members Table */}
         <section>
           <div className="flex items-center gap-2 mb-4">
@@ -311,15 +626,96 @@ export function TeamManagement() {
               <span className="bg-gray-100 text-gray-600 text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-tighter">Activos</span>
           </div>
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
+            {/* Mobile: stacked card per member (sm:hidden) */}
+            <div className="sm:hidden divide-y divide-gray-100">
+              {filteredMembers.map((member) => (
+                <div key={member.uid} className="p-4 flex flex-col gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center font-bold text-primary-700 shadow-inner shrink-0">
+                      {member.name ? member.name.charAt(0).toUpperCase() : member.email.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-bold text-gray-900 font-heading truncate">{member.name}</span>
+                        <span className={cn(
+                          "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest shrink-0",
+                          member.role === 'owner' ? "bg-primary-50 text-primary-700 border border-primary-100" :
+                          member.role === 'admin' ? "bg-slate-100 text-slate-700 border border-slate-200" :
+                          "bg-gray-50 text-gray-600 border border-gray-100"
+                        )}>
+                          {member.role === 'owner' ? <ShieldCheck size={10} /> : member.role === 'admin' ? <Shield size={10} /> : null}
+                          {member.role}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 font-body break-all">{member.email}</p>
+                    </div>
+                  </div>
+                  {!notificationNumbersV2 && member.role !== "member" && (
+                    <div className="text-xs text-gray-700 font-body">
+                      <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest font-heading block mb-1">WhatsApp resúmenes</span>
+                      <span className="break-all">
+                        {member.qualifiedLeadNotificationNumbers?.trim() || <span className="text-gray-400 italic">Sin configurar</span>}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5 text-[11px] text-gray-500 font-body">
+                      <Calendar size={12} className="text-gray-400" />
+                      {member.createdAt ? formatDate(new Date(member.createdAt)) : "N/A"}
+                    </span>
+                    <div className="flex gap-1">
+                      {role === "super_admin" && member.uid !== currentUser?.uid && (
+                        <button
+                          type="button"
+                          onClick={() => void handleViewAs(member)}
+                          disabled={viewAsLoadingUid === member.uid}
+                          className="p-2 text-gray-400 hover:text-amber-700 hover:bg-amber-50 rounded-btn transition-all disabled:opacity-40"
+                          title="Ver la app como este usuario"
+                          aria-label="Ver como"
+                        >
+                          <Eye size={16} />
+                        </button>
+                      )}
+                      {canEditMember(member) && (
+                        <button
+                          type="button"
+                          onClick={() => openEditMember(member)}
+                          className="p-2 text-gray-400 hover:text-primary-700 hover:bg-primary-50 rounded-btn transition-all"
+                          title="Editar usuario"
+                          aria-label="Editar"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                      )}
+                      {canManageTeam && member.uid !== currentUser?.uid && member.role !== 'owner' && member.role !== "super_admin" && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveUser(member)}
+                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-btn transition-all"
+                          title="Eliminar usuario"
+                          aria-label="Eliminar"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop: table */}
+            <div className="hidden sm:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
                     <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Usuario</th>
                     <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Rol</th>
-                    <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading max-w-[220px]">
-                      WhatsApp resúmenes
-                    </th>
+                    {!notificationNumbersV2 && (
+                      <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading max-w-[220px]">
+                        WhatsApp resúmenes
+                      </th>
+                    )}
                     <th className="px-6 py-4 text-left text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Registro</th>
                     <th className="px-6 py-4 text-right text-[10px] font-bold text-gray-400 uppercase tracking-widest font-heading">Acciones</th>
                   </tr>
@@ -349,19 +745,21 @@ export function TeamManagement() {
                           {member.role}
                         </span>
                       </td>
-                      <td className="px-6 py-5 align-top">
-                        {member.role === "member" ? (
-                          <span className="text-xs text-gray-400">—</span>
-                        ) : (
-                          <span className="text-xs text-gray-700 font-body break-all">
-                            {member.qualifiedLeadNotificationNumbers?.trim() ? (
-                              member.qualifiedLeadNotificationNumbers.trim()
-                            ) : (
-                              <span className="text-gray-400 italic">Sin configurar</span>
-                            )}
-                          </span>
-                        )}
-                      </td>
+                      {!notificationNumbersV2 && (
+                        <td className="px-6 py-5 align-top">
+                          {member.role === "member" ? (
+                            <span className="text-xs text-gray-400">—</span>
+                          ) : (
+                            <span className="text-xs text-gray-700 font-body break-all">
+                              {member.qualifiedLeadNotificationNumbers?.trim() ? (
+                                member.qualifiedLeadNotificationNumbers.trim()
+                              ) : (
+                                <span className="text-gray-400 italic">Sin configurar</span>
+                              )}
+                            </span>
+                          )}
+                        </td>
+                      )}
                       <td className="px-6 py-5">
                         <div className="flex items-center gap-2 text-xs text-gray-500 font-body">
                           <Calendar size={14} className="text-gray-400" />
@@ -534,7 +932,7 @@ export function TeamManagement() {
                     readOnly
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-500 outline-none"
                   />
-                  <p className="mt-2 text-xs text-slate-400">El email pertenece a Firebase Auth y no se cambia desde Equipo.</p>
+                  <p className="mt-2 text-xs text-slate-400">El email pertenece a Firebase Auth y no se cambia desde Organización.</p>
                 </div>
 
                 <div>
@@ -570,20 +968,22 @@ export function TeamManagement() {
                   )}
                 </div>
 
-                <div>
-                  <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 ml-1">WhatsApp resúmenes</label>
-                  <input
-                    type="text"
-                    value={editForm.qualifiedLeadNotificationNumbers}
-                    onChange={(e) => setEditForm((prev) => ({ ...prev, qualifiedLeadNotificationNumbers: e.target.value }))}
-                    disabled={editForm.role === "member"}
-                    placeholder="34696000111, 34696000222"
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-4 focus:ring-primary-100 focus:border-primary-500 outline-none transition-all placeholder:text-slate-300 disabled:bg-slate-50 disabled:text-slate-400"
-                  />
-                  <p className="mt-2 text-xs text-slate-400">
-                    Para admins, agentes y owner: número extra cuando les toca un anuncio asignado (los de Configuración siempre reciben todo).
-                  </p>
-                </div>
+                {!notificationNumbersV2 && (
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 ml-1">WhatsApp resúmenes</label>
+                    <input
+                      type="text"
+                      value={editForm.qualifiedLeadNotificationNumbers}
+                      onChange={(e) => setEditForm((prev) => ({ ...prev, qualifiedLeadNotificationNumbers: e.target.value }))}
+                      disabled={editForm.role === "member"}
+                      placeholder="34696000111, 34696000222"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-4 focus:ring-primary-100 focus:border-primary-500 outline-none transition-all placeholder:text-slate-300 disabled:bg-slate-50 disabled:text-slate-400"
+                    />
+                    <p className="mt-2 text-xs text-slate-400">
+                      Para admins, agentes y owner: número extra cuando les toca un anuncio asignado (los centrales de arriba siempre reciben todo).
+                    </p>
+                  </div>
+                )}
 
                 <div className="flex flex-col sm:flex-row gap-3 pt-2">
                   <Button

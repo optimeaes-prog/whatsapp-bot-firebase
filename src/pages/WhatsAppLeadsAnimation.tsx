@@ -170,7 +170,7 @@ export function WhatsAppLeadsAnimationPhone() {
           {/* Chat area */}
           <div
             ref={chatScrollRef}
-            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#0b141a] p-3 scroll-smooth"
+            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[#0b141a] p-3 scroll-smooth [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
             style={{
               backgroundImage: `linear-gradient(rgba(11,20,26,0.75), rgba(11,20,26,0.75)), url(${waDarkPattern})`,
               backgroundRepeat: "repeat",

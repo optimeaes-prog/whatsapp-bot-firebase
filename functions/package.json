@@ -9,6 +9,7 @@
     "clone:twilio-content": "npm run build && node lib/scripts/cloneTwilioContentTemplates.js",
     "migrate:assistant-avatar-name": "npm run build && node lib/scripts/migrateAssistantAvatarNameToBotConfigConfig.js --project-id=real-estate-idealista-bot --database-id=realestate-whatsapp-bot",
     "send:test-welcome-email": "npm run build && node lib/scripts/sendTestWelcomeEmail.js",
+    "backfill:notification-numbers": "npm run build && node lib/scripts/backfill_notification_numbers.js",
     "test": "npm run build && node --test lib/tests/**/*.test.js",
     "serve": "npm run build && firebase emulators:start --only functions",
     "shell": "npm run build && firebase functions:shell",

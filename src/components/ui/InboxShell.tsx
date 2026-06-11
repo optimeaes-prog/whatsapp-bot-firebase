@@ -11,7 +11,7 @@ export function InboxShell({ children, className }: Props) {
   return (
     <div
       className={cn(
-        "flex h-[calc(100vh-8rem)] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm md:h-[calc(100vh-4rem)]",
+        "flex h-[calc(100dvh-8rem)] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm md:h-[calc(100dvh-4rem)]",
         className
       )}
     >

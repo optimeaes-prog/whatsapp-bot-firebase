@@ -13,7 +13,6 @@ function getArg(name: string): string | undefined {
 async function main() {
   const to = getArg("to") || process.env.TEST_EMAIL_TO;
   const name = getArg("name") || "Eddy";
-  const orgName = getArg("org") || "Proplead";
 
   if (!to) {
     throw new Error('Missing recipient. Provide "--to=email@domain.com" or set TEST_EMAIL_TO.');
@@ -40,7 +39,7 @@ async function main() {
     };
   }
 
-  const html = formatWelcomeEmail({ name, orgName, ...prefs });
+  const html = formatWelcomeEmail({ name, ...prefs });
 
   await sgMail.send({
     to,

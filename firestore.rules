@@ -81,6 +81,26 @@ service cloud.firestore {
         (("assignedAgentUid" in request.resource.data) && request.resource.data.assignedAgentUid == request.auth.uid);
     }
 
+    // Ownership helpers for collections an agent can BOTH create and be assigned
+    // to (e.g. prospects / captación). An agent owns a doc if they created it or
+    // it is assigned to them.
+    function isOwnedByAgent() {
+      return isAuthenticated() && (
+        (("createdByUid" in resource.data) && resource.data.createdByUid == request.auth.uid) ||
+        (("assignedAgentUid" in resource.data) && resource.data.assignedAgentUid == request.auth.uid)
+      );
+    }
+
+    function isAgentSelfCreateRequest() {
+      // On create, an agent must mark themselves as creator and may not assign
+      // the doc to a different agent.
+      return isAuthenticated() &&
+        (("createdByUid" in request.resource.data) && request.resource.data.createdByUid == request.auth.uid) &&
+        (!("assignedAgentUid" in request.resource.data) ||
+          request.resource.data.assignedAgentUid == request.auth.uid ||
+          request.resource.data.assignedAgentUid == "");
+    }
+
     function onlyChanged(keys) {
       return request.resource.data.diff(resource.data).changedKeys().hasOnly(keys) &&
         request.resource.data.diff(resource.data).addedKeys().hasOnly(keys) &&
@@ -88,13 +108,25 @@ service cloud.firestore {
     }
 
     function isValidSelfUserCreate() {
-      return request.resource.data.orgId is string &&
-        request.resource.data.role == "member";
+      // Client-side self-create must not assign orgId or role. The Admin SDK
+      // (bootstrapUserOrganization, acceptInvitation) is the only path that may
+      // write those fields; it bypasses these rules. Allowing the client to
+      // set orgId="<anyOrg>" + role="member" would grant cross-tenant read
+      // access via getOrgId()/getRole() reading the attacker's own user doc.
+      return !("orgId" in request.resource.data) &&
+        !("role" in request.resource.data);
     }
 
     function isSafeSelfUserUpdate() {
-      return request.resource.data.orgId == resource.data.orgId &&
-        request.resource.data.role == resource.data.role;
+      // Block escalation of orgId/role. If those fields are absent today they
+      // must stay absent; if present, they must be unchanged.
+      return (
+        (!("orgId" in request.resource.data) && !("orgId" in resource.data)) ||
+        request.resource.data.orgId == resource.data.orgId
+      ) && (
+        (!("role" in request.resource.data) && !("role" in resource.data)) ||
+        request.resource.data.role == resource.data.role
+      );
     }
 
     // Users can read their own profile. Writes are constrained to prevent role/org escalation.
@@ -109,14 +141,64 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (getOrgId() == resource.data.orgId || isSuperAdmin());
     }
     
+    // Fields a manager (admin/owner) may write on an organization doc from the
+    // client. Plan/billing/credit fields are intentionally excluded — those
+    // come from the Stripe webhook via the Admin SDK and must not be settable
+    // client-side (otherwise an admin could self-promote to a higher plan or
+    // top up creditBalance without paying).
+    function orgClientWritableKeys() {
+      return [
+        "agencyName", "legalName", "agencyTaxId", "agencyAddress",
+        "employeesCount", "contactPhone", "website",
+        "whatsappSummariesPhone", "forwardingEmail",
+        "assistantName", "assistantAvatarId", "assistantAvatarName",
+        "assistantAvatarImagePath", "assistantAvatarUrl", "assistantPhotoUrl",
+        "onboardingStep", "onboardingStepsV2", "onboardingCompleted",
+        "onboardingCallScheduled", "onboardingCallDate", "onboardingRescheduleUrl",
+        "agreedToToS", "agreedToPrivacy",
+        "updatedAt"
+      ];
+    }
+    function orgChangesAreAllowed() {
+      // On update: the diff must only touch whitelisted keys.
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(orgClientWritableKeys());
+    }
+    function orgCreateIsAllowed() {
+      // On create: every field in the new doc must be whitelisted.
+      return request.resource.data.keys().hasOnly(orgClientWritableKeys());
+    }
+
     match /organizations/{orgId} {
       // Organization access is restricted to members
       allow read: if canAccessOrg(orgId);
-      allow write: if canManageOrg(orgId);
+      allow create: if canManageOrg(orgId) && orgCreateIsAllowed();
+      allow update: if canManageOrg(orgId) && (isSuperAdmin() || orgChangesAreAllowed());
+      allow delete: if isSuperAdmin();
 
       match /botConfig/{configId} {
         allow read: if canAccessOrg(orgId);
         allow write: if canManageOrg(orgId);
+      }
+
+      // Verified WhatsApp notification numbers (Twilio Verify-gated).
+      // All org members can READ — the Listings form selector consumes the list,
+      // including for agents. Mutations are restricted:
+      //   - CREATE is functions-only (the verify-start endpoint persists pending docs).
+      //   - UPDATE by managers is limited to `label`, `isOrgDefault`, and `updatedAt`;
+      //     `verified` and `e164` are immutable client-side (verification is gated by
+      //     Twilio Verify and only the Admin SDK can flip `verified: true`).
+      //   - DELETE by managers (cleanup).
+      match /notificationNumbers/{numberId} {
+        allow read: if canAccessOrg(orgId);
+        allow create: if false;
+        allow update: if canManageOrg(orgId) &&
+          request.resource.data.e164 == resource.data.e164 &&
+          request.resource.data.verified == resource.data.verified &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "label", "isOrgDefault", "updatedAt"
+          ]);
+        allow delete: if canManageOrg(orgId);
       }
 
       match /listings/{listingId} {
@@ -164,7 +246,13 @@ service cloud.firestore {
             "consent",
             "pets",
             "income",
-            "paymentMethod"
+            "paymentMethod",
+            "nextActionDate",
+            "reminderMinutesBefore",
+            "reminderSentAt",
+            "lastContactAt",
+            "activities",
+            "followUpStatus"
           ])
         );
       }
@@ -182,6 +270,43 @@ service cloud.firestore {
           isAssignedToAgentAfterWrite() &&
           onlyChanged(["notes", "tags", "name", "botDisabled", "listingCode", "qualified", "isFinished"])
         );
+      }
+
+      // Seguimiento / captación (lado de oferta). A diferencia de los leads, los
+      // agentes SÍ crean sus propios prospectos (hacen la captación), así que
+      // pueden leer/editar los que han creado o tienen asignados, pero no pueden
+      // reasignarlos ni cambiar la propiedad.
+      match /prospects/{prospectId} {
+        allow read: if canAccessOrg(orgId) && (
+          !isAgent() || isOrgManager() ||
+          isOwnedByAgent()
+        );
+
+        allow create: if canAccessOrg(orgId) && (
+          canManageOrg(orgId) ||
+          (isAgent() && isAgentSelfCreateRequest())
+        );
+
+        allow update: if canManageOrg(orgId) || (
+          canAccessOrg(orgId) &&
+          isAgent() &&
+          isOwnedByAgent() &&
+          // Los agentes no pueden cambiar propiedad ni reasignar.
+          request.resource.data.createdByUid == resource.data.createdByUid &&
+          request.resource.data.assignedAgentUid == resource.data.assignedAgentUid &&
+          onlyChanged([
+            "stage", "operationType", "propertyType", "source", "campaign",
+            "ownerName", "phone", "email", "listingUrl",
+            "address", "street", "city", "province", "postalCode", "country",
+            "municipality", "zone", "price", "m2", "rooms", "features",
+            "idealistaDescription", "referencia", "photos",
+            "stillListed", "nextActionDate", "reminderMinutesBefore", "reminderSentAt", "lastContactAt",
+            "activities", "learnings", "wonListingId", "linkedLeadId",
+            "updatedAt"
+          ])
+        );
+
+        allow delete: if canManageOrg(orgId);
       }
 
       match /calls/{callId} {
@@ -229,7 +354,14 @@ service cloud.firestore {
     }
 
     match /auditLogs/{logId} {
-       allow read: if isAuthenticated() && getOrgId() == resource.data.orgId;
+      // Audit logs include privileged events (role changes, billing, deletes).
+      // Restrict to org managers + super_admin so agents and rogue "member"
+      // docs can't enumerate the admin trail. All writes are server-only.
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getOrgId() == resource.data.orgId && isOrgManager())
+      );
+      allow write: if false;
     }
 
     // Twilio sender migration jobs. Read-only for admin/super_admin; all writes go through Cloud Functions.
@@ -238,11 +370,22 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Invitations (team invites)
+    // Signup consent records (RGPD audit trail). Immutable once written.
+    match /userConsents/{consentId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Invitations (team invites). Each doc includes the invitee email (PII)
+    // and the chosen role, so reads are restricted to managers — agents
+    // and "member" users have no legitimate need to enumerate the team's
+    // pending invites. The acceptInvitation Cloud Function reads tokens via
+    // the Admin SDK so the user accepting the invite doesn't need read here.
     match /invitations/{invitationId} {
       allow read: if isAuthenticated() && (
         isSuperAdmin() ||
-        (("orgId" in resource.data) && getOrgId() == resource.data.orgId)
+        (("orgId" in resource.data) && getOrgId() == resource.data.orgId && isOrgManager())
       );
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
@@ -261,6 +404,10 @@ service cloud.firestore {
     }
     match /{path=**}/conversations/{conversation} {
       // Prevent bypassing org scoping via collectionGroup queries.
+      allow read: if false;
+    }
+    match /{path=**}/prospects/{prospect} {
+      // Prevent bypassing org/role scoping via collectionGroup queries.
       allow read: if false;
     }
   }

@@ -23,6 +23,24 @@ export const PLAN_BASE_CONVERSATIONS: Record<SubscriptionPlanId, number> = {
 };
 
 /**
+ * Max distinct notification numbers a single listing can target.
+ *
+ * Mirror lives at `src/utils/planLimits.ts` — keep both in sync. The frontend
+ * uses it to gate the multi-select UI; this backend version is the authoritative
+ * cap enforced by the `onListingWriteEnforcePlanLimits` Firestore trigger.
+ */
+export function getMaxListingNotificationNumbers(
+    planId: SubscriptionPlanId | undefined | null
+): number {
+    // Frontend SubscriptionPlanId also lists "enterprise" but the backend type
+    // doesn't (yet); both should grant the multi-recipient cap. Compare against
+    // the string literal so an "enterprise" value flowing through Firestore is
+    // still recognised even before we widen the type.
+    if (planId === "pro_plus" || (planId as string) === "enterprise") return 10;
+    return 1;
+}
+
+/**
  * Get the current subscription for an org.
  * Returns null if no subscription record exists (org is on Free plan).
  */

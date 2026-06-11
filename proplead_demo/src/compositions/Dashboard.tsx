@@ -169,7 +169,7 @@ function DoubleCounter({
   v3,
   t1,
   t2,
-  duration = 90,
+  duration = 30,
 }: {
   v1: number;
   v2: number;
@@ -184,13 +184,14 @@ function DoubleCounter({
   // segment C: t1+duration..t2 → v2
   // segment D: t2..t2+duration → v2→v3
   // segment E: t2+duration.. → v3
-  // We'll implement as a single Counter with conditional from/to:
+  // Pass the scaled (logical) frame to Counter so its startFrame/durationFrames are
+  // in the same coordinate space.
   const frame = useScaledFrame();
-  if (frame < t1) return <Counter from={v1} to={v1} startFrame={0} durationFrames={1} />;
-  if (frame < t1 + duration) return <Counter from={v1} to={v2} startFrame={t1} durationFrames={duration} />;
-  if (frame < t2) return <Counter from={v2} to={v2} startFrame={0} durationFrames={1} />;
-  if (frame < t2 + duration) return <Counter from={v2} to={v3} startFrame={t2} durationFrames={duration} />;
-  return <Counter from={v3} to={v3} startFrame={0} durationFrames={1} />;
+  if (frame < t1) return <Counter frame={frame} from={v1} to={v1} startFrame={0} durationFrames={1} />;
+  if (frame < t1 + duration) return <Counter frame={frame} from={v1} to={v2} startFrame={t1} durationFrames={duration} />;
+  if (frame < t2) return <Counter frame={frame} from={v2} to={v2} startFrame={0} durationFrames={1} />;
+  if (frame < t2 + duration) return <Counter frame={frame} from={v2} to={v3} startFrame={t2} durationFrames={duration} />;
+  return <Counter frame={frame} from={v3} to={v3} startFrame={0} durationFrames={1} />;
 }
 
 // (was useCurrentFrameSafe wrapper — now replaced with useScaledFrame directly)
@@ -199,7 +200,7 @@ function computeFunnelWidths(frame: number, t1: number, t2: number) {
   const widths30 = { conversations: 100, responded: 72, qualified: 23 };
   const widths7 = { conversations: 100, responded: 80, qualified: 28 };
   const widthsCasa = { conversations: 100, responded: 77, qualified: 38 };
-  const duration = 90;
+  const duration = 30;
 
   let from = widths30;
   let to = widths30;
@@ -222,7 +223,7 @@ function computeFunnelWidths(frame: number, t1: number, t2: number) {
   }
 
   const easeOpts = {
-    easing: Easing.inOut(Easing.cubic),
+    easing: Easing.out(Easing.cubic),
     extrapolateLeft: "clamp" as const,
     extrapolateRight: "clamp" as const,
   };

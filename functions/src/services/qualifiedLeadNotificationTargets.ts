@@ -2,6 +2,9 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { BotConfig, ListingRow } from "../types";
 import { getListingAgentScopeUid } from "./firestore";
 
+/** Result of the listing-scoped resolution path, surfaced for monitoring. */
+export type RecipientResolutionMode = "listing" | "legacy_fallback" | "empty";
+
 /** Firestore field on users/{uid}; comma-separated WhatsApp destinations for qualified-lead summaries (non-members). */
 export const QUALIFIED_LEAD_NOTIFICATION_NUMBERS_FIELD = "qualifiedLeadNotificationNumbers";
 
@@ -85,6 +88,47 @@ export function mergeOrgAndAgentRecipients(orgNums: string[], agentNums: string[
   return out;
 }
 
+/**
+ * Resolve recipients from a listing's `notificationNumberIds`. Reads each
+ * referenced doc under `organizations/{orgId}/notificationNumbers/{id}` and
+ * returns the `e164` values of those that are `verified: true`, in input order.
+ *
+ * Returns `null` if the listing has no IDs configured (i.e. legacy listing).
+ * Returns an empty array if all referenced docs are missing or unverified —
+ * caller chooses whether to fall back to legacy or send to nobody.
+ */
+export async function resolveRecipientsFromListing(params: {
+  db: Firestore;
+  orgId: string;
+  listing: Pick<ListingRow, "notificationNumberIds"> | null;
+}): Promise<string[] | null> {
+  const ids = params.listing?.notificationNumberIds;
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+
+  const collection = params.db
+    .collection("organizations")
+    .doc(params.orgId)
+    .collection("notificationNumbers");
+
+  const out: string[] = [];
+  for (const rawId of ids) {
+    const id = typeof rawId === "string" ? rawId.trim() : "";
+    if (!id) continue;
+    const snap = await collection.doc(id).get();
+    if (!snap.exists) continue;
+    const data = snap.data() || {};
+    if (data.verified !== true) continue;
+    const e164 = typeof data.e164 === "string" ? data.e164.trim() : "";
+    if (e164) out.push(e164);
+  }
+  return out;
+}
+
+export type ResolveRecipientsResult = {
+  recipients: string[];
+  mode: RecipientResolutionMode;
+};
+
 export async function resolveQualifiedLeadNotificationRecipients(params: {
   orgId: string;
   botConfig: Pick<BotConfig, "notificationNumbers">;
@@ -93,6 +137,32 @@ export async function resolveQualifiedLeadNotificationRecipients(params: {
   leadAssignedAgentUid?: string;
   db: Firestore;
 }): Promise<string[]> {
+  const result = await resolveQualifiedLeadNotificationRecipientsWithMode(params);
+  return result.recipients;
+}
+
+/**
+ * Same as the legacy entrypoint above but also reports which path produced the
+ * recipients. Use this when you want to log/alert on listings that still need
+ * to be backfilled (mode === "legacy_fallback").
+ */
+export async function resolveQualifiedLeadNotificationRecipientsWithMode(params: {
+  orgId: string;
+  botConfig: Pick<BotConfig, "notificationNumbers">;
+  envNotificationFallback: string;
+  listing: ListingRow | null;
+  leadAssignedAgentUid?: string;
+  db: Firestore;
+}): Promise<ResolveRecipientsResult> {
+  const fromListing = await resolveRecipientsFromListing({
+    db: params.db,
+    orgId: params.orgId,
+    listing: params.listing,
+  });
+  if (fromListing !== null && fromListing.length > 0) {
+    return { recipients: fromListing, mode: "listing" };
+  }
+
   const orgNums = resolveOrgNotificationNumbers(params.botConfig, params.envNotificationFallback);
   const uid = resolveAssignedAgentUid({
     listing: params.listing,
@@ -105,5 +175,22 @@ export async function resolveQualifiedLeadNotificationRecipients(params: {
         assignedUid: uid,
       })
     : [];
-  return mergeOrgAndAgentRecipients(orgNums, agentNums);
+  const merged = mergeOrgAndAgentRecipients(orgNums, agentNums);
+
+  if (params.listing && Array.isArray(params.listing.notificationNumberIds) && params.listing.notificationNumberIds.length > 0) {
+    // Listing had IDs but none resolved to a verified number — surface this so
+    // we can monitor stale references rather than silently sending nowhere.
+    console.warn(
+      "legacy_recipient_resolution: listing.notificationNumberIds present but no verified numbers found",
+      { orgId: params.orgId, listingCode: (params.listing as { listingCode?: string }).listingCode }
+    );
+  } else if (params.listing) {
+    // Pre-backfill listing — expected during the rollout window.
+    console.warn("legacy_recipient_resolution: listing missing notificationNumberIds, used legacy merge", {
+      orgId: params.orgId,
+      listingCode: (params.listing as { listingCode?: string }).listingCode,
+    });
+  }
+
+  return { recipients: merged, mode: merged.length > 0 ? "legacy_fallback" : "empty" };
 }

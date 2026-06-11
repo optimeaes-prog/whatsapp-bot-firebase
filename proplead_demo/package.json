@@ -33,7 +33,18 @@
     "render:leads-bulk": "remotion render leads-bulk out/leads-bulk.mp4 --concurrency=2 --timeout=120000",
     "render:dashboard": "remotion render dashboard out/dashboard.mp4 --concurrency=2 --timeout=120000",
     "render:crear-anuncio": "remotion render crear-anuncio out/crear-anuncio.mp4 --concurrency=2 --timeout=120000",
-    "render:all": "npm run render:conversaciones && npm run render:leads-cualificados && npm run render:leads-bulk && npm run render:dashboard && npm run render:crear-anuncio"
+    "render:crear-anuncio-vertical": "remotion render crear-anuncio-vertical out/crear-anuncio-vertical.mp4 --concurrency=2 --timeout=120000",
+    "render:crear-anuncio-1": "remotion render crear-anuncio-1 out/crear-anuncio-1.mp4 --concurrency=2 --timeout=120000",
+    "render:crear-anuncio-2": "remotion render crear-anuncio-2 out/crear-anuncio-2.mp4 --concurrency=2 --timeout=120000",
+    "render:crear-anuncio-3": "remotion render crear-anuncio-3 out/crear-anuncio-3.mp4 --concurrency=2 --timeout=120000",
+    "render:crear-anuncio-4": "remotion render crear-anuncio-4 out/crear-anuncio-4.mp4 --concurrency=2 --timeout=120000",
+    "render:crear-anuncio-steps": "npm run render:crear-anuncio-1 && npm run render:crear-anuncio-2 && npm run render:crear-anuncio-3 && npm run render:crear-anuncio-4",
+    "render:all": "npm run render:conversaciones && npm run render:leads-cualificados && npm run render:leads-bulk && npm run render:dashboard && npm run render:crear-anuncio",
+    "render:mobile-conversaciones": "remotion render mobile-conversaciones out/mobile-conversaciones.mp4 --concurrency=2 --timeout=120000",
+    "render:mobile-leads-cualificados": "remotion render mobile-leads-cualificados out/mobile-leads-cualificados.mp4 --concurrency=2 --timeout=120000",
+    "render:mobile-leads-bulk": "remotion render mobile-leads-bulk out/mobile-leads-bulk.mp4 --concurrency=2 --timeout=120000",
+    "render:mobile-dashboard": "remotion render mobile-dashboard out/mobile-dashboard.mp4 --concurrency=2 --timeout=120000",
+    "render:mobile-all": "npm run render:mobile-conversaciones && npm run render:mobile-leads-cualificados && npm run render:mobile-leads-bulk && npm run render:mobile-dashboard"
   },
   "sideEffects": [
     "*.css"

@@ -43,3 +43,20 @@ export function getAssistantAvatarById(id?: string | null): AssistantAvatarOptio
   if (!id) return undefined;
   return ASSISTANT_AVATARS.find((avatar) => avatar.id === id);
 }
+
+export const ASSISTANT_NAME_OPTIONS: string[] = ASSISTANT_AVATARS.map((a) => a.name);
+
+/**
+ * Picks the photo URL to show for the assistant.
+ * Custom logo (assistantPhotoUrl) wins over the stock avatar URL.
+ */
+export function resolveAssistantPhotoUrl(s: {
+  assistantPhotoUrl?: string | null;
+  assistantAvatarUrl?: string | null;
+  assistantAvatarId?: string | null;
+}): string | undefined {
+  if (s.assistantPhotoUrl) return s.assistantPhotoUrl;
+  if (s.assistantAvatarUrl) return s.assistantAvatarUrl;
+  const stock = getAssistantAvatarById(s.assistantAvatarId);
+  return stock?.imagePath;
+}

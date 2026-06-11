@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Settings, Check, MessageSquare, Home } from "lucide-react";
+import { Settings, Check, MessageSquare } from "lucide-react";
 import type { BotConfig, BotStyle } from "../types";
-import { getBotConfig, updateActiveStyle, updateOrgName, updateNotificationNumbers, DEFAULT_STYLES } from "../services/botConfig";
+import { getBotConfig, updateActiveStyle, DEFAULT_STYLES } from "../services/botConfig";
 import { useAuth } from "../contexts/AuthContext";
-import { Bell } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button, PageHeader, PageLoading } from "../components/ui";
 import { auth } from "../lib/firebase";
@@ -29,10 +28,6 @@ export function Configuracion() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [previewStyle, setPreviewStyle] = useState<BotStyle | null>(null);
-  const [orgName, setOrgName] = useState("");
-  const [savingOrg, setSavingOrg] = useState(false);
-  const [notificationNumbers, setNotificationNumbers] = useState("");
-  const [savingNotifications, setSavingNotifications] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -86,8 +81,6 @@ export function Configuracion() {
       const data = await getBotConfig();
       console.log("[Diagnostic] loadConfig() success:", data);
       setConfig(data);
-      setOrgName(data.orgName || "");
-      setNotificationNumbers(data.notificationNumbers || "");
     } catch (error: any) {
       console.error("[Diagnostic] loadConfig() FAILED:", error);
       if (error.code === "permission-denied") {
@@ -118,47 +111,6 @@ export function Configuracion() {
     }
   }
 
-  async function handleUpdateOrgName() {
-    if (isImpersonationReadOnly) {
-      toast.message("Solo lectura en modo vista como usuario");
-      return;
-    }
-    if (!config || orgName === config.orgName) return;
-    setSavingOrg(true);
-
-    try {
-      console.log("Intentando guardar nombre de inmobiliaria:", orgName);
-      await updateOrgName(orgName.trim());
-      setConfig({ ...config, orgName: orgName.trim() });
-      toast.success("Nombre de la inmobiliaria guardado correctamente");
-    } catch (error) {
-      console.error("Error updating org name:", error);
-      toast.error("Error al actualizar el nombre de la inmobiliaria: " + (error instanceof Error ? error.message : String(error)));
-    } finally {
-      setSavingOrg(false);
-    }
-  }
-
-  async function handleUpdateNotifications() {
-    if (isImpersonationReadOnly) {
-      toast.message("Solo lectura en modo vista como usuario");
-      return;
-    }
-    if (!config || notificationNumbers === config.notificationNumbers) return;
-    setSavingNotifications(true);
-
-    try {
-      await updateNotificationNumbers(notificationNumbers.trim());
-      setConfig({ ...config, notificationNumbers: notificationNumbers.trim() });
-      toast.success("Números de notificación guardados correctamente");
-    } catch (error) {
-      console.error("Error updating notification numbers:", error);
-      toast.error("Error al actualizar los números de notificación");
-    } finally {
-      setSavingNotifications(false);
-    }
-  }
-
   if (loading) {
     return <PageLoading className="h-64" />;
   }
@@ -169,83 +121,8 @@ export function Configuracion() {
     <div>
       <PageHeader className="mb-6" title="Configuración" icon={<Settings size={28} />} />
 
-      {/* Organization Info Section */}
-      <div className="card mb-8">
-        <div className="flex items-center gap-2 mb-4">
-          <Home className="text-primary-500" size={24} />
-          <h2 className="text-lg font-bold text-gray-900 font-heading">Datos de la Inmobiliaria</h2>
-        </div>
-
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Nombre de la Inmobiliaria
-            </label>
-            <input
-              type="text"
-              value={orgName}
-              onChange={(e) => setOrgName(e.target.value)}
-              disabled={isImpersonationReadOnly}
-              className="input"
-              placeholder="Ej: Atlas Capital Group"
-            />
-          </div>
-          <div className="flex items-end">
-            <Button
-              onClick={handleUpdateOrgName}
-              disabled={effectiveRole === "member" || isImpersonationReadOnly || orgName === config?.orgName}
-              loading={savingOrg}
-            >
-              Guardar
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* Lead Notifications Section */}
-      <div className="card mb-8">
-        <div className="flex items-center gap-2 mb-4">
-          <Bell className="text-amber-500" size={24} />
-          <h2 className="text-lg font-bold text-gray-900 font-heading">Notificaciones de Leads</h2>
-        </div>
-
-        <p className="text-gray-600 mb-4 text-sm">
-          Estos números de la organización <strong>siempre</strong> reciben el resumen cuando un lead es{" "}
-          <strong>cualificado</strong>. Además, si el anuncio tiene un agente asignado en Listados con otro número
-          configurado en Equipo, también se notifica allí (sin duplicar si es el mismo número). Separa varios números con comas.
-        </p>
-
-        <div className="flex flex-col sm:flex-row gap-4">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Números centrales de WhatsApp (formato internacional, ej: 34696000111)
-            </label>
-            <input
-              type="text"
-              value={notificationNumbers}
-              onChange={(e) => setNotificationNumbers(e.target.value)}
-              disabled={isImpersonationReadOnly}
-              className="input"
-              placeholder="34696000111, 34600112233"
-            />
-          </div>
-          <div className="flex items-end">
-            <Button
-              onClick={handleUpdateNotifications}
-              disabled={
-                effectiveRole === "member" || isImpersonationReadOnly || notificationNumbers === config?.notificationNumbers
-              }
-              loading={savingNotifications}
-              variant="outline"
-            >
-              Guardar Números
-            </Button>
-          </div>
-        </div>
-      </div>
-
       {/* Asistente Style Section */}
-      <div className="border-t pt-8">
+      <div className="pt-2">
         <div className="flex items-center gap-2 mb-4">
           <MessageSquare className="text-primary-500" size={24} />
           <h2 className="text-lg font-bold text-gray-900 font-heading">Estilo del Asistente</h2>

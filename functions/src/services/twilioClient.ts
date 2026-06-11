@@ -223,6 +223,37 @@ async function getTwilioCredentials(orgId?: string): Promise<TwilioResolvedCrede
   return { accountSid, authToken, fromNumber, smsSenderId };
 }
 
+const orgAuthTokenCache: Record<string, { token: string; expiry: number }> = {};
+
+/**
+ * Auth token of the org's Twilio subaccount, for verifying inbound webhook
+ * signatures (Twilio signs with the subaccount token, not the master one).
+ * Tolerant on purpose: returns undefined for orgs without a subaccount
+ * (legacy orgs on the master account) instead of throwing like
+ * getTwilioCredentials, so the webhook can fall back to the master token.
+ */
+export async function getOrgTwilioAuthToken(orgId: string): Promise<string | undefined> {
+  const now = Date.now();
+  const cached = orgAuthTokenCache[orgId];
+  if (cached && now < cached.expiry) return cached.token;
+
+  const db = getFirestore(admin.app(), DATABASE_ID);
+  const cfgSnap = await db.doc(`organizations/${orgId}/botConfig/config`).get();
+  const cfg = (cfgSnap.data() || {}) as BotConfig;
+  const authTokenSecretName = cfg.twilioConfig?.authTokenSecretName?.trim();
+  if (!authTokenSecretName) return undefined;
+
+  try {
+    const token = (await accessSecretVersion(authTokenSecretName)).trim();
+    if (!token) return undefined;
+    orgAuthTokenCache[orgId] = { token, expiry: now + CREDENTIALS_CACHE_TTL_MS };
+    return token;
+  } catch (error) {
+    console.warn(`Could not access Twilio auth token secret for org ${orgId} (${authTokenSecretName})`, error);
+    return undefined;
+  }
+}
+
 function formatWhatsAppNumber(number: string): string {
   return number.startsWith("whatsapp:")
     ? number
@@ -1127,5 +1158,196 @@ export function normalizeWhatsAppTemplateName(friendlyName: string): string {
  */
 export function twilioTemplateDedupeKey(t: { friendly_name: string; language: string }): string {
   return `${t.friendly_name.trim().toLowerCase()}::${t.language.trim().toLowerCase()}`;
+}
+
+// ---------------------------------------------------------------------------
+// Twilio Tech Provider: subaccount + WhatsApp sender provisioning
+// ---------------------------------------------------------------------------
+
+export type TwilioSubaccount = {
+  sid: string;
+  authToken: string;
+  friendlyName?: string;
+  status?: string;
+};
+
+/**
+ * Create a Twilio subaccount under the master account. Used during WhatsApp
+ * Embedded Signup to isolate each customer's senders + usage from siblings.
+ *
+ * POST /2010-04-01/Accounts.json
+ *   Body: FriendlyName=<friendlyName>
+ *   Auth: master AccountSid + master AuthToken
+ *
+ * Response includes `auth_token` which we MUST capture immediately — Twilio
+ * only returns it on the create response; later GETs omit it.
+ */
+export async function createSubaccount(
+  masterCreds: TwilioRawCredentials,
+  params: { friendlyName: string }
+): Promise<TwilioSubaccount> {
+  try {
+    const response = await axios.post(
+      "https://api.twilio.com/2010-04-01/Accounts.json",
+      new URLSearchParams({ FriendlyName: params.friendlyName }).toString(),
+      {
+        auth: { username: masterCreds.accountSid, password: masterCreds.authToken },
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }
+    );
+    const data = response.data as {
+      sid?: string;
+      auth_token?: string;
+      friendly_name?: string;
+      status?: string;
+    };
+    if (!data?.sid || !data?.auth_token) {
+      throw new Error("Twilio Accounts API did not return sid + auth_token on create");
+    }
+    return {
+      sid: data.sid,
+      authToken: data.auth_token,
+      friendlyName: data.friendly_name,
+      status: data.status,
+    };
+  } catch (error) {
+    rethrowTwilioError(error, `create subaccount "${params.friendlyName}"`);
+  }
+}
+
+/**
+ * Create a WhatsApp sender on a Twilio subaccount, binding it to the WABA the
+ * customer just shared via Embedded Signup. This is the core Tech Provider call.
+ *
+ * POST /v2/Channels/Senders
+ *   Body (JSON): {
+ *     sender_id: "whatsapp:+<E164>",
+ *     configuration: { waba_id: "<META_WABA_ID>" },
+ *     webhook: { callback_url, callback_method: "POST" },
+ *     profile?: { name, vertical, address?, ... }
+ *   }
+ *
+ * Returns immediately with status=CREATING. Caller must poll until ONLINE.
+ */
+export async function createWhatsAppSender(
+  creds: TwilioRawCredentials,
+  params: {
+    /** Phone number in E.164 (with leading +), e.g. "+34669354177". */
+    senderE164: string;
+    wabaId: string;
+    callbackUrl: string;
+    profileName?: string;
+    profileVertical?: string;
+  }
+): Promise<TwilioWhatsAppSender> {
+  const senderId = params.senderE164.startsWith("whatsapp:")
+    ? params.senderE164
+    : `whatsapp:${params.senderE164.startsWith("+") ? "" : "+"}${params.senderE164}`;
+  try {
+    const body: Record<string, unknown> = {
+      sender_id: senderId,
+      configuration: { waba_id: params.wabaId },
+      webhook: { callback_url: params.callbackUrl, callback_method: "POST" },
+    };
+    if (params.profileName || params.profileVertical) {
+      body.profile = {
+        ...(params.profileName ? { name: params.profileName } : {}),
+        ...(params.profileVertical ? { vertical: params.profileVertical } : {}),
+      };
+    }
+    const response = await axios.post(
+      "https://messaging.twilio.com/v2/Channels/Senders",
+      body,
+      {
+        auth: { username: creds.accountSid, password: creds.authToken },
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+    const data = response.data as {
+      sid: string;
+      sender_id?: string | { sender?: string };
+      status?: string;
+      configuration?: { webhook?: TwilioWhatsAppSender["webhook"] };
+    };
+    const rawSender =
+      (typeof data.sender_id === "string" ? data.sender_id : data.sender_id?.sender) || "";
+    return {
+      sid: data.sid,
+      sender_id: rawSender.replace(/^whatsapp:/i, ""),
+      status: data.status,
+      webhook: data.configuration?.webhook,
+    };
+  } catch (error) {
+    rethrowTwilioError(error, `create WhatsApp sender for WABA ${params.wabaId}`);
+  }
+}
+
+/**
+ * Fetch a single sender by SID. Used by the onboarding poller.
+ */
+export async function getWhatsAppSender(
+  creds: TwilioRawCredentials,
+  senderSid: string
+): Promise<TwilioWhatsAppSender> {
+  try {
+    const response = await axios.get(
+      `https://messaging.twilio.com/v2/Channels/Senders/${encodeURIComponent(senderSid)}`,
+      {
+        auth: { username: creds.accountSid, password: creds.authToken },
+        headers: { Accept: "application/json" },
+      }
+    );
+    const data = response.data as {
+      sid: string;
+      sender_id?: string | { sender?: string };
+      status?: string;
+      configuration?: { webhook?: TwilioWhatsAppSender["webhook"] };
+    };
+    const rawSender =
+      (typeof data.sender_id === "string" ? data.sender_id : data.sender_id?.sender) || "";
+    return {
+      sid: data.sid,
+      sender_id: rawSender.replace(/^whatsapp:/i, ""),
+      status: data.status,
+      webhook: data.configuration?.webhook,
+    };
+  } catch (error) {
+    rethrowTwilioError(error, `get WhatsApp sender ${senderSid}`);
+  }
+}
+
+/**
+ * Poll `getWhatsAppSender` until status reaches ONLINE or a hard-failure
+ * terminal state, or `timeoutMs` elapses. Onboarding UX needs this synchronous
+ * wait so the user sees a "connected" message instead of "we're working on it".
+ *
+ * Status semantics observed in production:
+ *   CREATING / OFFLINE → transient during Tech Provider provisioning. OFFLINE
+ *     appears for a few seconds while Twilio waits for Meta to propagate the
+ *     WABA share (post-embedded-signup). It typically resolves to ONLINE on
+ *     its own. Treating OFFLINE as terminal here breaks the happy path.
+ *   VERIFYING → number verification in progress.
+ *   VERIFICATION_FAILED / FAILED → true terminal failures, abort polling.
+ *   ONLINE → done.
+ */
+export async function pollSenderUntilOnline(
+  creds: TwilioRawCredentials,
+  senderSid: string,
+  options?: { timeoutMs?: number; intervalMs?: number }
+): Promise<TwilioWhatsAppSender> {
+  const timeoutMs = options?.timeoutMs ?? 45_000;
+  const intervalMs = options?.intervalMs ?? 3_000;
+  const deadline = Date.now() + timeoutMs;
+  let last: TwilioWhatsAppSender | null = null;
+  while (Date.now() < deadline) {
+    last = await getWhatsAppSender(creds, senderSid);
+    const status = (last.status || "").toUpperCase();
+    if (status === "ONLINE") return last;
+    if (status === "VERIFICATION_FAILED" || status === "FAILED") {
+      throw new Error(`Twilio sender ${senderSid} reached terminal status ${status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return last || { sid: senderSid, status: "TIMEOUT" };
 }
 

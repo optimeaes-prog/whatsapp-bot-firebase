@@ -1,11 +1,14 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { useCookieConsent } from "../contexts/CookieConsentContext";
 import {
   Home,
   Megaphone,
+  FolderOpen,
   Users,
   MessageSquare,
+  PhoneCall,
 
   Settings,
   LogOut,
@@ -39,12 +42,14 @@ const mainNavItems: NavItem[] = [
   { href: "/onboarding", label: "Onboarding", icon: <Rocket size={20} /> },
   { href: "/dashboard", label: "Dashboard", icon: <Home size={20} /> },
   { href: "/anuncios", label: "Anuncios", icon: <Megaphone size={20} /> },
+  { href: "/captaciones", label: "Captaciones", icon: <FolderOpen size={20} /> },
   { href: "/leads", label: "Leads", icon: <Users size={20} /> },
+  { href: "/seguimiento", label: "Seguimiento", icon: <PhoneCall size={20} /> },
   { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
 
   { href: "/suscripcion", label: "Suscripción", icon: <CreditCard size={20} /> },
   { href: "/uso", label: "Uso", icon: <BarChart3 size={20} />, roles: ["owner", "admin", "super_admin"] },
-  { href: "/equipo", label: "Equipo", icon: <Users size={20} /> },
+  { href: "/organizacion", label: "Organización", icon: <Building2 size={20} /> },
 ];
 
 const adminNavItems: NavItem[] = [
@@ -70,6 +75,7 @@ export function Layout({ children }: { children: ReactNode }) {
     impersonation,
     clearImpersonation,
   } = useAuth();
+  const { openPreferences: openCookiePreferences } = useCookieConsent();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -84,7 +90,7 @@ export function Layout({ children }: { children: ReactNode }) {
       try {
         const { getOrganizationSettings } = await import("../services/organization");
         const settings = await getOrganizationSettings();
-        setOnboardingCompleted((settings.onboardingStep || 1) >= 6);
+        setOnboardingCompleted((settings.onboardingStep || 1) >= 7);
       } catch (error) {
         console.error("Failed to load onboarding status", error);
       }
@@ -166,17 +172,23 @@ export function Layout({ children }: { children: ReactNode }) {
                 <Building2 size={14} />
                 Organización activa
               </div>
-              <select
-                value={organizationId}
-                onChange={(e) => switchOrganization(e.target.value)}
-                className="w-full rounded-btn border border-primary-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500"
-              >
-                {availableOrganizations.map((org) => (
-                  <option key={org.id} value={org.id}>
-                    {org.agencyName || org.id}
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <select
+                  value={organizationId}
+                  onChange={(e) => switchOrganization(e.target.value)}
+                  className="w-full appearance-none rounded-btn border border-primary-200 bg-white pl-3 pr-9 py-2 text-sm text-gray-800 outline-none focus:ring-4 focus:ring-primary-500/10 focus:border-primary-500"
+                >
+                  {availableOrganizations.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.agencyName || org.id}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={16}
+                  className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-primary-500"
+                />
+              </div>
             </div>
           )}
 
@@ -308,6 +320,13 @@ export function Layout({ children }: { children: ReactNode }) {
             <Link to="/cookies" className="hover:text-gray-700 underline underline-offset-2">
               Cookies
             </Link>
+            <button
+              type="button"
+              onClick={openCookiePreferences}
+              className="hover:text-gray-700 underline underline-offset-2"
+            >
+              Gestionar cookies
+            </button>
           </div>
 
           <button

@@ -28,8 +28,9 @@ export function ConversacionesPage(props: ConversacionesStateProps) {
     <div className="absolute inset-0 flex overflow-hidden bg-white">
       {/* List pane — widened again to fit larger text */}
       <div className="flex w-[800px] shrink-0 flex-col border-r border-gray-200 bg-white">
-            {/* Header — compact */}
-            <div className="border-b border-gray-200 px-7 pt-4 pb-3">
+            {/* Header — pt-10 aligns the "Conversaciones" title with the page-level
+                headings in Dashboard/Leads (which use page padding p-10 = 40px). */}
+            <div className="border-b border-gray-200 px-7 pt-10 pb-3">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-5xl font-bold text-gray-900">Conversaciones</h2>
                 <span className="rounded-full bg-gray-100 px-4 py-1.5 text-lg font-semibold text-gray-700">685</span>
@@ -130,7 +131,7 @@ export function ConversacionesPage(props: ConversacionesStateProps) {
                   }}
                 >
                   <div>
-                    <h3 className="text-5xl font-bold text-gray-900">{props.conv?.name}</h3>
+                    <h3 className="text-4xl font-bold text-gray-900">{props.conv?.name}</h3>
                     <p className="mt-2 text-xl text-gray-500">
                       {props.conv?.phoneMasked} · {props.conv?.listingId} · {props.conv?.messageCount} mensajes
                     </p>

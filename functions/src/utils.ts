@@ -14,14 +14,40 @@ export function extractPhoneFromChatId(chatId: string): string {
 }
 
 /**
+ * Argentine mobile numbers carry an extra "9" after the country code 54 in
+ * their international form (+54 9 …), but the same subscriber is frequently
+ * stored without it (+54 …, e.g. leads imported from Idealista). WhatsApp may
+ * deliver either form, so the two must be treated as the same person —
+ * otherwise an inbound from +54 9 … never matches a lead saved as +54 … and
+ * gets mis-classified as a non-lead (the bot then stays silent).
+ *
+ * Returns equivalent phone-digit forms, INPUT FORM FIRST (so callers that pick
+ * the first match reply to the number the user actually messaged from). Country
+ * code 54 is Argentina-exclusive, so keying on the 54 / 549 prefix is safe.
+ */
+export function getArgentinaPhoneVariants(phone: string): string[] {
+    const digits = phone.replace(/\D/g, "");
+    const variants = [digits];
+    if (digits.startsWith("549") && digits.length >= 12) {
+        variants.push("54" + digits.slice(3)); // drop the mobile 9
+    } else if (digits.startsWith("54") && digits.length >= 11) {
+        variants.push("549" + digits.slice(2)); // add the mobile 9
+    }
+    return variants;
+}
+
+/**
  * Returns all possible chatId variants for a given chatId or phone number.
+ * Covers @c.us vs @s.whatsapp.net suffixes AND the Argentine "9" mobile-prefix
+ * forms (see getArgentinaPhoneVariants).
  */
 export function getChatIdVariants(chatIdOrPhone: string): string[] {
     const phone = extractPhoneFromChatId(chatIdOrPhone);
-    return [
-        `${phone}@c.us`,
-        `${phone}@s.whatsapp.net`,
-    ];
+    const variants: string[] = [];
+    for (const p of getArgentinaPhoneVariants(phone)) {
+        variants.push(`${p}@c.us`, `${p}@s.whatsapp.net`);
+    }
+    return variants;
 }
 
 /**

@@ -47,7 +47,6 @@
 **/*.jpeg
 **/*.gif
 **/*.webp
-**/*.mp4
 **/*.mov
 **/*.webm
 **/*.sqlite

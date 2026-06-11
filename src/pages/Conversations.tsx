@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { toast } from "sonner";
-import { MessageSquare, Search, ArrowLeft, Trash2, Send, Bot, BotOff, Download, ChevronDown, ChevronUp, CheckCircle, Megaphone, Activity, Calendar, CheckSquare, Square } from "lucide-react";
+import { MessageSquare, Search, ArrowLeft, Trash2, Send, Bot, BotOff, Download, ChevronDown, ChevronUp, CheckCircle, Megaphone, Activity, Calendar, CheckSquare, Square, Filter } from "lucide-react";
 import type { Conversation } from "../types";
 import {
   getConversations,
@@ -19,10 +19,12 @@ import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn } from "../lib/u
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
 import { resolveConversationQualification } from "../lib/conversationQualification";
 import { downloadConversation } from "../lib/export";
+import { renderMessageText } from "../utils/renderMessageText";
 import { LeadDetails } from "../components/LeadDetails";
 import { getListings, getListingsForAgent } from "../services/listings";
 import type { Listing } from "../types";
 import { Button, InboxShell, PageLoading } from "../components/ui";
+import { analytics, hashIdSync } from "../lib/analytics";
 import { useAuth } from "../contexts/AuthContext";
 
 export function Conversations() {
@@ -52,6 +54,39 @@ export function Conversations() {
     messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
   };
 
+  // "Last visited the No-identificados tab" timestamp (ms). Persisted per-org
+  // in localStorage. Used to drive a pulse-dot indicator on the
+  // "No identificados" tab when there are non-lead conversations with a newer
+  // lastMessage than this timestamp — i.e. the agent hasn't seen them yet.
+  const unidentifiedSeenKey = `proplead.lastSeenUnidentifiedAt.${organizationId || "anon"}`;
+  const [lastSeenUnidentifiedAt, setLastSeenUnidentifiedAt] = useState<number>(() => {
+    if (typeof window === "undefined") return 0;
+    const raw = window.localStorage.getItem(unidentifiedSeenKey);
+    const parsed = raw ? Number(raw) : 0;
+    return Number.isFinite(parsed) ? parsed : 0;
+  });
+
+  // Reload the seen-timestamp when switching org (key changes).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(unidentifiedSeenKey);
+    const parsed = raw ? Number(raw) : 0;
+    setLastSeenUnidentifiedAt(Number.isFinite(parsed) ? parsed : 0);
+  }, [unidentifiedSeenKey]);
+
+  // While the user is actively on the No-identificados tab, treat anything
+  // currently visible as "seen" by bumping the timestamp to now. Without this,
+  // new inbound non-leads arriving while the tab is open would NOT update the
+  // baseline, so a flash of pulse-dot would show every time the user switched
+  // away and back.
+  useEffect(() => {
+    if (filterType !== "unidentified") return;
+    if (typeof window === "undefined") return;
+    const now = Date.now();
+    setLastSeenUnidentifiedAt(now);
+    window.localStorage.setItem(unidentifiedSeenKey, String(now));
+  }, [filterType, unidentifiedSeenKey]);
+
   // Dropdown open states
   const [isDateDropdownOpen, setIsDateDropdownOpen] = useState(false);
   const [isListingDropdownOpen, setIsListingDropdownOpen] = useState(false);
@@ -59,6 +94,20 @@ export function Conversations() {
   const [isListingStatusDropdownOpen, setIsListingStatusDropdownOpen] = useState(false);
   const [isAssistantStatusDropdownOpen, setIsAssistantStatusDropdownOpen] = useState(false);
   const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
+  // Mobile collapsible filter panel (search + 6 filter pills + sub-tabs).
+  // Primary Leads / No identificados tabs remain visible above the accordion.
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  // Counts non-default secondary filters for the mobile "Filtros (N)" badge.
+  const activeSecondaryFilterCount =
+    (search.trim() !== "" ? 1 : 0) +
+    (filterDate !== "all" ? 1 : 0) +
+    (filterListing !== "all" ? 1 : 0) +
+    (filterQualified !== "all" ? 1 : 0) +
+    (filterListingStatus !== "all" ? 1 : 0) +
+    (filterAssistantStatus !== "all" ? 1 : 0) +
+    (filterStatus !== "all" ? 1 : 0) +
+    (filterOptOut !== "all" ? 1 : 0);
 
   useEffect(() => {
     if (!organizationId) return;
@@ -271,6 +320,7 @@ export function Conversations() {
     setSending(true);
     try {
       await sendMessageToWhatsApp(selectedConversation.id, newMessage);
+      analytics.trackMessageSent({ type: "text", is_ai: false });
       setNewMessage("");
 
       // Update local state temporarily for immediate feedback
@@ -432,6 +482,20 @@ export function Conversations() {
     listingMap,
   ]);
 
+  // Count of non-lead conversations with a lastMessage newer than the last
+  // time the agent visited the No-identificados tab. Drives the pulse-dot
+  // indicator so agents don't miss inbound non-lead messages — those don't
+  // show under the default "Leads" tab.
+  const unseenUnidentifiedCount = useMemo(() => {
+    return conversations.reduce((count, conv) => {
+      if (!conv.tags?.includes("non-lead")) return count;
+      const lastMs = conv.lastMessage?.toMillis?.() ?? 0;
+      return lastMs > lastSeenUnidentifiedAt ? count + 1 : count;
+    }, 0);
+  }, [conversations, lastSeenUnidentifiedAt]);
+  const showUnidentifiedPulse =
+    filterType !== "unidentified" && unseenUnidentifiedCount > 0;
+
   if (loading) {
     return <PageLoading className="h-64" />;
   }
@@ -474,15 +538,56 @@ export function Conversations() {
                 setSelectedConversation(null);
               }}
               className={cn(
-                "flex-1 py-1.5 px-3 text-xs font-bold rounded-md transition-all font-heading uppercase tracking-wider",
-                filterType === "unidentified" 
-                  ? "bg-white text-primary-700 shadow-sm" 
+                "relative flex-1 py-1.5 px-3 text-xs font-bold rounded-md transition-all font-heading uppercase tracking-wider",
+                filterType === "unidentified"
+                  ? "bg-white text-primary-700 shadow-sm"
                   : "text-gray-500 hover:text-gray-700"
               )}
             >
-              No identificados
+              <span className="inline-flex items-center justify-center gap-2">
+                No identificados
+                {showUnidentifiedPulse && (
+                  <span
+                    className="relative inline-flex h-2.5 w-2.5"
+                    aria-label={`${unseenUnidentifiedCount} nuevos sin leer`}
+                    title={`${unseenUnidentifiedCount} conversación${unseenUnidentifiedCount === 1 ? "" : "es"} no identificada${unseenUnidentifiedCount === 1 ? "" : "s"} sin leer`}
+                  >
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+                  </span>
+                )}
+              </span>
             </button>
           </div>
+
+          {/* Mobile filter toggle: collapses search + sub-tabs + filter pills below */}
+          <button
+            type="button"
+            onClick={() => setMobileFiltersOpen((v) => !v)}
+            className="sm:hidden flex items-center justify-between w-full px-2 py-1.5 rounded-btn border border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors"
+            aria-expanded={mobileFiltersOpen}
+            aria-controls="conversations-filters-content"
+          >
+            <span className="flex items-center gap-1.5 text-xs font-bold font-heading uppercase tracking-wider text-gray-700">
+              <Filter size={14} className="text-gray-500" />
+              Filtros
+              {activeSecondaryFilterCount > 0 && (
+                <span className="inline-flex items-center justify-center min-w-[18px] px-1.5 py-0.5 rounded-full bg-primary-100 text-primary-700 text-[10px] font-bold">
+                  {activeSecondaryFilterCount}
+                </span>
+              )}
+            </span>
+            <ChevronDown
+              size={14}
+              className={cn("text-gray-400 transition-transform", mobileFiltersOpen && "rotate-180")}
+            />
+          </button>
+
+          {/* Collapsible filter contents: always visible on sm+, conditionally on mobile */}
+          <div
+            id="conversations-filters-content"
+            className={cn("space-y-3", !mobileFiltersOpen && "hidden sm:block")}
+          >
           <div className="flex bg-gray-100 p-1 rounded-lg w-full">
             <button
               onClick={() => setFilterOptOut("all")}
@@ -533,17 +638,17 @@ export function Conversations() {
                 onClick={() => setIsDateDropdownOpen(!isDateDropdownOpen)}
               >
                 <Calendar size={14} className="text-gray-400 shrink-0" />
-                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center gap-1 truncate">
                   <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">
                     Fecha:
                   </span>
-                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
-                    {filterDate === "today" ? "Hoy" : 
-                     filterDate === "yesterday" ? "Ayer" : 
-                     filterDate === "last_7" ? "7 días" : 
+                  <span className="truncate font-heading font-bold text-gray-700 ml-auto">
+                    {filterDate === "today" ? "Hoy" :
+                     filterDate === "yesterday" ? "Ayer" :
+                     filterDate === "last_7" ? "7 días" :
                      filterDate === "last_30" ? "30 días" : "Todos"}
                   </span>
-                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isDateDropdownOpen && "rotate-180")} />
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform shrink-0", isDateDropdownOpen && "rotate-180")} />
                 </div>
               </div>
               {isDateDropdownOpen && (
@@ -580,10 +685,10 @@ export function Conversations() {
                 onClick={() => setIsListingDropdownOpen(!isListingDropdownOpen)}
               >
                 <Megaphone size={14} className="text-gray-400 shrink-0" />
-                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center gap-1 truncate">
                   <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Anuncio:</span>
-                  <span className="truncate font-heading font-bold text-gray-700 ml-1">{filterListing === "all" ? "Todos" : filterListing}</span>
-                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isListingDropdownOpen && "rotate-180")} />
+                  <span className="truncate font-heading font-bold text-gray-700 ml-auto">{filterListing === "all" ? "Todos" : filterListing}</span>
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform shrink-0", isListingDropdownOpen && "rotate-180")} />
                 </div>
               </div>
               {isListingDropdownOpen && (
@@ -625,13 +730,13 @@ export function Conversations() {
                 onClick={() => setIsQualifiedDropdownOpen(!isQualifiedDropdownOpen)}
               >
                 <CheckCircle size={14} className="text-gray-400 shrink-0" />
-                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center gap-1 truncate">
                   <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Cualif:</span>
-                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
-                    {filterQualified === "all" ? "Todos" : 
+                  <span className="truncate font-heading font-bold text-gray-700 ml-auto">
+                    {filterQualified === "all" ? "Todos" :
                      filterQualified === "qualified" ? "Sí" : "No"}
                   </span>
-                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isQualifiedDropdownOpen && "rotate-180")} />
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform shrink-0", isQualifiedDropdownOpen && "rotate-180")} />
                 </div>
               </div>
               {isQualifiedDropdownOpen && (
@@ -666,13 +771,13 @@ export function Conversations() {
                 onClick={() => setIsListingStatusDropdownOpen(!isListingStatusDropdownOpen)}
               >
                 <Activity size={14} className="text-gray-400 shrink-0" />
-                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
-                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Anuncio:</span>
-                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
-                    {filterListingStatus === "all" ? "Todos" : 
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center gap-1 truncate">
+                  <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Estado:</span>
+                  <span className="truncate font-heading font-bold text-gray-700 ml-auto">
+                    {filterListingStatus === "all" ? "Todos" :
                      filterListingStatus === "active" ? "Activo" : "Inactivo"}
                   </span>
-                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isListingStatusDropdownOpen && "rotate-180")} />
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform shrink-0", isListingStatusDropdownOpen && "rotate-180")} />
                 </div>
               </div>
               {isListingStatusDropdownOpen && (
@@ -707,13 +812,13 @@ export function Conversations() {
                 onClick={() => setIsAssistantStatusDropdownOpen(!isAssistantStatusDropdownOpen)}
               >
                 <Bot size={14} className="text-gray-400 shrink-0" />
-                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center gap-1 truncate">
                   <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Bot:</span>
-                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
-                    {filterAssistantStatus === "all" ? "Todos" : 
+                  <span className="truncate font-heading font-bold text-gray-700 ml-auto">
+                    {filterAssistantStatus === "all" ? "Todos" :
                      filterAssistantStatus === "active" ? "Activo" : "Off"}
                   </span>
-                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isAssistantStatusDropdownOpen && "rotate-180")} />
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform shrink-0", isAssistantStatusDropdownOpen && "rotate-180")} />
                 </div>
               </div>
               {isAssistantStatusDropdownOpen && (
@@ -748,13 +853,13 @@ export function Conversations() {
                 onClick={() => setIsStatusDropdownOpen(!isStatusDropdownOpen)}
               >
                 <MessageSquare size={14} className="text-gray-400 shrink-0" />
-                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center justify-between truncate">
+                <div className="text-[10px] text-gray-700 font-medium flex-1 flex items-center gap-1 truncate">
                   <span className="truncate font-heading font-black uppercase tracking-widest text-[10px] text-gray-400">Estado:</span>
-                  <span className="truncate font-heading font-bold text-gray-700 ml-1">
-                    {filterStatus === "all" ? "Todos" : 
+                  <span className="truncate font-heading font-bold text-gray-700 ml-auto">
+                    {filterStatus === "all" ? "Todos" :
                      filterStatus === "active" ? "Activas" : "Fin"}
                   </span>
-                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform", isStatusDropdownOpen && "rotate-180")} />
+                  <ChevronDown size={12} className={cn("text-gray-400 transition-transform shrink-0", isStatusDropdownOpen && "rotate-180")} />
                 </div>
               </div>
               {isStatusDropdownOpen && (
@@ -783,6 +888,7 @@ export function Conversations() {
               )}
             </div>
           </div>
+          </div> {/* end of conversations-filters-content collapsible wrapper */}
         </div>
 
         {/* Lista de conversaciones */}
@@ -803,16 +909,26 @@ export function Conversations() {
             filteredConversations.map((conv) => (
               <div
                 key={conv.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  setSelectedConversation(conv);
+                  analytics.trackConversationOpened(hashIdSync(conv.id));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelectedConversation(conv);
+                    analytics.trackConversationOpened(hashIdSync(conv.id));
+                  }
+                }}
                 className={cn(
-                  "px-3 py-2.5 border-b border-gray-100 hover:bg-gray-50 transition-colors",
+                  "px-3 py-2.5 border-b border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer focus:outline-none focus:bg-gray-50",
                   selectedConversation?.id === conv.id && "bg-gray-100"
                 )}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div
-                    className="flex-1 min-w-0 cursor-pointer"
-                    onClick={() => setSelectedConversation(conv)}
-                  >
+                  <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2 mb-0.5">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <h3 className="font-bold text-gray-900 text-sm truncate font-heading">
@@ -878,7 +994,7 @@ export function Conversations() {
                     </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 mt-1 overflow-hidden" onClick={() => setSelectedConversation(conv)}>
+                <div className="flex items-center gap-1 mt-1 overflow-hidden">
                   {(() => {
                     const tags = (conv.tags || []).filter((t) => t.toLowerCase() !== "lead");
                     return (
@@ -904,10 +1020,7 @@ export function Conversations() {
                   })()}
                 </div>
                 {conv.botDisabled && (
-                  <div
-                    className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer mt-1"
-                    onClick={() => setSelectedConversation(conv)}
-                  >
+                  <div className="flex items-center gap-1.5 text-xs text-gray-500 mt-1">
                     <span className="flex items-center gap-1 text-[10px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded">
                       <BotOff size={10} /> Asistente Off
                     </span>
@@ -921,7 +1034,7 @@ export function Conversations() {
 
       {/* Panel derecho - Detalle de conversación */}
       {selectedConversation ? (
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col min-w-0">
           {/* Header del chat */}
           <div className="p-3 sm:p-4 border-b border-gray-200 bg-white">
             <div className="flex items-center gap-2 sm:gap-3">
@@ -954,32 +1067,34 @@ export function Conversations() {
                   onClick={handleToggleAssistant}
                   disabled={isImpersonationReadOnly}
                   className={cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs font-medium transition-colors border disabled:opacity-40 disabled:pointer-events-none",
+                    "flex items-center gap-1.5 max-md:p-2 md:px-3 md:py-1.5 rounded-btn text-xs font-medium transition-colors border disabled:opacity-40 disabled:pointer-events-none",
                     selectedConversation.botDisabled
                       ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
                       : "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
                   )}
                   title={selectedConversation.botDisabled ? "Activar Asistente" : "Desactivar Asistente"}
+                  aria-label={selectedConversation.botDisabled ? "Activar Asistente" : "Desactivar Asistente"}
                 >
                   {selectedConversation.botDisabled ? (
                     <>
                       <BotOff size={14} />
-                      Asistente Desactivado
+                      <span className="max-md:hidden">Asistente Desactivado</span>
                     </>
                   ) : (
                     <>
                       <Bot size={14} />
-                      Asistente Activo
+                      <span className="max-md:hidden">Asistente Activo</span>
                     </>
                   )}
                 </button>
                 <button
                   onClick={handleDownloadConversation}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-btn text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm"
+                  className="flex items-center gap-1.5 max-md:p-2 md:px-3 md:py-1.5 rounded-btn text-xs font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 transition-colors shadow-sm"
                   title="Descargar conversación"
+                  aria-label="Descargar conversación"
                 >
                   <Download size={14} />
-                  Descargar
+                  <span className="max-md:hidden">Descargar</span>
                 </button>
               </div>
             </div>
@@ -1021,12 +1136,12 @@ export function Conversations() {
                   <div
                     key={index}
                     className={cn(
-                      "p-3 rounded-lg text-sm",
+                      "p-3 rounded-lg text-sm min-w-0 max-w-full",
                       item.role === "assistant"
-                        ? "bg-white border border-gray-200 mr-8"
-                        : "bg-primary-100 text-primary-800 ml-8"
+                        ? "bg-white border border-gray-200 mr-4 sm:mr-8"
+                        : "bg-primary-100 text-primary-800 ml-4 sm:ml-8"
                     )}
-                    style={{ overflowWrap: 'anywhere' }}
+                    style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
                   >
                     <span className={cn(
                       "text-xs font-medium mb-1 block",
@@ -1034,13 +1149,12 @@ export function Conversations() {
                     )}>
                       {item.role === "assistant" ? "Asistente" : "Interesado"}
                     </span>
-                    <p 
-                      className="whitespace-pre-wrap break-words" 
-                      style={{ wordBreak: 'break-word' }}
-                      dangerouslySetInnerHTML={{ 
-                        __html: item.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<strong>$1</strong>') 
-                      }}
-                    />
+                    <p
+                      className="whitespace-pre-wrap"
+                      style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+                    >
+                      {renderMessageText(item.text)}
+                    </p>
                     {item.timestamp && (
                       <p className="text-[10px] mt-1 text-right text-gray-400">
                         {formatMessageTime(item.timestamp)}

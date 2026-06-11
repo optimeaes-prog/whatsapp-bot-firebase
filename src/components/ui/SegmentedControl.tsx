@@ -73,7 +73,9 @@ export function SegmentedControl<T extends string>({
   return (
     <div
       className={cn(
-        "inline-flex shrink-0 gap-1 rounded-xl border-2 bg-white p-1 shadow-sm",
+        // Mobile-first: flex-wrap allows multi-row layout when buttons don't fit
+        // on a single line. On sm+ we stay inline so the control hugs content.
+        "flex flex-wrap sm:inline-flex sm:flex-nowrap gap-1 rounded-xl border-2 bg-white p-1 shadow-sm",
         s.rootBorder,
         className
       )}
@@ -96,17 +98,21 @@ export function SegmentedControl<T extends string>({
               }
             }}
             className={cn(
-              "relative inline-flex min-w-[6rem] items-center justify-center gap-1.5 rounded-btn px-4 py-2 text-sm font-bold font-heading transition-colors duration-200",
+              // No min-width on mobile (lets buttons shrink to fit 3-per-row),
+              // restore 6rem floor on sm+ so single-row layouts stay legible.
+              // min-h ensures buttons stay the same height whether selected or not,
+              // and whether the label wraps to two lines or stays on one.
+              "relative inline-flex flex-1 sm:flex-none sm:min-w-[6rem] min-h-[2.25rem] sm:min-h-0 items-center justify-center gap-1.5 rounded-btn px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-bold font-heading transition-colors duration-200",
               "disabled:opacity-50 disabled:pointer-events-none",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
               s.focusRing,
               selected
-                ? cn(opt.selectedClassName ?? cn(s.selectedBg, s.selectedText), "shadow-sm")
+                ? cn(opt.selectedClassName ?? cn(s.selectedBg, s.selectedText))
                 : cn(opt.unselectedClassName ?? cn("text-gray-600", s.hoverBg))
             )}
             aria-pressed={selected}
           >
-            <span>{opt.label}</span>
+            <span className="text-center leading-tight">{opt.label}</span>
             {opt.badge ? (
               <span className={cn("text-[10px] font-bold tracking-tight font-heading", selected ? "opacity-90" : "text-emerald-800")}>
                 {opt.badge}

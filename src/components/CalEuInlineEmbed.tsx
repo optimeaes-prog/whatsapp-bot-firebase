@@ -1,8 +1,8 @@
 import Cal, { getCalApi } from "@calcom/embed-react";
 import { useEffect } from "react";
 
-const NAMESPACE = "15min";
-const DEFAULT_CAL_LINK = "ejpr-proplead/15min";
+const NAMESPACE = "demo-proplead";
+const DEFAULT_CAL_LINK = "prophub/demo-proplead";
 
 /** Host por defecto: Cal.eu (el mismo slug en cal.com suele dar 404). */
 const DEFAULT_CAL_ORIGIN = "https://app.cal.eu";
@@ -26,17 +26,21 @@ function getEmbedJsUrl(): string {
 export function CalEuInlineEmbed({
   namespace = NAMESPACE,
   calLink: calLinkProp,
+  calOrigin: calOriginProp,
+  embedJsUrl: embedJsUrlProp,
   minHeight = 600,
   className,
 }: {
   namespace?: string;
   calLink?: string;
+  calOrigin?: string;
+  embedJsUrl?: string;
   minHeight?: number;
   className?: string;
 }) {
   const calLink = calLinkProp && calLinkProp.length > 0 ? calLinkProp : getCalLink();
-  const calOrigin = getCalOrigin();
-  const embedJsUrl = getEmbedJsUrl();
+  const calOrigin = calOriginProp && calOriginProp.length > 0 ? calOriginProp : getCalOrigin();
+  const embedJsUrl = embedJsUrlProp && embedJsUrlProp.length > 0 ? embedJsUrlProp : getEmbedJsUrl();
 
   useEffect(() => {
     void (async function () {

@@ -7,14 +7,22 @@ import type { MessagingProvider } from "../types";
 
 export interface OrganizationSettings {
   onboardingStep?: number;
+  onboardingStepsV2?: boolean;
   agencyName?: string;
+  legalName?: string | null;
+  agencyTaxId?: string | null;
+  agencyAddress?: string | null;
   employeesCount?: string;
+  contactPhone?: string | null;
+  website?: string | null;
   whatsappSummariesPhone?: string;
   forwardingEmail?: string;
-  assistantAvatarId?: AssistantAvatarId;
-  assistantAvatarName?: string;
-  assistantAvatarImagePath?: string;
-  assistantAvatarUrl?: string;
+  assistantName?: string | null;
+  assistantAvatarId?: AssistantAvatarId | null;
+  assistantAvatarName?: string | null;
+  assistantAvatarImagePath?: string | null;
+  assistantAvatarUrl?: string | null;
+  assistantPhotoUrl?: string | null;
   
   onboardingCallScheduled?: boolean;
   onboardingCallDate?: string;
@@ -42,14 +50,14 @@ export async function updateOrganizationSettings(settings: Partial<OrganizationS
 }
 
 export async function getPendingOnboards(): Promise<(OrganizationSettings & { id: string })[]> {
-  const q = query(collection(db, "organizations"), where("onboardingStep", "==", 6));
+  const q = query(collection(db, "organizations"), where("onboardingStep", "==", 7));
   const querySnapshot = await getDocs(q);
   return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as OrganizationSettings }));
 }
 
 export async function confirmOnboarding(orgId: string): Promise<void> {
   const docRef = doc(db, "organizations", orgId);
-  await updateDoc(docRef, { onboardingStep: 7 });
+  await updateDoc(docRef, { onboardingStep: 8 });
 }
 
 export async function getAllOrganizations(): Promise<{ id: string; agencyName?: string }[]> {

@@ -8,6 +8,9 @@ type EmbeddedSignupConfig = {
   appId: string;
   configId: string;
   graphApiVersion: string;
+  /** Twilio Partner Solution ID. Passed to FB.login so Meta auto-shares the
+   * customer's WABA with Twilio's Partner Solution at the end of signup. */
+  twilioPartnerSolutionId?: string;
 };
 
 type SessionInfoResponse = {
@@ -129,7 +132,8 @@ export function loadFacebookSdk(appId: string): Promise<void> {
  */
 export function launchEmbeddedSignup(
   configId: string,
-  appId: string
+  appId: string,
+  twilioPartnerSolutionId?: string
 ): Promise<{ code: string; phoneNumberId: string; wabaId: string }> {
   return new Promise((resolve, reject) => {
     if (!window.FB) {
@@ -209,7 +213,11 @@ export function launchEmbeddedSignup(
           config_id: configId,
           response_type: "code",
           override_default_response_type: true,
-          extras: { setup: {}, featureType: "", sessionInfoVersion: "3" },
+          extras: {
+            setup: twilioPartnerSolutionId ? { solutionID: twilioPartnerSolutionId } : {},
+            featureType: "",
+            sessionInfoVersion: "3",
+          },
         }
       );
     }, 0);
@@ -222,6 +230,7 @@ export async function exchangeEmbeddedSignupCode(params: {
   wabaId: string;
   assistantAvatarId?: string;
   assistantAvatarUrl?: string;
+  assistantPhotoUrl?: string;
 }): Promise<EmbeddedSignupResult> {
   const token = await getAuthToken();
   const response = await fetch(`${FUNCTIONS_BASE_URL}/exchangeEmbeddedSignupCode`, {
@@ -250,15 +259,21 @@ export async function exchangeEmbeddedSignupCode(params: {
 export async function runEmbeddedSignup(params?: {
   assistantAvatarId?: string;
   assistantAvatarUrl?: string;
+  assistantPhotoUrl?: string;
 }): Promise<EmbeddedSignupResult> {
   const config = await fetchEmbeddedSignupConfig();
   await loadFacebookSdk(config.appId);
-  const { code, phoneNumberId, wabaId } = await launchEmbeddedSignup(config.configId, config.appId);
+  const { code, phoneNumberId, wabaId } = await launchEmbeddedSignup(
+    config.configId,
+    config.appId,
+    config.twilioPartnerSolutionId
+  );
   return exchangeEmbeddedSignupCode({
     code,
     phoneNumberId,
     wabaId,
     assistantAvatarId: params?.assistantAvatarId,
     assistantAvatarUrl: params?.assistantAvatarUrl,
+    assistantPhotoUrl: params?.assistantPhotoUrl,
   });
 }

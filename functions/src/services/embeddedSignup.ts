@@ -234,6 +234,38 @@ export async function fetchDisplayPhoneNumber(params: {
   }
 }
 
+/**
+ * Resolve the WABA that owns a given phone number ID. Used to verify that the
+ * client-supplied wabaId actually matches the one Meta has on file for the
+ * phoneNumberId — otherwise an attacker who somehow obtained a valid OAuth
+ * code could pair their own phoneNumberId with a victim org's wabaId in the
+ * persistence step and pollute the wabaIndex.
+ */
+export async function fetchPhoneNumberWaba(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  appSecretProof?: string;
+}): Promise<string | null> {
+  try {
+    const res = await axios.get(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${params.phoneNumberId}`,
+      {
+        params: params.appSecretProof
+          ? { fields: "whatsapp_business_account", appsecret_proof: params.appSecretProof }
+          : { fields: "whatsapp_business_account" },
+        headers: { Authorization: `Bearer ${params.accessToken}` },
+        timeout: 10000,
+      }
+    );
+    const waba = (res.data as { whatsapp_business_account?: { id?: string } })
+      .whatsapp_business_account;
+    return typeof waba?.id === "string" && waba.id ? waba.id : null;
+  } catch (err) {
+    console.warn("fetchPhoneNumberWaba failed:", (err as Error)?.message || err);
+    return null;
+  }
+}
+
 /** Random 6-digit PIN for WhatsApp two-step verification on the number. */
 export function generateRegistrationPin(): string {
   const n = crypto.randomInt(0, 1_000_000);

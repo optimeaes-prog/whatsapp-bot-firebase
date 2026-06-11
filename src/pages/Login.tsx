@@ -3,48 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { Button } from "../components/ui";
 import { Link } from "react-router-dom";
-
-function mapAuthError(error: unknown, isSignUp: boolean): string {
-  const code = typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code || "")
-    : "";
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
-
-  if (code === "auth/email-already-in-use") {
-    return "Este email ya tiene una cuenta. Inicia sesión o usa otro correo.";
-  }
-  if (code === "auth/invalid-email") {
-    return "El formato del email no es válido.";
-  }
-  if (code === "auth/weak-password") {
-    return "La contraseña es demasiado débil. Usa al menos 6 caracteres.";
-  }
-  if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
-    return "Email o contraseña incorrectos.";
-  }
-  if (code === "auth/user-not-found") {
-    return "No encontramos una cuenta con ese email.";
-  }
-  if (code === "auth/network-request-failed") {
-    return "No hay conexión o el servidor no responde. Inténtalo de nuevo.";
-  }
-  if (code === "auth/too-many-requests") {
-    return "Demasiados intentos. Espera unos minutos y vuelve a intentarlo.";
-  }
-  if (code === "auth/popup-closed-by-user") {
-    return "Cerraste la ventana de Google antes de completar el acceso.";
-  }
-  if (message.includes("insufficient permissions") || message.includes("permission-denied")) {
-    return isSignUp
-      ? "No pudimos terminar de crear tu cuenta. Vuelve a intentarlo en unos segundos."
-      : "Tu sesión se creó, pero no pudimos cargar tu organización. Intenta entrar de nuevo.";
-  }
-  if (message.includes("bootstrap-failed")) {
-    return "No pudimos inicializar tu cuenta en este momento. Inténtalo de nuevo.";
-  }
-
-  return isSignUp ? "No se pudo crear la cuenta." : "Error de autenticación.";
-}
+import { mapAuthError } from "../utils/authErrors";
 
 export function Login() {
   const [name, setName] = useState("");
@@ -153,6 +112,16 @@ export function Login() {
                 placeholder="••••••••"
                 minLength={6}
               />
+              {!isSignUp && (
+                <div className="mt-2 text-right">
+                  <Link
+                    to="/forgot-password"
+                    className="text-xs text-primary-600 hover:text-primary-700 font-medium"
+                  >
+                    ¿Has olvidado tu contraseña?
+                  </Link>
+                </div>
+              )}
             </div>
 
             <Button type="submit" loading={loading} className="w-full">
@@ -211,14 +180,14 @@ export function Login() {
             </Button>
           </p>
 
-          <div className="mt-6 text-center text-[10px] text-gray-400 space-x-3 font-heading font-bold uppercase tracking-widest">
-            <Link to="/legal/terms" className="hover:text-gray-900 transition-colors">
+          <div className="mt-6 text-center text-xs text-gray-400 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 font-heading font-bold uppercase tracking-widest">
+            <Link to="/legal/terms" className="hover:text-gray-900 transition-colors inline-flex items-center min-h-[44px] px-1">
               Términos
             </Link>
-            <Link to="/legal/privacy-policy" className="hover:text-gray-900 transition-colors">
+            <Link to="/legal/privacy-policy" className="hover:text-gray-900 transition-colors inline-flex items-center min-h-[44px] px-1">
               Privacidad
             </Link>
-            <Link to="/cookies" className="hover:text-gray-900 transition-colors">
+            <Link to="/cookies" className="hover:text-gray-900 transition-colors inline-flex items-center min-h-[44px] px-1">
               Cookies
             </Link>
           </div>

@@ -1,8 +1,26 @@
 import type { Request, Response } from "express";
+import * as admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 
 import { EMAIL_UNSUBSCRIBE_SECRET } from "./emailUnsubscribeParams";
 import { getOptionalEmailOptOut, setOptionalEmailOptOut } from "./services/emailCommunicationPreferencesDb";
 import { verifyEmailPrefsToken } from "./services/emailPreferenceToken";
+import { clientIpKey, enforceRateLimit } from "./utils/rateLimit";
+
+const RL_DB_ID = "realestate-whatsapp-bot";
+
+// Per-IP cap on HMAC verifications. Even though tokens are HMAC-signed with a
+// per-deployment secret (i.e. not blindly brute-forceable), capping per-IP
+// stops a botnet from probing for old/leaked tokens at scale.
+async function enforceEmailPrefsIpLimit(req: Request, label: string): Promise<{ ok: boolean; retryAfterSec: number }> {
+  const ipHash = clientIpKey(req);
+  const result = await enforceRateLimit(
+    getFirestore(admin.app(), RL_DB_ID),
+    `emailPrefs:${label}:ip:${ipHash}`,
+    { windowSec: 60, max: 20 }
+  );
+  return { ok: result.allowed, retryAfterSec: result.retryAfterSec };
+}
 
 function maskEmail(email: string): string {
   const at = email.indexOf("@");
@@ -49,6 +67,13 @@ export async function emailPreferencesApiHandler(req: Request, res: Response): P
   const token = readToken(req);
   if (!token) {
     res.status(400).json({ error: "missing_token" });
+    return;
+  }
+
+  const ipLimit = await enforceEmailPrefsIpLimit(req, "api");
+  if (!ipLimit.ok) {
+    res.setHeader("Retry-After", String(ipLimit.retryAfterSec));
+    res.status(429).json({ error: "rate_limited" });
     return;
   }
 
@@ -103,6 +128,13 @@ export async function emailUnsubscribeHandler(req: Request, res: Response): Prom
   const token = readToken(req);
   if (!token) {
     res.status(400).set("Content-Type", "text/html; charset=utf-8").send("<p>Enlace no válido.</p>");
+    return;
+  }
+
+  const ipLimit = await enforceEmailPrefsIpLimit(req, "unsub");
+  if (!ipLimit.ok) {
+    res.setHeader("Retry-After", String(ipLimit.retryAfterSec));
+    res.status(429).set("Content-Type", "text/html; charset=utf-8").send("<p>Demasiadas peticiones, vuelve a intentarlo en un minuto.</p>");
     return;
   }
 

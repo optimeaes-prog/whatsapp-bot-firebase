@@ -1,7 +1,7 @@
 # Política de Cookies — Talmate Limited (Proplead)
 
-**Última actualización:** 25 de mayo de 2026  
-**Versión:** 1.0  
+**Última actualización:** 28 de mayo de 2026  
+**Versión:** 1.2  
 **Responsable:** Talmate Limited  
 **Contacto:** soporte@proplead.io
 
@@ -12,7 +12,7 @@
 Las cookies son pequeños archivos de texto que un sitio web o aplicación almacena en tu dispositivo cuando lo visitas o usas. Permiten recordar información sobre tu visita (sesión, preferencias, actividad) para que el servicio funcione correctamente o para medir y personalizar la experiencia.
 
 Además de cookies, Proplead puede utilizar tecnologías similares como:
-- **SDKs y scripts de terceros** (por ejemplo, píxeles de seguimiento, Google Tag Manager)
+- **SDKs y scripts de terceros** (por ejemplo, píxeles de seguimiento)
 - **Almacenamiento local del navegador** (localStorage/sessionStorage)
 - **Identificadores de sesión** en la aplicación web
 
@@ -63,15 +63,14 @@ Nos permiten entender cómo se usa el sitio y la Plataforma para mejorar el serv
 |---|---|---|---|---|---|
 | `_ga` | Google LLC (GA4) | Identificar sesiones únicas | 2 años | EE.UU. | SCCs UE / UK IDTA |
 | `_ga_[ID]` | Google LLC (GA4) | Estado de sesión GA4 | 2 años | EE.UU. | SCCs UE / UK IDTA |
-| `_gid` | Google LLC (GA4) | Distinguir usuarios únicos | 24 horas | EE.UU. | SCCs UE / UK IDTA |
 
-**Google Analytics 4 (GA4):** Medimos el comportamiento de usuarios en el sitio y app. Los datos se anonimizan cuando es posible. Retención configurada en 14 meses. Política de privacidad: https://policies.google.com/privacy
-
-**Google Tag Manager:** Gestiona la carga de los scripts de terceros. GTM no recoge datos propios; ejecuta los tags de los vendors solo cuando has dado tu consentimiento para cada categoría.
+**Google Analytics 4 (GA4):** Medimos el comportamiento de usuarios en el sitio y app. Implementamos **Google Consent Mode v2**, por lo que mientras no aceptes esta categoría no se instalan las cookies `_ga*` y los datos enviados son anónimos ("cookieless pings"). Retención configurada en 14 meses. Política de privacidad: https://policies.google.com/privacy
 
 ### 4.3 Cookies de publicidad y retargeting
 
 Se usan para medir la efectividad de nuestras campañas publicitarias y mostrar anuncios de Proplead en plataformas de terceros. **Requieren consentimiento previo**.
+
+> **Estado actual:** Meta Pixel está cargado en la web pero **no envía datos hasta que aceptas la categoría "Marketing"** en el banner. Implementamos el control de consentimiento oficial de Meta (`fbq('consent', 'revoke'/'grant')`), de modo que los eventos se descartan en cliente mientras el consentimiento esté denegado. Google Ads aún no está activo.
 
 | Cookie | Proveedor | Finalidad | Duración | País | Transferencia |
 |---|---|---|---|---|---|

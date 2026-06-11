@@ -136,7 +136,7 @@ export function AuditLog() {
                             onClick={() => setIsEntityTypeDropdownOpen(!isEntityTypeDropdownOpen)}
                         >
                             <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                                <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest font-heading">Origen:</span>
+                                <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest font-heading">Tipo:</span>
                                 <div className="flex items-center gap-1">
                                     {filterEntityType === "all" ? "Todos" : getEntityTypeLabel(filterEntityType)}
                                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isEntityTypeDropdownOpen && "rotate-180")} />

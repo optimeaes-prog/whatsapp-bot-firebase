@@ -147,10 +147,14 @@ export async function createListing(data: ListingFormData): Promise<string> {
         operationType: data.operationType,
         features: data.features,
         idealistaDescription: (data as any).idealistaDescription || "",
+        rentalSubtype: (data as any).rentalSubtype || "No aplica",
         quickQualificationEnabled: (data as any).quickQualificationEnabled === true,
         createdByUid: (data as any).createdByUid || "",
         assignedAgentUid: (data as any).assignedAgentUid || "",
         assignedAgentName: (data as any).assignedAgentName || "",
+        notificationNumberIds: Array.isArray((data as any).notificationNumberIds)
+          ? (data as any).notificationNumberIds
+          : [],
         price: (data as any).price || "",
         m2: (data as any).m2 || "",
         rooms: (data as any).rooms || "",
@@ -165,6 +169,7 @@ export async function createListing(data: ListingFormData): Promise<string> {
         minMonthlyIncome: (data as any).minMonthlyIncome ?? null,
         maxPeople: (data as any).maxPeople ?? null,
         requireMortgageApproved: (data as any).requireMortgageApproved === true,
+        captacionId: (data as any).captacionId || "",
         profitabilityReportAvailable: data.profitabilityReportAvailable,
         profitabilityReport: data.profitabilityReport,
         isActive: true, // Nuevo anuncio siempre empieza como activo
@@ -199,6 +204,7 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
   if (data.operationType !== undefined) updateData.operationType = data.operationType;
   if (data.features !== undefined) updateData.features = data.features;
   if ((data as any).idealistaDescription !== undefined) updateData.idealistaDescription = (data as any).idealistaDescription;
+  if ((data as any).rentalSubtype !== undefined) updateData.rentalSubtype = (data as any).rentalSubtype;
   if ((data as any).quickQualificationEnabled !== undefined) updateData.quickQualificationEnabled = (data as any).quickQualificationEnabled === true;
   if ((data as any).price !== undefined) updateData.price = (data as any).price;
   if ((data as any).m2 !== undefined) updateData.m2 = (data as any).m2;
@@ -213,9 +219,13 @@ export async function updateListing(id: string, data: Partial<ListingFormData>):
   if ((data as any).agentName !== undefined) updateData.agentName = (data as any).agentName;
   if ((data as any).assignedAgentUid !== undefined) updateData.assignedAgentUid = (data as any).assignedAgentUid;
   if ((data as any).assignedAgentName !== undefined) updateData.assignedAgentName = (data as any).assignedAgentName;
+  if (Array.isArray((data as any).notificationNumberIds)) {
+    updateData.notificationNumberIds = (data as any).notificationNumberIds;
+  }
   if ((data as any).minMonthlyIncome !== undefined) updateData.minMonthlyIncome = (data as any).minMonthlyIncome;
   if ((data as any).maxPeople !== undefined) updateData.maxPeople = (data as any).maxPeople;
   if ((data as any).requireMortgageApproved !== undefined) updateData.requireMortgageApproved = (data as any).requireMortgageApproved === true;
+  if ((data as any).captacionId !== undefined) updateData.captacionId = (data as any).captacionId;
   if (data.profitabilityReportAvailable !== undefined) updateData.profitabilityReportAvailable = data.profitabilityReportAvailable;
   if (data.profitabilityReport !== undefined) updateData.profitabilityReport = data.profitabilityReport;
 

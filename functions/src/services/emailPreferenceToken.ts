@@ -25,11 +25,18 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+// Default 90 days. Originally 365 — a year is well beyond any reasonable
+// recall window for a "click to unsubscribe" link and lets a leaked token
+// stay valid long after the recipient may have left the company / changed
+// addresses. Email clients also re-render the most recent email's link when
+// the user looks for the unsubscribe, so a 90-day TTL is plenty in practice.
+const DEFAULT_EMAIL_PREFS_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
 /**
  * Signed token: base64url(payloadJson).base64url(hmac)
  * Payload: { e: emailLower, exp: ms epoch }
  */
-export function signEmailPrefsToken(email: string, secret: string, ttlMs = 365 * 24 * 60 * 60 * 1000): string {
+export function signEmailPrefsToken(email: string, secret: string, ttlMs = DEFAULT_EMAIL_PREFS_TTL_MS): string {
   const e = normalizeEmail(email);
   const payload = JSON.stringify({ e, exp: Date.now() + ttlMs });
   const payloadB64 = base64UrlEncode(Buffer.from(payload, "utf8"));

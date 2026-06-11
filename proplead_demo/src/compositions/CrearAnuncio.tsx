@@ -1,15 +1,25 @@
-import { AbsoluteFill, Easing, interpolate, useCurrentFrame } from "remotion";
+import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 import { loadFont } from "@remotion/google-fonts/Inter";
-import { CheckSquare, Square, ChevronDown, XCircle, Megaphone, MapPin } from "lucide-react";
-import { Cursor } from "../shell/Cursor";
-import type { CursorKeyframe } from "../shell/useCursorKeyframes";
+import { CheckSquare, Square, ChevronDown, MapPin } from "lucide-react";
+import { createContext, useContext } from "react";
 
 const { fontFamily } = loadFont("normal", { weights: ["400", "500", "600", "700"] });
 
-// Step boundaries match the landing's STORY_FEATURES_STEP_ONE durations
-// (14000ms / 11000ms / 8500ms / 8234ms) at 30fps.
-const STEP_STARTS = [0, 420, 750, 1005] as const;
-export const CREAR_ANUNCIO_TOTAL_FRAMES = 1252;
+// 14s timeline. Identificador + Operación are pre-filled at frame 0; the video
+// animates ID Idealista → ID Fotocasa → Precio → m² → Habitaciones, then
+// condiciones → filtros → paste descripción, with a 1s hold on the final state.
+const STEP_STARTS = [0, 90, 240, 320] as const;
+export const STEP_DURATIONS = [90, 150, 80, 100] as const;
+export const CREAR_ANUNCIO_TOTAL_FRAMES = 420;
+
+// Frame offset context — lets standalone per-step compositions render as if
+// they were at the equivalent global frame in the combined timeline.
+const FrameOffsetContext = createContext(0);
+
+function useGlobalFrame() {
+  const offset = useContext(FrameOffsetContext);
+  return useCurrentFrame() + offset;
+}
 
 // Mock form values
 const FORM = {
@@ -31,55 +41,23 @@ const FORM = {
     "Piso a estrenar en el centro de Fuengirola. 2 dormitorios, 1 baño completo y terraza con vistas parciales al mar. Cocina equipada, salón luminoso y plaza de garaje incluida. A 5 min de la playa y transporte. Disponible 1 junio. Fianza 2 meses.",
 };
 
-// Scroll positions (px) per step. Modal content is ~3400px tall, canvas is 1440.
-// Each step shifts the content up to bring its section into focus.
-const STEP_SCROLL_Y = [0, 1180, 1660, 1915] as const;
+// Scroll positions (px) per step. Modal content is ~3400px tall.
+// Two sets — one per supported canvas aspect ratio — so the active section
+// sits nicely in the visible viewport for both 3:4 (1080×1440) and 9:16
+// (1080×1920) canvases.
+const STEP_SCROLL_Y_3_4 = [0, 1180, 1660, 1915] as const;
+const STEP_SCROLL_Y_9_16 = [0, 760, 1280, 1480] as const;
 const SCROLL_RAMP_FRAMES = 28;
 
-// === Cursor keyframes (viewport / canvas coordinates) ===
-// Coordinates are AFTER the current step's scroll offset has been applied.
-const CURSOR: CursorKeyframe[] = [
-  // Step 1 — fill basic info (scrollY = 0)
-  { frame: 0, x: 200, y: 1300 },
-  { frame: 20, x: 270, y: 350, action: "move" },
-  { frame: 32, x: 270, y: 350, action: "click" }, // Identificador
-  { frame: 110, x: 830, y: 350, action: "move" },
-  { frame: 122, x: 830, y: 350, action: "click" }, // Operation type dropdown
-  { frame: 160, x: 830, y: 510, action: "move" },
-  { frame: 172, x: 830, y: 510, action: "click" }, // Pick "Alquiler"
-  { frame: 200, x: 270, y: 535, action: "move" },
-  { frame: 212, x: 270, y: 535, action: "click" }, // ID Idealista
-  { frame: 250, x: 760, y: 535, action: "move" },
-  { frame: 262, x: 760, y: 535, action: "click" }, // ID Fotocasa
-  { frame: 300, x: 230, y: 840, action: "move" },
-  { frame: 312, x: 230, y: 840, action: "click" }, // Precio
-  { frame: 340, x: 540, y: 840, action: "move" },
-  { frame: 352, x: 540, y: 840, action: "click" }, // m²
-  { frame: 380, x: 850, y: 840, action: "move" },
-  { frame: 392, x: 850, y: 840, action: "click" }, // Habitaciones
-
-  // Step 2 — condiciones textarea (scrollY = 1180)
-  { frame: 432, x: 540, y: 620, action: "move" },
-  { frame: 444, x: 540, y: 620, action: "click" },
-  { frame: 740, x: 540, y: 620 },
-
-  // Step 3 — filtros (scrollY = 1660)
-  { frame: 770, x: 280, y: 680, action: "move" }, // Ingresos
-  { frame: 782, x: 280, y: 680, action: "click" },
-  { frame: 870, x: 780, y: 680, action: "move" }, // Max personas
-  { frame: 882, x: 780, y: 680, action: "click" },
-  { frame: 1000, x: 780, y: 680 },
-
-  // Step 4 — descripción textarea (scrollY = 1915, clamped at max scroll)
-  { frame: 1020, x: 540, y: 940, action: "move" },
-  { frame: 1032, x: 540, y: 940, action: "click" },
-  { frame: 1252, x: 540, y: 940 },
-];
+function useStepScrollY(): readonly [number, number, number, number] {
+  const { height } = useVideoConfig();
+  return height >= 1800 ? STEP_SCROLL_Y_9_16 : STEP_SCROLL_Y_3_4;
+}
 
 // === Hooks ===
 
 function useTypedText(target: string, startFrame: number, endFrame: number) {
-  const frame = useCurrentFrame();
+  const frame = useGlobalFrame();
   if (frame < startFrame) return "";
   if (frame >= endFrame) return target;
   const progress = (frame - startFrame) / (endFrame - startFrame);
@@ -88,7 +66,7 @@ function useTypedText(target: string, startFrame: number, endFrame: number) {
 }
 
 function useFadeIn(startFrame: number, durationFrames = 12) {
-  const frame = useCurrentFrame();
+  const frame = useGlobalFrame();
   return interpolate(frame, [startFrame, startFrame + durationFrames], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
@@ -97,22 +75,36 @@ function useFadeIn(startFrame: number, durationFrames = 12) {
 }
 
 function useCaretBlink() {
-  const frame = useCurrentFrame();
+  const frame = useGlobalFrame();
   return Math.floor(frame / 14) % 2 === 0;
 }
 
 // === Main composition ===
-export function CrearAnuncio() {
-  const frame = useCurrentFrame();
+export type CrearAnuncioStep = 1 | 2 | 3 | 4;
 
-  // Active step
+export function CrearAnuncio({ step }: { step?: CrearAnuncioStep } = {}) {
+  // Provide frame offset so child hooks return the equivalent global frame.
+  const offset = step ? STEP_STARTS[step - 1] : 0;
+  return (
+    <FrameOffsetContext.Provider value={offset}>
+      <CrearAnuncioInner />
+    </FrameOffsetContext.Provider>
+  );
+}
+
+function CrearAnuncioInner() {
+  const frame = useGlobalFrame();
+
+  // Active step derived from frame — same logic for combined + standalone.
   let activeStep = 0;
   for (let i = 0; i < 4; i += 1) {
     if (frame >= STEP_STARTS[i]) activeStep = i;
   }
 
+  // Fade in only at the very start of the timeline (global frame 0).
   const fadeIn = useFadeIn(0, 18);
-  const scrollY = computeScroll(frame);
+  const scrollSet = useStepScrollY();
+  const scrollY = computeScroll(frame, scrollSet);
 
   return (
     <AbsoluteFill style={{ fontFamily, background: "#FAFAFA", overflow: "hidden" }}>
@@ -147,31 +139,36 @@ export function CrearAnuncio() {
             <div style={{ height: 44 }} />
             <SectionDescripcion active={activeStep === 3} />
             <div style={{ height: 44 }} />
-            <ModalFooter highlight={activeStep === 3 && frame > 1180} />
+            <ModalFooter highlight={activeStep === 3 && frame > 388} />
           </div>
         </div>
       </div>
 
       <PasteIndicator />
-      <Cursor keyframes={CURSOR} />
     </AbsoluteFill>
   );
 }
 
-function computeScroll(frame: number) {
-  for (let i = 0; i < 3; i += 1) {
-    const boundary = STEP_STARTS[i + 1];
-    if (frame < boundary - SCROLL_RAMP_FRAMES) return STEP_SCROLL_Y[i];
-    if (frame < boundary) {
-      return interpolate(
-        frame,
-        [boundary - SCROLL_RAMP_FRAMES, boundary],
-        [STEP_SCROLL_Y[i], STEP_SCROLL_Y[i + 1]],
-        { easing: Easing.inOut(Easing.cubic), extrapolateLeft: "clamp", extrapolateRight: "clamp" }
-      );
-    }
+function computeScroll(frame: number, scrollSet: readonly [number, number, number, number]) {
+  // Find active step from frame.
+  let activeStep = 0;
+  for (let i = 0; i < 4; i += 1) {
+    if (frame >= STEP_STARTS[i]) activeStep = i;
   }
-  return STEP_SCROLL_Y[3];
+  if (activeStep === 0) return scrollSet[0];
+
+  // Ramp scrollY from the PREVIOUS step's value to this step's value over the
+  // first SCROLL_RAMP_FRAMES of the step. This keeps the boundary continuous.
+  const boundary = STEP_STARTS[activeStep];
+  if (frame < boundary + SCROLL_RAMP_FRAMES) {
+    return interpolate(
+      frame,
+      [boundary, boundary + SCROLL_RAMP_FRAMES],
+      [scrollSet[activeStep - 1], scrollSet[activeStep]],
+      { easing: Easing.inOut(Easing.cubic), extrapolateLeft: "clamp", extrapolateRight: "clamp" }
+    );
+  }
+  return scrollSet[activeStep];
 }
 
 // === Pieces ===
@@ -188,24 +185,7 @@ function ModalHeader() {
         background: "white",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-        <div
-          style={{
-            width: 66,
-            height: 66,
-            borderRadius: 16,
-            background: "#FFF7E6",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#E8992C",
-          }}
-        >
-          <Megaphone size={34} />
-        </div>
-        <h2 style={{ margin: 0, fontSize: 44, fontWeight: 600, color: "#111827" }}>Nuevo Anuncio</h2>
-      </div>
-      <XCircle size={44} color="#9CA3AF" />
+      <h2 style={{ margin: 0, fontSize: 44, fontWeight: 600, color: "#111827" }}>Nuevo Anuncio</h2>
     </div>
   );
 }
@@ -255,20 +235,16 @@ function ModalFooter({ highlight }: { highlight: boolean }) {
 }
 
 // --- Section 1: Información del inmueble ---
+// Identificador + Operación are pre-filled at frame 0. The video animates ID
+// Idealista → ID Fotocasa → Precio → m² → Habitaciones during phase 1 (0-90).
 function SectionInfo({ active }: { active: boolean }) {
-  const frame = useCurrentFrame();
+  const frame = useGlobalFrame();
 
-  // Typing windows for each field (frames are global)
-  const identificador = useTypedText(FORM.identificador, 40, 100);
-  const idIdeal = useTypedText(FORM.idIdealista, 220, 245);
-  const idFoto = useTypedText(FORM.idFotocasa, 270, 295);
-  const precio = useTypedText(FORM.precio, 320, 340);
-  const m2 = useTypedText(FORM.m2, 360, 378);
-  const rooms = useTypedText(FORM.rooms, 400, 410);
-
-  const operationSelected = frame >= 172;
-  const operationDropdownOpen = frame >= 122 && frame < 180;
-  const operationHovered = frame >= 160 && frame < 178;
+  const idIdeal = useTypedText(FORM.idIdealista, 5, 22);
+  const idFoto = useTypedText(FORM.idFotocasa, 28, 45);
+  const precio = useTypedText(FORM.precio, 50, 68);
+  const m2 = useTypedText(FORM.m2, 72, 82);
+  const rooms = useTypedText(FORM.rooms, 84, 88);
 
   const caret = useCaretBlink();
 
@@ -278,21 +254,15 @@ function SectionInfo({ active }: { active: boolean }) {
         <Field
           label="Identificador"
           required
-          value={identificador}
+          value={FORM.identificador}
           placeholder="Ej: Piso 2 habitaciones en Fuengirola"
-          focused={frame >= 32 && frame < 120}
-          showCaret={frame >= 32 && frame < 110 && caret}
-          counter={`${identificador.length}/50`}
+          counter={`${FORM.identificador.length}/50`}
         />
         <DropdownField
           label="Tipo de Operación"
           required
-          value={operationSelected ? FORM.operationType : "Selecciona..."}
-          placeholderColor={!operationSelected}
-          open={operationDropdownOpen}
-          focused={frame >= 122 && frame < 200}
-          hoveredOption={operationHovered ? "Alquiler" : undefined}
-          selected={operationSelected ? "Alquiler" : undefined}
+          value={FORM.operationType}
+          selected="Alquiler"
         />
       </div>
 
@@ -302,16 +272,16 @@ function SectionInfo({ active }: { active: boolean }) {
           required
           value={idIdeal}
           placeholder="Ej: 110595991"
-          focused={frame >= 212 && frame < 270}
-          showCaret={frame >= 212 && frame < 248 && caret}
+          focused={frame >= 0 && frame < 26}
+          showCaret={frame >= 0 && frame < 22 && caret}
         />
         <Field
           label="ID Fotocasa"
           required
           value={idFoto}
           placeholder="Ej: 123456789"
-          focused={frame >= 262 && frame < 320}
-          showCaret={frame >= 262 && frame < 298 && caret}
+          focused={frame >= 26 && frame < 48}
+          showCaret={frame >= 26 && frame < 45 && caret}
         />
       </div>
 
@@ -333,26 +303,26 @@ function SectionInfo({ active }: { active: boolean }) {
         <Field
           label="Precio"
           required
-          value={precio ? `${precio}${frame >= 345 ? " €/mes" : ""}` : ""}
+          value={precio ? `${precio}${frame >= 70 ? " €/mes" : ""}` : ""}
           placeholder="Ej: 1100"
-          focused={frame >= 312 && frame < 360}
-          showCaret={frame >= 312 && frame < 343 && caret}
+          focused={frame >= 48 && frame < 72}
+          showCaret={frame >= 48 && frame < 68 && caret}
         />
         <Field
           label="Metros (m²)"
           required
           value={m2}
           placeholder="Ej: 75"
-          focused={frame >= 352 && frame < 400}
-          showCaret={frame >= 352 && frame < 380 && caret}
+          focused={frame >= 70 && frame < 84}
+          showCaret={frame >= 70 && frame < 82 && caret}
         />
         <Field
           label="Habitaciones"
           required
           value={rooms}
           placeholder="Ej: 2"
-          focused={frame >= 392 && frame < 420}
-          showCaret={frame >= 392 && frame < 412 && caret}
+          focused={frame >= 82 && frame < 90}
+          showCaret={frame >= 82 && frame < 88 && caret}
         />
       </div>
     </SectionCard>
@@ -406,12 +376,12 @@ function SectionUbicacion() {
   );
 }
 
-// --- Section: Condiciones a aceptar ---
+// --- Section: Condiciones a aceptar (phase 2: frames 90-240) ---
 function SectionCondiciones({ active }: { active: boolean }) {
-  const frame = useCurrentFrame();
-  // Typing windows for each bullet inside Step 2 (start ~450, end ~720)
-  const typed = useBulletList(FORM.condiciones, 450, 710);
-  const focused = frame >= 442 && frame < 760;
+  const frame = useGlobalFrame();
+  // Typing window spans most of phase 2 after the 30-frame scroll ramp.
+  const typed = useBulletList(FORM.condiciones, 125, 230);
+  const focused = frame >= 120 && frame < 240;
   const caret = useCaretBlink();
 
   const placeholder = "• Sin mascotas\n• Contrato mínimo 12 meses\n• Nómina o contrato indefinido";
@@ -483,7 +453,7 @@ function SectionCondiciones({ active }: { active: boolean }) {
         }}
       >
         {typed || placeholder}
-        {focused && caret && frame < 720 && (
+        {focused && caret && frame < 230 && (
           <span style={{ display: "inline-block", width: 2, height: 30, background: "#111827", marginLeft: 2, verticalAlign: "middle" }} />
         )}
       </div>
@@ -496,7 +466,7 @@ function SectionCondiciones({ active }: { active: boolean }) {
 }
 
 function useBulletList(items: readonly string[], startFrame: number, endFrame: number) {
-  const frame = useCurrentFrame();
+  const frame = useGlobalFrame();
   if (frame < startFrame) return "";
 
   const fullText = items.map((it) => `• ${it}`).join("\n");
@@ -507,11 +477,11 @@ function useBulletList(items: readonly string[], startFrame: number, endFrame: n
   return fullText.slice(0, Math.floor(progress * totalChars));
 }
 
-// --- Section 3: Filtros de cualificación ---
+// --- Section 3: Filtros de cualificación (phase 3: frames 240-320) ---
 function SectionFiltros({ active }: { active: boolean }) {
-  const frame = useCurrentFrame();
-  const ingresos = useTypedText(FORM.ingresos, 790, 830);
-  const maxPersonas = useTypedText(FORM.maxPersonas, 890, 905);
+  const frame = useGlobalFrame();
+  const ingresos = useTypedText(FORM.ingresos, 275, 290);
+  const maxPersonas = useTypedText(FORM.maxPersonas, 300, 312);
   const caret = useCaretBlink();
 
   return (
@@ -525,26 +495,26 @@ function SectionFiltros({ active }: { active: boolean }) {
           label="Ingresos netos mensuales mínimos (€)"
           value={ingresos}
           placeholder="Ej: 2000"
-          focused={frame >= 782 && frame < 870}
-          showCaret={frame >= 782 && frame < 833 && caret}
+          focused={frame >= 270 && frame < 296}
+          showCaret={frame >= 270 && frame < 290 && caret}
         />
         <Field
           label="Máximo de personas en la vivienda"
           value={maxPersonas}
           placeholder="Ej: 3"
-          focused={frame >= 882 && frame < 1000}
-          showCaret={frame >= 882 && frame < 908 && caret}
+          focused={frame >= 298 && frame < 320}
+          showCaret={frame >= 298 && frame < 312 && caret}
         />
       </div>
     </SectionCard>
   );
 }
 
-// --- Section 4: Descripción ---
+// --- Section 4: Descripción (phase 4: frames 320-420) ---
 function SectionDescripcion({ active }: { active: boolean }) {
-  const frame = useCurrentFrame();
-  const pasted = frame >= 1058;
-  const focused = frame >= 1032;
+  const frame = useGlobalFrame();
+  const pasted = frame >= 380;
+  const focused = frame >= 355;
   const caret = useCaretBlink();
 
   return (
@@ -773,9 +743,9 @@ function DropdownField({
 
 // --- Paste indicator: ⌘V glyph for step 4 ---
 function PasteIndicator() {
-  const frame = useCurrentFrame();
-  if (frame < 1040 || frame > 1075) return null;
-  const t = (frame - 1040) / 35; // 0..1
+  const frame = useGlobalFrame();
+  if (frame < 362 || frame > 392) return null;
+  const t = (frame - 362) / 30; // 0..1
   const opacity =
     t < 0.6
       ? interpolate(t, [0, 0.2], [0, 1], { extrapolateRight: "clamp" })

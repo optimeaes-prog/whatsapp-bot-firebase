@@ -54,6 +54,21 @@ export function formatPhoneWhatsApp(phone: string): string {
   if (!phone.startsWith('+')) {
     return `+${digitsOnly}`;
   }
-  
+
   return phone;
+}
+
+/**
+ * Normaliza un teléfono a una clave canónica para detectar duplicados.
+ * Quita todo lo que no sea dígito, normaliza prefijos 00/34 y devuelve los últimos
+ * 9 dígitos (el número nacional español). Así "+34 600 111 222", "0034600111222",
+ * "34600111222" y "600 111 222" colisionan en "600111222".
+ * Devuelve "" si no hay dígitos.
+ */
+export function normalizePhoneForMatch(raw?: string | null): string {
+  if (!raw) return '';
+  let digits = raw.replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith('34') && digits.length === 11) digits = digits.slice(2);
+  return digits.length >= 9 ? digits.slice(-9) : digits;
 }

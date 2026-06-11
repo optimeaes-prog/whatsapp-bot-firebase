@@ -97,6 +97,10 @@ function listingRowFromDoc(data: FirebaseFirestore.DocumentData): ListingRow {
     country: data.country,
     provinceNormalized: data.provinceNormalized,
     idealistaDescription: data.idealistaDescription,
+    rentalSubtype: ((): "Vacacional" | "Temporada" | "Larga temporada" | "No aplica" | undefined => {
+      const v = data.rentalSubtype;
+      return v === "Vacacional" || v === "Temporada" || v === "Larga temporada" || v === "No aplica" ? v : undefined;
+    })(),
     quickQualificationEnabled: data.quickQualificationEnabled === true,
     agentName: data.agentName,
     minMonthlyIncome: typeof data.minMonthlyIncome === "number" ? data.minMonthlyIncome : undefined,
@@ -390,7 +394,9 @@ export async function findLeadByChatId(chatId: string): Promise<{
   qualificationStatus?: QualificationStatus;
   hasResponse?: boolean;
 } | null> {
-  const snapshot = await getOrgDb().collection("leads").where("chatId", "==", chatId).get();
+  // Match across chatId variants (suffix + Argentine "9" forms) so a lead saved
+  // under one number form is found when the inbound arrives under another.
+  const snapshot = await getOrgDb().collection("leads").where("chatId", "in", getChatIdVariants(chatId)).get();
   if (snapshot.empty) {
     return null;
   }
@@ -1176,7 +1182,7 @@ export async function updateLeadStatus(params: {
 }): Promise<void> {
   const snapshot = await getOrgDb()
     .collection("leads")
-    .where("chatId", "==", params.chatId)
+    .where("chatId", "in", getChatIdVariants(params.chatId))
     .get();
 
   if (snapshot.empty) {
@@ -1264,7 +1270,7 @@ export async function addRecordingByPhone(phone: string, recordingUrl: string): 
 export async function markLeadAsResponded(chatId: string): Promise<void> {
   const snapshot = await getOrgDb()
     .collection("leads")
-    .where("chatId", "==", chatId)
+    .where("chatId", "in", getChatIdVariants(chatId))
     .limit(1)
     .get();
 

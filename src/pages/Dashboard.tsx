@@ -336,18 +336,18 @@ export function Dashboard() {
         title="Dashboard"
         actions={
           <div className="flex w-full flex-col gap-4 sm:w-auto sm:flex-row">
-          <div className="relative">
-            <div 
-              className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer min-w-[150px]" 
+          <div className="relative w-full sm:w-auto">
+            <div
+              className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer w-full sm:min-w-[150px]"
               onClick={() => setIsDateDropdownOpen(!isDateDropdownOpen)}
             >
               <Calendar size={18} className="text-gray-500 flex-shrink-0" />
               <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
                 <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Fecha:</span>
                 <div className="flex items-center gap-1">
-                  {dateFilter === "today" ? "Hoy" : 
-                   dateFilter === "yesterday" ? "Ayer" : 
-                   dateFilter === "last_7" ? "Últimas 7 días" : 
+                  {dateFilter === "today" ? "Hoy" :
+                   dateFilter === "yesterday" ? "Ayer" :
+                   dateFilter === "last_7" ? "Últimas 7 días" :
                    dateFilter === "last_30" ? "Últimas 30 días" :
                    dateFilter === "custom" ? "Rango personalizado" : "Todos"}
                   <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isDateDropdownOpen && "rotate-180")} />
@@ -406,15 +406,15 @@ export function Dashboard() {
             )}
           </div>
 
-          <div className="relative">
-            <div 
-              className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer min-w-[180px] max-w-[250px]" 
+          <div className="relative w-full sm:w-auto">
+            <div
+              className="flex items-center gap-2 bg-white px-3 py-2 rounded-btn border shadow-sm cursor-pointer w-full sm:min-w-[180px] sm:max-w-[250px]"
               onClick={() => setIsListingDropdownOpen(!isListingDropdownOpen)}
             >
               <Filter size={18} className="text-gray-500 flex-shrink-0" />
-              <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 truncate">
-                <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Anuncio:</span>
-                <div className="flex items-center gap-1 flex-1 overflow-hidden">
+              <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 min-w-0">
+                <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider shrink-0">Anuncio:</span>
+                <div className="flex items-center gap-1 min-w-0 justify-end">
                   <span className="truncate">{listingFilter === "all" ? "Todos" : listingFilter}</span>
                   <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1 shrink-0", isListingDropdownOpen && "rotate-180")} />
                 </div>
@@ -467,43 +467,43 @@ export function Dashboard() {
 
       {/* Columna izquierda: KPIs */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-stretch">
-        <div className="lg:col-span-1 grid grid-cols-1 gap-6">
+        <div className="lg:col-span-1 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-1 lg:gap-6">
           {/* Tasa de Cualificación */}
-          <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
+          <div className="card !p-4 sm:!p-6 lg:p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Tasa de cualificación</p>
+              <p className="text-[10px] sm:text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Tasa de cualificación</p>
               <div className="relative inline-block">
-                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.qualificationRate.value)}>{stats.tasaCualificacion}%</p>
+                <p className={cn("text-3xl sm:text-4xl lg:text-5xl font-bold", metricTheme.qualificationRate.value)}>{stats.tasaCualificacion}%</p>
               </div>
             </div>
           </div>
 
           {/* Tasa de Respuesta */}
-          <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
+          <div className="card !p-4 sm:!p-6 lg:p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Tasa de respuesta</p>
+              <p className="text-[10px] sm:text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Tasa de respuesta</p>
               <div className="relative inline-block">
-                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.responded.value)}>{stats.tasaRespuesta}%</p>
+                <p className={cn("text-3xl sm:text-4xl lg:text-5xl font-bold", metricTheme.responded.value)}>{stats.tasaRespuesta}%</p>
               </div>
             </div>
           </div>
 
           {/* Leads */}
-          <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
+          <div className="card !p-4 sm:!p-6 lg:p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Leads</p>
+              <p className="text-[10px] sm:text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Leads</p>
               <div className="relative inline-block">
-                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.messages.kpiLeads)}>{stats.leads}</p>
+                <p className={cn("text-3xl sm:text-4xl lg:text-5xl font-bold", metricTheme.messages.kpiLeads)}>{stats.leads}</p>
               </div>
             </div>
           </div>
 
           {/* Mensajes Totales */}
-          <div className="card p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
+          <div className="card !p-4 sm:!p-6 lg:p-6 h-full hover:shadow-xl transition-all duration-300 flex flex-col items-center justify-center relative overflow-hidden group">
             <div className="text-center z-10 w-full">
-              <p className="text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Mensajes totales</p>
+              <p className="text-[10px] sm:text-xs font-bold text-gray-500 tracking-wider mb-2 font-heading uppercase">Mensajes totales</p>
               <div className="relative inline-block">
-                <p className={cn("text-4xl sm:text-5xl font-bold", metricTheme.messages.kpiValue)}>{stats.totalMensajes}</p>
+                <p className={cn("text-3xl sm:text-4xl lg:text-5xl font-bold", metricTheme.messages.kpiValue)}>{stats.totalMensajes}</p>
               </div>
             </div>
           </div>

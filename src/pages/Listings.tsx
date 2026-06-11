@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, Edit, Trash2, Power, PowerOff, CheckCircle, XCircle, Users, MapPin, ExternalLink, ChevronDown, ChevronRight, MessageSquare, CheckSquare, Square, Filter, Search } from "lucide-react";
-import type { Listing, ListingFormData, OperationType, ListingClosureReason, Lead } from "../types";
+import { Plus, Trash2, Power, PowerOff, CheckCircle, XCircle, MapPin, ExternalLink, ChevronDown, ChevronRight, MessageSquare, CheckSquare, Square, Filter, Search } from "lucide-react";
+import type { Listing, ListingFormData, OperationType, ListingClosureReason, Lead, Prospect } from "../types";
 import { getListings, getListingsForAgent, createListing, updateListing, deleteListing, deactivateListing, reactivateListing } from "../services/listings";
+import { getCaptaciones, getCaptacionesForAgent, linkProspectToListing } from "../services/captaciones";
 import { getConversations, getConversationsForAgent } from "../services/conversations";
 import {
   getQualifiedLeadsByListingCode,
@@ -19,6 +20,11 @@ import { metricTheme, qualificationStatusClasses } from "../lib/metricTheme";
 import { PageHeader, PageLoading, Button, FilterCard } from "../components/ui";
 import { OperationTypeBadge } from "../components/StatusBadges";
 import { useAuth } from "../contexts/AuthContext";
+import { isNotificationNumbersV2Enabled } from "../lib/featureFlags";
+import { NotificationNumberSelector } from "../components/NotificationNumberSelector";
+import { getMaxListingNotificationNumbers } from "../utils/planLimits";
+import { getSubscription, type OrgSubscriptionInfo } from "../services/subscription";
+import { analytics } from "../lib/analytics";
 
 type AddressSuggestionOption = {
   label: string;
@@ -95,6 +101,7 @@ const emptyFormData: ListingFormState = {
   operationType: "",
   features: "",
   idealistaDescription: "",
+  rentalSubtype: "No aplica",
   quickQualificationEnabled: false,
   price: "",
   m2: "",
@@ -111,10 +118,40 @@ const emptyFormData: ListingFormState = {
   agentName: "",
   assignedAgentUid: "",
   assignedAgentName: "",
+  notificationNumberIds: [],
   minMonthlyIncome: undefined,
   maxPeople: undefined,
   requireMortgageApproved: false,
+  captacionId: "",
 };
+
+/**
+ * Mapea una captación (Prospect) a los campos del formulario de Anuncio para autocompletar.
+ * "Traspaso" no existe en anuncios (solo Venta/Alquiler): se deja vacío para que el usuario elija.
+ * No rellena listingCode/link: el código real de Idealista lo pone el usuario.
+ */
+function mapCaptacionToListingForm(c: Prospect): Partial<ListingFormState> {
+  const operationType: OperationType | "" =
+    c.operationType === "Venta" || c.operationType === "Alquiler" ? c.operationType : "";
+  const description = [c.propertyType, c.rooms ? `${c.rooms} hab` : "", c.municipality]
+    .filter(Boolean).join(" ").slice(0, 50);
+  return {
+    operationType,
+    description,
+    price: c.price || "",
+    m2: c.m2 || "",
+    rooms: c.rooms || "",
+    address: c.address || "",
+    street: c.street || "",
+    city: c.city || c.municipality || "",
+    province: c.province || "",
+    postalCode: c.postalCode || "",
+    country: c.country || "España",
+    features: c.features || "",
+    idealistaDescription: c.idealistaDescription || "",
+    referencia: c.referencia || "",
+  };
+}
 
 // Razones de cierre con etiquetas para mostrar
 const closureReasonLabels: Record<ListingClosureReason, string> = {
@@ -140,6 +177,9 @@ export function Listings() {
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [priceNeedsOperationType, setPriceNeedsOperationType] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  // Captaciones para autocompletar un anuncio nuevo (copia + vínculo).
+  const [captaciones, setCaptaciones] = useState<Prospect[]>([]);
+  const [selectedCaptacionId, setSelectedCaptacionId] = useState("");
 
   // Estados para autocompletado de dirección
   const [addressSuggestionOptions, setAddressSuggestionOptions] = useState<AddressSuggestionOption[]>([]);
@@ -159,6 +199,8 @@ export function Listings() {
   const [isStatusFilterOpen, setIsStatusFilterOpen] = useState(false);
   const [isListingTipoFilterOpen, setIsListingTipoFilterOpen] = useState(false);
   const [isSortFilterOpen, setIsSortFilterOpen] = useState(false);
+  // Mobile collapsible filters panel: defaults closed; counts non-default selections
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
   const [conversationCounts, setConversationCounts] = useState<Record<string, number>>({});
   const [respondedCounts, setRespondedCounts] = useState<Record<string, number>>({});
@@ -175,9 +217,19 @@ export function Listings() {
   const [deactivating, setDeactivating] = useState(false);
   const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
   const [expandedAddresses, setExpandedAddresses] = useState<Record<string, boolean>>({});
+  // On mobile we collapse Ref/ID/Fotocasa badges + address + description toggles
+  // into a single "Más detalles" disclosure to keep cards short.
+  const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({});
 
   const [teamMembers, setTeamMembers] = useState<SystemUser[]>([]);
   const [loadingTeamMembers, setLoadingTeamMembers] = useState(false);
+  const notificationNumbersV2 = isNotificationNumbersV2Enabled();
+  /**
+   * Org's current plan — only loaded when v2 is on, since the multi-recipient
+   * cap is the only thing the page uses it for. Fetched lazily in a useEffect
+   * below to avoid an extra round-trip on pages that don't open the modal.
+   */
+  const [subscriptionInfo, setSubscriptionInfo] = useState<OrgSubscriptionInfo | null>(null);
 
   const [isOperationTypeDropdownOpen, setIsOperationTypeDropdownOpen] = useState(false);
   const [isClosureReasonDropdownOpen, setIsClosureReasonDropdownOpen] = useState(false);
@@ -235,6 +287,12 @@ export function Listings() {
         errors.assignedAgentUid = "Asigna un agente del equipo.";
       }
     }
+    if (notificationNumbersV2) {
+      const ids = formData.notificationNumberIds || [];
+      if (ids.length === 0) {
+        errors.notificationNumberIds = "Selecciona al menos un número de notificación.";
+      }
+    }
     if (!address) errors.address = "La dirección exacta es obligatoria.";
 
     if (features.length > 450) errors.features = "Máximo 450 caracteres.";
@@ -263,7 +321,7 @@ export function Listings() {
     }
 
     return errors;
-  }, [formData, effectiveRole, effectiveUid]);
+  }, [formData, effectiveRole, effectiveUid, notificationNumbersV2]);
 
   const normalizeBulletsOnePerLine = (value: string): string => {
     return value
@@ -372,6 +430,32 @@ export function Listings() {
     loadTeamMembers();
   }, [organizationId, effectiveRole]);
 
+  // Cargar captaciones (mismo scoping que listings) para el selector "Copiar desde captación".
+  useEffect(() => {
+    if (!organizationId || !effectiveRole) return;
+    if (effectiveRole === "agent" && !effectiveUid) return;
+    const loader = effectiveRole === "agent" ? getCaptacionesForAgent(effectiveUid) : getCaptaciones();
+    loader.then(setCaptaciones).catch((e) => console.error("[Listings] load captaciones failed", e));
+  }, [organizationId, effectiveRole, effectiveUid]);
+
+  // Load subscription info once when the v2 flag is on so the listing form can
+  // size the notificationNumberIds cap based on plan tier.
+  useEffect(() => {
+    if (!notificationNumbersV2) return;
+    if (!organizationId) return;
+    let cancelled = false;
+    getSubscription()
+      .then((info) => {
+        if (!cancelled) setSubscriptionInfo(info);
+      })
+      .catch((err) => {
+        console.warn("Could not load subscription info for listings:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [notificationNumbersV2, organizationId]);
+
   useEffect(() => {
     const el = featuresRef.current;
     if (!el) return;
@@ -451,6 +535,19 @@ export function Listings() {
     }
   }
 
+  const selectedCaptacion = captaciones.find((c) => c.id === selectedCaptacionId) || null;
+
+  function handlePickCaptacion(id: string) {
+    setSelectedCaptacionId(id);
+    if (!id) {
+      setFormData((prev) => ({ ...prev, captacionId: "" }));
+      return;
+    }
+    const c = captaciones.find((x) => x.id === id);
+    if (!c) return;
+    setFormData((prev) => ({ ...prev, ...mapCaptacionToListingForm(c), captacionId: c.id }));
+  }
+
   function openCreateModal() {
     if (isImpersonationReadOnly) {
       toast.message("Solo lectura en modo vista como usuario");
@@ -480,6 +577,7 @@ export function Listings() {
     setShowSuggestions(false);
     setIsSelecting(false);
     setAddressSearchEnabled(false);
+    setSelectedCaptacionId("");
   }
 
   function openEditModal(listing: Listing) {
@@ -496,6 +594,7 @@ export function Listings() {
       operationType: listing.operationType,
       features: listing.features,
       idealistaDescription: listing.idealistaDescription || "",
+      rentalSubtype: listing.rentalSubtype || "No aplica",
     quickQualificationEnabled: listing.quickQualificationEnabled === true,
       price: listing.price || "",
       m2: listing.m2 || "",
@@ -512,11 +611,15 @@ export function Listings() {
       agentName: listing.agentName || "",
       assignedAgentUid: listing.assignedAgentUid || "",
       assignedAgentName: listing.assignedAgentName || "",
+      notificationNumberIds: Array.isArray(listing.notificationNumberIds)
+        ? listing.notificationNumberIds
+        : [],
       minMonthlyIncome: listing.minMonthlyIncome,
       maxPeople: listing.maxPeople,
       requireMortgageApproved: listing.requireMortgageApproved === true,
     });
     setEditingId(listing.id);
+    setSelectedCaptacionId("");
     setSubmitAttempted(false);
     setPriceNeedsOperationType(false);
     setModalOpen(true);
@@ -583,6 +686,16 @@ export function Listings() {
         throw new Error("agent_required");
       }
 
+      // Defence-in-depth: trim selected notification numbers to the plan cap so
+      // a tampered client can't bypass the UI gate. The authoritative enforcement
+      // is the `onListingWriteEnforcePlanLimits` Firestore trigger.
+      const maxNotificationNumbers = notificationNumbersV2
+        ? getMaxListingNotificationNumbers(subscriptionInfo?.planId)
+        : Number.POSITIVE_INFINITY;
+      const notificationNumberIdsFinal = notificationNumbersV2
+        ? (formData.notificationNumberIds || []).slice(0, maxNotificationNumbers)
+        : formData.notificationNumberIds;
+
       const dataToSave = {
         ...formData,
         operationType: formData.operationType as OperationType,
@@ -593,6 +706,7 @@ export function Listings() {
         agentName: (assignedAgentNameFinal || formData.agentName || "").trim(),
         assignedAgentUid: assignedAgentUidFinal,
         assignedAgentName: assignedAgentNameFinal,
+        notificationNumberIds: notificationNumberIdsFinal,
         ...(editingId ? {} : { createdByUid: currentUid }),
         features: (formData.features || "").trim(),
         address: addressLine,
@@ -603,8 +717,18 @@ export function Listings() {
 
       if (editingId) {
         await updateListing(editingId, dataToSave);
+        analytics.trackListingEdited("form");
       } else {
-        await createListing(dataToSave);
+        const newListingId = await createListing(dataToSave);
+        analytics.trackListingCreated("manual");
+        // Back-ref: marcar la captación como "ya tiene anuncio" (best-effort, no rompe el alta).
+        if (formData.captacionId) {
+          try {
+            await linkProspectToListing(formData.captacionId, newListingId);
+          } catch (linkErr) {
+            console.warn("No se pudo enlazar la captación con el anuncio:", linkErr);
+          }
+        }
       }
       setModalOpen(false);
       loadListings();
@@ -628,6 +752,7 @@ export function Listings() {
     }
     try {
       await deleteListing(id);
+      analytics.trackListingDeleted();
       setDeleteConfirm(null);
       loadListings();
     } catch (error) {
@@ -853,11 +978,12 @@ export function Listings() {
     qualifiedCounts,
   ]);
 
-  const hasActiveFilters =
-    listingSearch.trim() !== "" ||
-    filterOperationType !== "all" ||
-    filterStatus !== "active" ||
-    sortBy !== "default";
+  const activeFilterCount =
+    (listingSearch.trim() !== "" ? 1 : 0) +
+    (filterOperationType !== "all" ? 1 : 0) +
+    (filterStatus !== "active" ? 1 : 0) +
+    (sortBy !== "default" ? 1 : 0);
+  const hasActiveFilters = activeFilterCount > 0;
 
   function resetListingFilters() {
     setListingSearch("");
@@ -908,8 +1034,32 @@ export function Listings() {
         }
       />
 
-      <FilterCard className="mb-6">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <FilterCard className="mb-6 !p-0 !border-0 !bg-transparent !shadow-none sm:!p-4 sm:!border sm:!border-gray-200 sm:!bg-white sm:!shadow-sm">
+        {/* Mobile-only Conversaciones-style toggle bar (white bg in Anuncios) */}
+        <button
+          type="button"
+          onClick={() => setMobileFiltersOpen((v) => !v)}
+          className="sm:hidden flex items-center justify-between w-full px-3 py-2.5 rounded-btn border border-gray-200 bg-white hover:bg-gray-50 transition-colors"
+          aria-expanded={mobileFiltersOpen}
+          aria-controls="anuncios-filters-content"
+        >
+          <span className="flex items-center gap-1.5 text-xs font-bold font-heading uppercase tracking-wider text-gray-700">
+            <Filter size={14} className="text-gray-500" />
+            Filtros
+            {activeFilterCount > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[18px] px-1.5 py-0.5 rounded-full bg-primary-100 text-primary-700 text-[10px] font-bold">
+                {activeFilterCount}
+              </span>
+            )}
+          </span>
+          <ChevronDown
+            size={14}
+            className={cn("text-gray-400 transition-transform", mobileFiltersOpen && "rotate-180")}
+          />
+        </button>
+
+        {/* Desktop header — original h2 styling, with reset button next to it */}
+        <div className="hidden sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-3 sm:mb-4">
           <div className="flex items-center gap-2">
             <Filter size={18} className="text-gray-600" />
             <h2 className="font-semibold text-gray-900">Filtros</h2>
@@ -922,17 +1072,20 @@ export function Listings() {
               title="Restablecer filtros"
             >
               <XCircle size={18} />
-              <span className="hidden sm:inline">Restablecer</span>
+              <span>Restablecer</span>
             </button>
           )}
         </div>
 
-        <div className="space-y-4">
+        <div
+          id="anuncios-filters-content"
+          className={cn("space-y-4 mt-3 sm:mt-0", !mobileFiltersOpen && "hidden sm:block")}
+        >
           <div className="relative min-w-0">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
             <input
               type="text"
-              placeholder="Buscar por título, ID, referencia, dirección, agente o descripción..."
+              placeholder="Buscar título, ID, dirección o agente…"
               value={listingSearch}
               onChange={(e) => setListingSearch(e.target.value)}
               className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow"
@@ -1112,9 +1265,9 @@ export function Listings() {
             const respRate = convCount ? Math.round(((respondedCounts[listing.listingCode] || 0) / convCount) * 100) : 0;
             const qualRate = convCount ? Math.round((qualCount / convCount) * 100) : 0;
             return (
-              <div key={listing.id} className={cn("card relative transition-all hover:shadow-md", !isActive && "bg-gray-50/50 border-gray-200")}>
-                <div className="p-3 sm:p-4 flex flex-col md:flex-row gap-4 items-center">
-                  <div className="flex-1 min-w-0 flex flex-col gap-2.5">
+              <div key={listing.id} className={cn("card relative transition-all hover:shadow-md !p-3 sm:!p-4 min-w-0 overflow-hidden", !isActive && "bg-gray-50/50 border-gray-200")}>
+                <div className="flex flex-col md:flex-row gap-4 md:items-center min-w-0">
+                  <div className="flex-1 min-w-0 w-full flex flex-col gap-2.5 pr-12 md:pr-0">
                     {/* Header: Title & Badges */}
                     <div
                       className="flex items-center gap-2 flex-wrap cursor-pointer"
@@ -1137,25 +1290,59 @@ export function Listings() {
                       </div>
                     </div>
 
-                    {/* Primary Details: Price, Size, ID */}
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                      <div className="flex items-center gap-2.5 text-gray-500 font-medium text-xs">
-                        <span className="text-sm font-bold text-gray-900">{listing.price || "—"}</span>
-                        {listing.m2 && (
-                          <>
-                            <span className="text-gray-300 w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <span>{listing.m2} m²</span>
-                          </>
-                        )}
-                        {listing.rooms && (
-                          <>
-                            <span className="text-gray-300 w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <span>{listing.rooms} hab.</span>
-                          </>
-                        )}
-                      </div>
+                    {/* Price / m² / rooms — always visible */}
+                    <div className="flex items-center gap-2.5 text-gray-500 font-medium text-xs">
+                      <span className="text-sm font-bold text-gray-900">{listing.price || "—"}</span>
+                      {listing.m2 && (
+                        <>
+                          <span className="text-gray-300 w-1 h-1 bg-gray-300 rounded-full"></span>
+                          <span>{listing.m2} m²</span>
+                        </>
+                      )}
+                      {listing.rooms && (
+                        <>
+                          <span className="text-gray-300 w-1 h-1 bg-gray-300 rounded-full"></span>
+                          <span>{listing.rooms} hab.</span>
+                        </>
+                      )}
+                    </div>
 
-                      <div className="flex items-center gap-2">
+                    {/* Address — always visible, sits between the price row and the details toggle */}
+                    {listing.address && (
+                      <div>
+                        <button
+                          type="button"
+                          aria-expanded={!!expandedAddresses[listing.id]}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedAddresses(prev => ({ ...prev, [listing.id]: !prev[listing.id] }));
+                          }}
+                          className="flex items-start gap-1 text-xs text-gray-500/80 hover:text-gray-700 transition-colors cursor-pointer"
+                        >
+                          <MapPin size={14} className="text-gray-400 mt-0.5 flex-shrink-0" />
+                          <span className={cn("text-left", expandedAddresses[listing.id] ? "" : "line-clamp-2 sm:line-clamp-1")}>{listing.address}</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Mobile-only toggle for references + description */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExpandedDetails((prev) => ({ ...prev, [listing.id]: !prev[listing.id] }));
+                      }}
+                      aria-expanded={!!expandedDetails[listing.id]}
+                      className="sm:hidden flex items-center gap-1 text-[11px] text-gray-500 hover:text-primary-600 font-semibold tracking-tight transition-colors w-fit -mt-0.5"
+                    >
+                      {expandedDetails[listing.id] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      <span>{expandedDetails[listing.id] ? "Ocultar detalles" : "Más detalles"}</span>
+                    </button>
+
+                    {/* Collapsible details: badges + description.
+                        Visible by default on sm+, conditional on mobile. */}
+                    <div className={cn("flex flex-col gap-2.5", !expandedDetails[listing.id] && "hidden sm:flex")}>
+                      <div className="flex items-center gap-2 flex-wrap">
                         <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm">
                           <span className="text-gray-400 font-medium">Ref</span>
                           <span className="text-gray-700">{listing.referencia || listing.listingCode}</span>
@@ -1163,15 +1350,6 @@ export function Listings() {
                         <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm">
                           <span className="text-gray-400 font-medium">ID</span>
                           <span className="text-gray-700">{listing.listingCode}</span>
-                          <a
-                            href={listing.link || `https://www.idealista.com/inmueble/${listing.listingCode}`}
-                            target="_blank" rel="noopener noreferrer"
-                            className="text-gray-400 hover:text-primary-600 transition-colors ml-0.5"
-                            onClick={(e) => e.stopPropagation()}
-                            title="Ver en Idealista"
-                          >
-                            <ExternalLink size={12} />
-                          </a>
                         </div>
                         {listing.listingCodeFotocasa && (
                           <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded-md text-[11px] font-bold text-gray-600 border border-gray-100 shadow-sm">
@@ -1180,30 +1358,16 @@ export function Listings() {
                           </div>
                         )}
                       </div>
-                    </div>
 
-                    {/* Address & Description Toggle */}
-                    <div className="flex flex-col gap-1.5">
-                      {listing.address && (
+                      {listing.idealistaDescription && (
                         <div>
                           <button
                             type="button"
-                            aria-expanded={!!expandedAddresses[listing.id]}
-                            onClick={() => setExpandedAddresses(prev => ({ ...prev, [listing.id]: !prev[listing.id] }))}
-                            className="flex items-start gap-1 text-xs text-gray-500/80 hover:text-gray-700 transition-colors cursor-pointer"
-                          >
-                            <MapPin size={14} className="text-gray-400 mt-0.5 flex-shrink-0" />
-                            <span className={expandedAddresses[listing.id] ? "" : "truncate"}>{listing.address}</span>
-                          </button>
-                        </div>
-                      )}
-
-                      {listing.idealistaDescription && (
-                        <div className="mt-0.5">
-                          <button
-                            type="button"
                             aria-expanded={!!expandedDescriptions[listing.id]}
-                            onClick={() => setExpandedDescriptions(prev => ({ ...prev, [listing.id]: !prev[listing.id] }))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedDescriptions(prev => ({ ...prev, [listing.id]: !prev[listing.id] }));
+                            }}
                             className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-primary-600 font-semibold tracking-tight transition-colors"
                           >
                             {expandedDescriptions[listing.id] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -1231,70 +1395,91 @@ export function Listings() {
                   </div>
 
                   {/* Right Column: Metrics & Actions */}
-                  <div className="flex flex-col justify-end gap-2 md:items-end">
-                    {/* Metrics Grid */}
-                    <div className="flex items-center justify-center sm:justify-end w-full md:w-auto border-t border-gray-100 mt-2 pt-3 sm:border-0 sm:mt-0 sm:pt-0 gap-3 sm:gap-6 md:pr-4">
-                      
-                      {/* Counts Group */}
-                      <div className="flex gap-5 sm:gap-6">
-                        <div className="flex flex-col items-center md:items-end min-w-fit" title="Conversaciones">
-                          <div className="flex items-baseline gap-1.5">
-                            <MessageSquare size={20} className={metricTheme.conversations.listIcon} />
-                            <span className={cn("text-xl font-bold tracking-tight", metricTheme.conversations.listValue)}>{convCount}</span>
-                          </div>
-                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">Conversaciones</span>
+                  <div className="flex flex-col justify-end gap-2 md:items-end min-w-0 w-full md:w-auto">
+                    {/* Metrics row — on mobile: 4 equal grid columns, every tile's content
+                        explicitly centered. Equal px-4 on both sides keeps the row visually
+                        balanced inside the card. On sm+: flex layout with divider. */}
+                    <div className="grid grid-cols-4 place-items-center w-full px-4 sm:px-0 sm:flex sm:items-center sm:justify-end md:w-auto border-t border-gray-100 mt-2 pt-3 sm:border-0 sm:mt-0 sm:pt-0 gap-1 sm:gap-6 md:pr-4">
+                      <div className="flex flex-col items-center justify-center md:items-end min-w-0 w-full" title="Conversaciones">
+                        <div className="flex items-center justify-center gap-1 sm:gap-1.5">
+                          <MessageSquare size={14} className={cn("sm:hidden shrink-0", metricTheme.conversations.listIcon)} />
+                          <MessageSquare size={20} className={cn("hidden sm:block shrink-0", metricTheme.conversations.listIcon)} />
+                          <span className={cn("text-base sm:text-xl font-bold tracking-tight leading-none", metricTheme.conversations.listValue)}>{convCount}</span>
                         </div>
-                        <div className="flex flex-col items-center md:items-end min-w-fit" title="Cualificados">
-                          <div className="flex items-baseline gap-1.5">
-                            <CheckCircle size={20} className={metricTheme.qualified.iconSoft} />
-                            <span className={cn("text-xl font-bold tracking-tight", metricTheme.qualified.value)}>{qualCount}</span>
-                          </div>
-                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">Cualificados</span>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-gray-400 tracking-wide whitespace-nowrap max-w-full truncate text-center mt-0.5">
+                          <span className="sm:hidden">Convs.</span>
+                          <span className="hidden sm:inline">Conversaciones</span>
+                        </span>
+                      </div>
+                      <div className="flex flex-col items-center justify-center md:items-end min-w-0 w-full" title="Cualificados">
+                        <div className="flex items-center justify-center gap-1 sm:gap-1.5">
+                          <CheckCircle size={14} className={cn("sm:hidden shrink-0", metricTheme.qualified.iconSoft)} />
+                          <CheckCircle size={20} className={cn("hidden sm:block shrink-0", metricTheme.qualified.iconSoft)} />
+                          <span className={cn("text-base sm:text-xl font-bold tracking-tight leading-none", metricTheme.qualified.value)}>{qualCount}</span>
                         </div>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-gray-400 tracking-wide whitespace-nowrap max-w-full truncate text-center mt-0.5">
+                          <span className="sm:hidden">Cualif.</span>
+                          <span className="hidden sm:inline">Cualificados</span>
+                        </span>
                       </div>
 
-                      {/* Divider */}
-                      <div className="w-px h-10 bg-gray-200/80 mx-1"></div>
+                      {/* Divider — only on sm+ */}
+                      <div className="hidden sm:block w-px h-10 bg-gray-200/80 mx-1"></div>
 
-                      {/* Percentages Group */}
-                      <div className="flex gap-5 sm:gap-6">
-                        <div className="flex flex-col items-center md:items-end min-w-fit" title="% Respuesta">
-                          <div className="flex items-baseline gap-1">
-                            <div className="flex items-center">
-                              <MessageSquare size={20} className={metricTheme.responded.iconSoft} />
-                              <span className={cn("text-[10px] font-semibold ml-0.5", metricTheme.responded.value)}>%</span>
-                            </div>
-                            <span className={cn("text-xl font-bold tracking-tight ml-1", metricTheme.responded.value)}>{respRate}%</span>
+                      <div className="flex flex-col items-center justify-center md:items-end min-w-0 w-full" title="% Respuesta">
+                        <div className="flex items-center justify-center gap-1 sm:gap-1.5">
+                          <MessageSquare size={14} className={cn("sm:hidden shrink-0", metricTheme.responded.iconSoft)} />
+                          <div className="hidden sm:flex items-center shrink-0">
+                            <MessageSquare size={20} className={metricTheme.responded.iconSoft} />
+                            <span className={cn("text-[10px] font-semibold ml-0.5", metricTheme.responded.value)}>%</span>
                           </div>
-                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">% Respuesta</span>
+                          <span className={cn("text-base sm:text-xl font-bold tracking-tight leading-none sm:ml-1", metricTheme.responded.value)}>{respRate}%</span>
                         </div>
-                        <div className="flex flex-col items-center md:items-end min-w-fit" title="% Cualificación">
-                          <div className="flex items-baseline gap-1">
-                            <div className="flex items-center">
-                              <CheckCircle size={20} className={metricTheme.qualificationRate.iconSoft} />
-                              <span className={cn("text-[10px] font-semibold ml-0.5", metricTheme.qualificationRate.value)}>%</span>
-                            </div>
-                            <span className={cn("text-xl font-bold tracking-tight ml-1", metricTheme.qualificationRate.value)}>{qualRate}%</span>
-                          </div>
-                          <span className="text-[11px] font-bold text-gray-400 tracking-wide">% Cualificación</span>
-                        </div>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-gray-400 tracking-wide whitespace-nowrap max-w-full truncate text-center mt-0.5">
+                          <span className="sm:hidden">% Resp.</span>
+                          <span className="hidden sm:inline">% Respuesta</span>
+                        </span>
                       </div>
-
+                      <div className="flex flex-col items-center justify-center md:items-end min-w-0 w-full" title="% Cualificación">
+                        <div className="flex items-center justify-center gap-1 sm:gap-1.5">
+                          <CheckCircle size={14} className={cn("sm:hidden shrink-0", metricTheme.qualificationRate.iconSoft)} />
+                          <div className="hidden sm:flex items-center shrink-0">
+                            <CheckCircle size={20} className={metricTheme.qualificationRate.iconSoft} />
+                            <span className={cn("text-[10px] font-semibold ml-0.5", metricTheme.qualificationRate.value)}>%</span>
+                          </div>
+                          <span className={cn("text-base sm:text-xl font-bold tracking-tight leading-none sm:ml-1", metricTheme.qualificationRate.value)}>{qualRate}%</span>
+                        </div>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-gray-400 tracking-wide whitespace-nowrap max-w-full truncate text-center mt-0.5">
+                          <span className="sm:hidden">% Cualif.</span>
+                          <span className="hidden sm:inline">% Cualificación</span>
+                        </span>
+                      </div>
                     </div>
 
                     {/* Actions */}
-                    <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end border-t border-gray-50/50 md:border-0 pt-2 mt-1 sm:mt-2">
-                      <div className="flex items-center gap-1.5 mr-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 w-full md:w-auto sm:justify-between md:justify-end border-t border-gray-50/50 md:border-0 pt-2 mt-1 sm:mt-2">
+                      {/* Icon buttons: floated to top-right of the card on mobile; inline on md+ */}
+                      <div className="absolute top-3 right-3 flex flex-col items-end gap-0.5 z-10 md:static md:flex-row md:items-center md:gap-1.5 md:mr-2">
+                        <a
+                          href={listing.link || `https://www.idealista.com/inmueble/${listing.listingCode}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-2 text-gray-400 hover:text-primary-600 rounded-btn hover:bg-primary-50 transition-all active:scale-90 bg-white md:bg-transparent inline-flex"
+                          title="Ver anuncio (Idealista)"
+                          aria-label="Ver anuncio en Idealista"
+                        >
+                          <ExternalLink size={18} />
+                        </a>
                         {isActive ? (
-                          <button onClick={(e) => { e.stopPropagation(); openDeactivateModal(listing); }} className="p-2 text-gray-400 hover:text-primary-600 rounded-btn hover:bg-primary-50 transition-all active:scale-90" title="Desactivar"><PowerOff size={18} /></button>
+                          <button onClick={(e) => { e.stopPropagation(); openDeactivateModal(listing); }} className="p-2 text-gray-400 hover:text-primary-600 rounded-btn hover:bg-primary-50 transition-all active:scale-90 bg-white md:bg-transparent" title="Desactivar"><PowerOff size={18} /></button>
                         ) : (
-                          <button onClick={(e) => { e.stopPropagation(); handleReactivate(listing.id); }} className="p-2 text-gray-400 hover:text-emerald-600 rounded-btn hover:bg-emerald-50 transition-all active:scale-90" title="Reactivar"><Power size={18} /></button>
+                          <button onClick={(e) => { e.stopPropagation(); handleReactivate(listing.id); }} className="p-2 text-gray-400 hover:text-emerald-600 rounded-btn hover:bg-emerald-50 transition-all active:scale-90 bg-white md:bg-transparent" title="Reactivar"><Power size={18} /></button>
                         )}
-                        <button onClick={(e) => { e.stopPropagation(); openEditModal(listing); }} className="p-2 text-gray-400 hover:text-primary-600 rounded-btn hover:bg-primary-50 transition-all active:scale-90" title="Editar"><Edit size={18} /></button>
-                        <button onClick={(e) => { e.stopPropagation(); setDeleteConfirm(listing.id); }} className="p-2 text-gray-400 hover:text-red-500 rounded-btn hover:bg-red-50 transition-all active:scale-90" title="Eliminar"><Trash2 size={18} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setDeleteConfirm(listing.id); }} className="p-2 text-gray-400 hover:text-red-500 rounded-btn hover:bg-red-50 transition-all active:scale-90 bg-white md:bg-transparent" title="Eliminar"><Trash2 size={18} /></button>
                       </div>
 
-                      <div className="flex items-center gap-3 flex-wrap justify-end">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:flex-wrap sm:justify-end w-full sm:w-auto">
                         <Button
                           variant="outline"
                           size="lg"
@@ -1304,9 +1489,8 @@ export function Listings() {
                               `/leads?status=non_qualified_all&ad=${encodeURIComponent(listing.listingCode)}`
                             )
                           }
-                          className="font-bold active:scale-95 flex items-center justify-center gap-2 border-2 border-slate-200 bg-slate-100 text-slate-900 hover:bg-slate-200"
+                          className="font-bold active:scale-95 flex items-center justify-center border-2 border-slate-200 bg-slate-100 text-slate-900 hover:bg-slate-200 w-full sm:w-auto"
                         >
-                          <Users size={18} className="text-gray-500" />
                           <span>No cualificados</span>
                         </Button>
                         <Button
@@ -1318,10 +1502,9 @@ export function Listings() {
                               `/leads?status=qualified&ad=${encodeURIComponent(listing.listingCode)}`
                             )
                           }
-                          className="font-bold transition-all active:scale-95 flex items-center justify-center gap-2"
+                          className="font-bold transition-all active:scale-95 flex items-center justify-center w-full sm:w-auto"
                         >
                           <span>Cualificados</span>
-                          <ChevronRight size={20} />
                         </Button>
                       </div>
                     </div>
@@ -1344,6 +1527,23 @@ export function Listings() {
                 </button>
               </div>
               <form onSubmit={handleSubmit} className="p-6 space-y-4">
+              {!editingId && captaciones.length > 0 && (
+                <div className="rounded-xl border-2 border-primary-200 bg-primary-50/50 p-4">
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Copiar desde captación</label>
+                  <p className="text-xs text-gray-500 mb-2">Autocompleta los datos desde una captación. Podrás editarlos antes de guardar.</p>
+                  <select value={selectedCaptacionId} onChange={(e) => handlePickCaptacion(e.target.value)} className="input">
+                    <option value="">— Sin captación —</option>
+                    {captaciones.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {[c.ownerName || "Sin nombre", c.municipality, c.price].filter(Boolean).join(" · ")}{c.wonListingId ? " (ya tiene anuncio)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedCaptacion?.wonListingId && (
+                    <p className="mt-2 text-xs font-semibold text-amber-700">Esta captación ya tiene un anuncio. Revisa que no lo dupliques.</p>
+                  )}
+                </div>
+              )}
               <div className="rounded-xl border-2 border-gray-300 bg-white shadow-sm p-4 space-y-4">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-600">Información del inmueble</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1409,6 +1609,32 @@ export function Listings() {
                   <p className="mt-1 text-xs text-red-600">{submitAttempted ? (formErrors.operationType || "") : ""}</p>
                 </div>
               </div>
+
+              {formData.operationType === "Alquiler" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Tipo de alquiler <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    className="input"
+                    value={formData.rentalSubtype || "No aplica"}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        rentalSubtype: e.target.value as ListingFormState["rentalSubtype"],
+                      })
+                    }
+                  >
+                    <option value="Larga temporada">Larga temporada (LAU)</option>
+                    <option value="Temporada">Temporada (semanas / meses)</option>
+                    <option value="Vacacional">Vacacional (turístico)</option>
+                    <option value="No aplica">No aplica / no clasificado</option>
+                  </select>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Se usa para que el asistente de IA cualifique correctamente al lead según el tipo de alquiler.
+                  </p>
+                </div>
+              )}
 
                 <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -1492,7 +1718,17 @@ export function Listings() {
                   </p>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              {notificationNumbersV2 && (
+                <NotificationNumberSelector
+                  planId={subscriptionInfo?.planId}
+                  value={formData.notificationNumberIds || []}
+                  onChange={(next) =>
+                    setFormData((prev) => ({ ...prev, notificationNumberIds: next }))
+                  }
+                  showRequiredHint={submitAttempted}
+                />
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Precio <span className="text-red-500">*</span></label>
                   <input

@@ -2,19 +2,25 @@ import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from "react-r
 import { Toaster } from "sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./contexts/AuthContext";
+import { CookieConsentProvider } from "./contexts/CookieConsentContext";
+import { CookieBanner } from "./components/CookieBanner";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
+import { Signup } from "./pages/Signup";
 import { SignupInvitation } from "./pages/SignupInvitation";
+import { ForgotPassword } from "./pages/ForgotPassword";
+import { ResetPassword } from "./pages/ResetPassword";
 import { Dashboard } from "./pages/Dashboard";
 import { Listings } from "./pages/Listings";
+import { Captaciones } from "./pages/Captaciones";
 import { Leads } from "./pages/Leads";
+import { Seguimiento } from "./pages/Seguimiento";
 import { Conversations } from "./pages/Conversations";
 
 import { Alerts } from "./pages/Alerts";
 import { Configuracion } from "./pages/Configuracion";
 import { AuditLog } from "./pages/AuditLog";
-import { Landing } from "./pages/Landing";
 import { MarketingLanding } from "./pages/MarketingLanding";
 import { MarketingLandingV2 } from "./pages/MarketingLandingV2";
 import { Users } from "./pages/Users";
@@ -31,18 +37,30 @@ import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 import FontGallery from "./pages/FontGallery";
 import EmailGallery from "./pages/EmailGallery";
 import EmailPreferences from "./pages/EmailPreferences";
-import { TeamManagement } from "./pages/TeamManagement";
+import { Organizacion } from "./pages/Organizacion";
 import { BotTest } from "./pages/BotTest";
 import { Usage } from "./pages/Usage";
 
 import { useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { usePageTracking } from "./hooks/usePageTracking";
+import { analytics } from "./lib/analytics";
 
 const queryClient = new QueryClient();
 
 function PageTracker() {
   usePageTracking();
   return null;
+}
+
+/** Catch-all route: track that an unknown path was attempted, then send the
+ * user to /dashboard (which itself redirects to /login if unauthenticated). */
+function NotFoundRedirect() {
+  const location = useLocation();
+  useEffect(() => {
+    analytics.trackNotFoundHit(location.pathname + location.search);
+  }, [location.pathname, location.search]);
+  return <Navigate to="/dashboard" replace />;
 }
 
 /** Legacy /cualificados links: forward to Leads with filters, preserving ?ad= */
@@ -93,17 +111,22 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <CookieConsentProvider>
       <AuthProvider>
         <BrowserRouter>
           <PageTracker />
+          <CookieBanner />
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route path="/signup" element={<SignupInvitation />} />
+            <Route path="/signup" element={<Signup />} />
+            <Route path="/registro" element={<Navigate to="/signup" replace />} />
+            <Route path="/invite" element={<SignupInvitation />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/email-preferences" element={<EmailPreferences />} />
             <Route path="/fonts" element={<FontGallery />} />
-            <Route path="/" element={<Landing />} />
+            <Route path="/" element={<MarketingLandingV2 />} />
             <Route path="/landingv2" element={<MarketingLanding />} />
-            <Route path="/landingv3" element={<MarketingLandingV2 />} />
             <Route path="/terms" element={<Navigate to="/legal/terms" replace />} />
             <Route path="/privacy" element={<Navigate to="/legal/privacy-policy" replace />} />
             <Route path="/legal/terms" element={<LegalDoc title="Términos y Condiciones" path="/legal/terms.md" />} />
@@ -112,6 +135,7 @@ function App() {
             <Route path="/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
             <Route path="/legal/cookies" element={<LegalDoc title="Política de Cookies" path="/legal/cookies.es.md" />} />
             <Route path="/legal/aup" element={<LegalDoc title="Política de Uso Aceptable" path="/legal/aup.es.md" />} />
+            <Route path="/legal/dpa" element={<LegalDoc title="Acuerdo de Encargo del Tratamiento (DPA)" path="/legal/dpa.es.md" />} />
             <Route path="/aviso-legal" element={<LegalDoc title="Aviso Legal" path="/legal/aviso.es.md" />} />
             <Route path="/legal/deletion-status" element={<DeletionStatus />} />
             <Route
@@ -171,11 +195,31 @@ function App() {
               }
             />
             <Route
+              path="/captaciones"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Captaciones />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/leads"
               element={
                 <ProtectedRoute>
                   <Layout>
                     <Leads />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/seguimiento"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Seguimiento />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -252,15 +296,16 @@ function App() {
               }
             />
             <Route
-              path="/equipo"
+              path="/organizacion"
               element={
                 <ProtectedRoute>
                   <Layout>
-                    <TeamManagement />
+                    <Organizacion />
                   </Layout>
                 </ProtectedRoute>
               }
             />
+            <Route path="/equipo" element={<Navigate to="/organizacion" replace />} />
             <Route
               path="/onboards"
               element={
@@ -311,11 +356,12 @@ function App() {
                 </ProtectedRoute>
               }
             />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<NotFoundRedirect />} />
           </Routes>
         </BrowserRouter>
         <Toaster position="top-right" richColors closeButton />
       </AuthProvider>
+      </CookieConsentProvider>
     </QueryClientProvider>
   );
 }

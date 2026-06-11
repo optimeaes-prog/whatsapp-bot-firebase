@@ -9,6 +9,7 @@ export function Counter({
   durationFrames = 50,
   suffix = "",
   decimals = 0,
+  frame: frameOverride,
 }: {
   from: number;
   to: number;
@@ -16,10 +17,13 @@ export function Counter({
   durationFrames?: number;
   suffix?: string;
   decimals?: number;
+  /** Optional override — pass the scaled/logical frame so startFrame/duration align. */
+  frame?: number;
 }) {
-  const frame = useCurrentFrame();
+  const realFrame = useCurrentFrame();
+  const frame = frameOverride !== undefined ? frameOverride : realFrame;
   const value = interpolate(frame, [startFrame, startFrame + durationFrames], [from, to], {
-    easing: Easing.inOut(Easing.cubic),
+    easing: Easing.out(Easing.cubic),
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });

@@ -9,6 +9,7 @@ import { getConversationByChatId, getConversationByChatIdForAgent, getConversati
 
 import { formatDate, formatPhone, cn, formatMessageTime } from "../lib/utils";
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
+import { renderMessageText } from "../utils/renderMessageText";
 import { resolveConversationQualification } from "../lib/conversationQualification";
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
@@ -18,6 +19,7 @@ import { Send } from "lucide-react";
 import { Button, PageHeader, PageLoading, FilterCard, SegmentedControl } from "../components/ui";
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
 import { useAuth } from "../contexts/AuthContext";
+import { analytics, hashIdSync } from "../lib/analytics";
 
 /** `?status=non_qualified_all` (p. ej. desde Anuncios) = todos salvo cualificados */
 const NON_QUALIFIED_ALL_STATUSES = ["not_qualified", "rejected", "no_response"] as const;
@@ -55,6 +57,8 @@ type SortDirection = "asc" | "desc";
 type LeadWithMessages = Lead & {
   messageCount?: number;
   listingDescription?: string;
+  /** Whether the lead's associated listing is currently active. */
+  listingIsActive?: boolean;
 };
 
 export function Leads() {
@@ -83,13 +87,18 @@ export function Leads() {
   const [filterMinIncome, setFilterMinIncome] = useState<string>("");
   const [filterMaxIncome, setFilterMaxIncome] = useState<string>("");
   const [filterTags, setFilterTags] = useState<string>("");
+  const [filterListingStatus, setFilterListingStatus] = useState<"all" | "active" | "inactive">("all");
 
   const [isColumnDropdownOpen, setIsColumnDropdownOpen] = useState(false);
   const [isAnuncioDropdownOpen, setIsAnuncioDropdownOpen] = useState(false);
+  // Mobile collapsible filter panel for secondary filters (search + dropdowns).
+  // Primary state tabs remain visible above the FilterCard.
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [isIncomeDropdownOpen, setIsIncomeDropdownOpen] = useState(false);
   const [isTipoDropdownOpen, setIsTipoDropdownOpen] = useState(false);
   const [isPetsDropdownOpen, setIsPetsDropdownOpen] = useState(false);
   const [isPaymentDropdownOpen, setIsPaymentDropdownOpen] = useState(false);
+  const [isListingStatusDropdownOpen, setIsListingStatusDropdownOpen] = useState(false);
   const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set());
 
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(() => {
@@ -104,6 +113,7 @@ export function Leads() {
     return {
       name: true,
       phone: true,
+      email: false,
       listingCode: true,
       listingDescription: true,
       operationType: true,
@@ -233,9 +243,12 @@ export function Leads() {
       const listingsData = listingsRes.status === "fulfilled" ? listingsRes.value : [];
       const conversationsData = conversationsRes.status === "fulfilled" ? conversationsRes.value : [];
 
-      // Create a map of listing info
+      // Create a map of listing info (incl. isActive so we can filter by listing status)
       const listingsMap = new Map(
-        listingsData.map(l => [l.listingCode, { description: l.description, operationType: l.operationType }])
+        listingsData.map(l => [
+          l.listingCode,
+          { description: l.description, operationType: l.operationType, isActive: l.isActive },
+        ])
       );
       const conversationsMap = new Map(
         conversationsData.map((conversation) => [conversation.chatId || conversation.id, conversation])
@@ -249,6 +262,7 @@ export function Leads() {
           ...lead,
           messageCount: conversation?.messageCount || 0,
           listingDescription: listingInfo?.description,
+          listingIsActive: listingInfo?.isActive,
           operationType: listingInfo?.operationType || lead.operationType,
           notes: conversation?.notes || lead.notes,
         };
@@ -280,6 +294,7 @@ export function Leads() {
       }
       setSelectedLead(lead);
       setSelectedConversation(conversation);
+      analytics.trackLeadOpened(hashIdSync(lead.id));
       setLeadToEdit(null); // Close edit modal if open
     } catch (error) {
       console.error("Error loading conversation:", error);
@@ -384,6 +399,7 @@ export function Leads() {
     setSendingMassMessage(true);
     try {
       const result = await sendMassMessageToWhatsApp(selectedChatIds, massMessageText);
+      analytics.trackMassCampaignStarted({ recipient_count: selectedChatIds.length });
       toast.success(`Mensaje enviado correctamente: ${result.summary.sent} éxitos, ${result.summary.failed} errores.`);
       setIsMassMessageModalOpen(false);
       setMassMessageText("");
@@ -410,6 +426,7 @@ export function Leads() {
       "id",
       "name",
       "phone",
+      "email",
       "listingCode",
       "operationType",
       "qualificationStatus",
@@ -434,6 +451,7 @@ export function Leads() {
           escape(l.id),
           escape(l.name || ""),
           escape(l.phone || ""),
+          escape(l.email || ""),
           escape(l.listingCode || ""),
           escape(l.operationType || ""),
           escape(l.qualificationStatus || ""),
@@ -455,6 +473,7 @@ export function Leads() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    analytics.trackLeadExported({ count: rows.length, format: "csv" });
   }
 
   async function handleBulkDelete() {
@@ -475,6 +494,7 @@ export function Leads() {
       await deleteLeads(ids, 4);
       setLeads((prev) => prev.filter((l) => !selectedLeadIds.has(l.id)));
       setSelectedLeadIds(new Set());
+      analytics.trackBulkActionExecuted({ action: "delete", count: ids.length });
       toast.success(`Eliminados ${ids.length} leads (y sus conversaciones)`);
       closeBulkModal();
       setBulkDeleteAccepted(false);
@@ -497,6 +517,8 @@ export function Leads() {
     setBulkUpdatingStatus(true);
     try {
       await bulkUpdateLeadsQualificationStatus(ids, bulkStatus as any, 4);
+      analytics.trackBulkActionExecuted({ action: `status_${bulkStatus}`, count: ids.length });
+      analytics.trackLeadStatusChanged("bulk", String(bulkStatus));
       toast.success(`Actualizado estado en ${ids.length} leads`);
       closeBulkModal();
       setSelectedLeadIds(new Set());
@@ -671,10 +693,14 @@ export function Leads() {
         const matchesPayment = filterPayment === "all" || lead.paymentMethod === filterPayment;
         const matchesMinIncome = !filterMinIncome || (lead.income !== undefined && lead.income >= parseInt(filterMinIncome));
         const matchesMaxIncome = !filterMaxIncome || (lead.income !== undefined && lead.income <= parseInt(filterMaxIncome));
-        const matchesTags = !filterTags ? true : 
+        const matchesTags = !filterTags ? true :
           lead.tags?.some(tag => tag.toLowerCase().includes(filterTags.toLowerCase()));
-        
-        return matchesSearch && matchesTipo && matchesStatus && matchesAnuncio && matchesPets && matchesPayment && matchesMinIncome && matchesMaxIncome && matchesTags;
+        // Treat undefined isActive as active for backwards compatibility (matches Listings/Conversations logic)
+        const matchesListingStatus = filterListingStatus === "all"
+          || (filterListingStatus === "active" && lead.listingIsActive !== false)
+          || (filterListingStatus === "inactive" && lead.listingIsActive === false);
+
+        return matchesSearch && matchesTipo && matchesStatus && matchesAnuncio && matchesPets && matchesPayment && matchesMinIncome && matchesMaxIncome && matchesTags && matchesListingStatus;
       })
       .sort((a, b) => {
         let aValue: any;
@@ -721,7 +747,7 @@ export function Leads() {
         if (aValue > bValue) return sortDirection === "asc" ? 1 : -1;
         return 0;
       });
-  }, [leads, debouncedSearch, filterTipo, filterStatus, filterAnuncio, filterPets, filterPayment, filterMinIncome, filterMaxIncome, filterTags, sortField, sortDirection]);
+  }, [leads, debouncedSearch, filterTipo, filterStatus, filterAnuncio, filterPets, filterPayment, filterMinIncome, filterMaxIncome, filterTags, filterListingStatus, sortField, sortDirection]);
 
   /** Última vez que la IA analizó alguna conversación (mascotas, ingresos, forma de pago, resumen…), según `lastAnalyzedAt` en Firestore. */
   const latestConversationAnalysisAt = useMemo(() => {
@@ -754,16 +780,21 @@ export function Leads() {
     return () => cancelAnimationFrame(t);
   }, [updateHorizontalScrollState, filteredAndSortedLeads.length]);
 
+  // Count only "secondary" filters (the ones folded inside the collapsible card on mobile).
+  // Primary nav (state tabs) and bulk selection are surfaced separately.
+  const activeSecondaryFilterCount =
+    (search.trim() !== "" ? 1 : 0) +
+    (filterTipo !== "all" ? 1 : 0) +
+    (filterAnuncio.length > 0 ? 1 : 0) +
+    (filterPets !== "all" ? 1 : 0) +
+    (filterPayment !== "all" ? 1 : 0) +
+    (Boolean(filterTags) ? 1 : 0) +
+    (Boolean(filterMinIncome) ? 1 : 0) +
+    (Boolean(filterMaxIncome) && filterMaxIncome !== "10000" ? 1 : 0) +
+    (filterListingStatus !== "all" ? 1 : 0);
   const hasActiveLeadsFilters =
-    search.trim() !== "" ||
-    filterTipo !== "all" ||
+    activeSecondaryFilterCount > 0 ||
     filterStatus.length > 0 ||
-    filterAnuncio.length > 0 ||
-    filterPets !== "all" ||
-    filterPayment !== "all" ||
-    Boolean(filterTags) ||
-    Boolean(filterMinIncome) ||
-    (Boolean(filterMaxIncome) && filterMaxIncome !== "10000") ||
     selectedLeadIds.size > 0 ||
     Object.values(visibleColumns).some((v) => !v);
 
@@ -777,6 +808,7 @@ export function Leads() {
     setFilterMinIncome("");
     setFilterMaxIncome("");
     setFilterTags("");
+    setFilterListingStatus("all");
     setSearchParams({});
     setSelectedLeadIds(new Set());
     setVisibleColumns(
@@ -803,7 +835,7 @@ export function Leads() {
             .filter(Boolean)
             .join(" · ")}
           actions={
-            <div className="max-w-full overflow-x-auto no-scrollbar">
+            <div className="w-full sm:w-auto sm:max-w-full">
               <SegmentedControl
                 ariaLabel="Filtro de cualificación"
                 colorScheme="amber"
@@ -828,15 +860,15 @@ export function Leads() {
                     unselectedClassName: "text-gray-600 hover:bg-gray-50",
                   },
                   {
-                    value: "not_qualified",
-                    label: <span className="normal-case">No cualificados</span>,
+                    value: "no_response",
+                    label: "Sin respuesta",
                     selectedClassName: "bg-slate-200 text-slate-900",
                     unselectedClassName: "text-gray-600 hover:bg-gray-50",
                   },
                   {
-                    value: "no_response",
-                    label: "Sin respuesta",
-                    selectedClassName: "bg-slate-200 text-slate-900",
+                    value: "rejected",
+                    label: "Rechazados",
+                    selectedClassName: "bg-rose-200 text-rose-900",
                     unselectedClassName: "text-gray-600 hover:bg-gray-50",
                   },
                   {
@@ -846,13 +878,13 @@ export function Leads() {
                     unselectedClassName: "text-gray-600 hover:bg-gray-50",
                   },
                   {
-                    value: "rejected",
-                    label: "Rechazados",
-                    selectedClassName: "bg-rose-200 text-rose-900",
+                    value: "not_qualified",
+                    label: <span className="normal-case">No cualificados</span>,
+                    selectedClassName: "bg-slate-200 text-slate-900",
                     unselectedClassName: "text-gray-600 hover:bg-gray-50",
                   },
                 ]}
-                className="w-fit"
+                className="w-full sm:w-fit"
               />
             </div>
           }
@@ -971,8 +1003,32 @@ export function Leads() {
         </div>
       )}
 
-      <FilterCard className="mb-6 md:shrink-0">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <FilterCard className="mb-6 md:shrink-0 !p-0 !border-0 !bg-transparent !shadow-none sm:!p-4 sm:!border sm:!border-gray-200 sm:!bg-white sm:!shadow-sm">
+        {/* Mobile-only Conversaciones-style toggle bar (white bg in Leads) */}
+        <button
+          type="button"
+          onClick={() => setMobileFiltersOpen((v) => !v)}
+          className="sm:hidden flex items-center justify-between w-full px-3 py-2.5 rounded-btn border border-gray-200 bg-white hover:bg-gray-50 transition-colors"
+          aria-expanded={mobileFiltersOpen}
+          aria-controls="leads-filters-content"
+        >
+          <span className="flex items-center gap-1.5 text-xs font-bold font-heading uppercase tracking-wider text-gray-700">
+            <Filter size={14} className="text-gray-500" />
+            Filtros
+            {activeSecondaryFilterCount > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[18px] px-1.5 py-0.5 rounded-full bg-primary-100 text-primary-700 text-[10px] font-bold">
+                {activeSecondaryFilterCount}
+              </span>
+            )}
+          </span>
+          <ChevronDown
+            size={14}
+            className={cn("text-gray-400 transition-transform", mobileFiltersOpen && "rotate-180")}
+          />
+        </button>
+
+        {/* Desktop header — original h2 styling, with reset button next to it */}
+        <div className="hidden sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-3 sm:mb-4">
           <div className="flex items-center gap-2">
             <Filter size={18} className="text-gray-600" />
             <h2 className="font-semibold text-gray-900">Filtros</h2>
@@ -985,12 +1041,15 @@ export function Leads() {
               title="Restablecer filtros"
             >
               <XCircle size={18} />
-              <span className="hidden sm:inline">Restablecer</span>
+              <span>Restablecer</span>
             </button>
           )}
         </div>
 
-        <div className="space-y-4">
+        <div
+          id="leads-filters-content"
+          className={cn("space-y-4 mt-3 sm:mt-0", !mobileFiltersOpen && "hidden sm:block")}
+        >
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="flex-1 relative min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -1005,9 +1064,51 @@ export function Leads() {
           </div>
 
           <div className="flex flex-wrap gap-3 pt-3 border-t border-gray-100 items-center w-full">
+            {/* Estado: filter by listing active/inactive */}
             <div className="relative flex-1">
-              <div 
-                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full" 
+              <div
+                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full"
+                onClick={() => setIsListingStatusDropdownOpen(!isListingStatusDropdownOpen)}
+              >
+                <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
+                  <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">Estado:</span>
+                  <div className="flex items-center gap-1 justify-end flex-1">
+                    {filterListingStatus === "all" ? "Todos" : filterListingStatus === "active" ? "Activos" : "Inactivos"}
+                    <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1 shrink-0", isListingStatusDropdownOpen && "rotate-180")} />
+                  </div>
+                </div>
+              </div>
+              {isListingStatusDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsListingStatusDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-2 w-40 bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="space-y-1">
+                      {[
+                        { value: "all", label: "Todos" },
+                        { value: "active", label: "Activos" },
+                        { value: "inactive", label: "Inactivos" },
+                      ].map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => {
+                            setFilterListingStatus(opt.value as any);
+                            setIsListingStatusDropdownOpen(false);
+                          }}
+                          className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                        >
+                          {filterListingStatus === opt.value ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                          <span className="text-xs text-gray-700 font-medium">{opt.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="relative flex-1">
+              <div
+                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full"
                 onClick={() => setIsAnuncioDropdownOpen(!isAnuncioDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
@@ -1113,7 +1214,7 @@ export function Leads() {
                 onClick={() => setIsPetsDropdownOpen(!isPetsDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                  <span className="text-xs font-semibold text-gray-600">Mascota:</span>
+                  <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">Mascota:</span>
                   <div className="flex items-center gap-1 justify-end flex-1">
                     {filterPets === "all" ? "Todos" : (filterPets === "yes" ? "Sí" : "No")}
                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isPetsDropdownOpen && "rotate-180")} />
@@ -1154,7 +1255,7 @@ export function Leads() {
                 onClick={() => setIsPaymentDropdownOpen(!isPaymentDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
-                  <span className="text-xs font-semibold text-gray-600 whitespace-nowrap">Pago:</span>
+                  <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider whitespace-nowrap">Pago:</span>
                   <div className="flex items-center gap-1 justify-end flex-1">
                     {filterPayment === "all" ? "Todos" : filterPayment}
                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isPaymentDropdownOpen && "rotate-180")} />
@@ -1195,7 +1296,7 @@ export function Leads() {
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
                   <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">Ingresos:</span>
-                  <div className="flex items-center gap-1 flex-1 overflow-hidden">
+                  <div className="flex items-center gap-1 flex-1 overflow-hidden justify-end">
                     <span className="truncate">
                       {!filterMinIncome && (!filterMaxIncome || filterMaxIncome === "10000") ? "Todos" : `${filterMinIncome || 0}€ - ${filterMaxIncome || 10000}€`}
                     </span>
@@ -1263,10 +1364,10 @@ export function Leads() {
             {/* Separator */}
             <div className="w-[1px] h-6 bg-slate-200 mx-2 self-center hidden lg:block" />
 
-            {/* Column Visibility Filter */}
-            <div className="relative flex-1 min-w-[140px]">
-              <div 
-                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full group/filter" 
+            {/* Column Visibility Filter - hidden on mobile (cards don't have columns) */}
+            <div className="relative flex-1 min-w-[140px] hidden sm:block">
+              <div
+                className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full group/filter"
                 onClick={() => setIsColumnDropdownOpen(!isColumnDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
@@ -1302,6 +1403,7 @@ export function Leads() {
                     {[
                       { id: "name", label: "Nombre" },
                       { id: "phone", label: "Teléfono" },
+                      { id: "email", label: "Email" },
                       { id: "listingCode", label: "ID Idealista" },
                       { id: "listingDescription", label: "Identificador Anuncio" },
                       { id: "operationType", label: "Tipo" },
@@ -1356,19 +1458,19 @@ export function Leads() {
         </div>
       ) : (
         <>
-          {/* Mobile Select All Button */}
+          {/* Mobile Select All Button - subtle text link rather than prominent pill */}
           <div className="md:hidden flex justify-start mb-3">
             <button
               onClick={toggleAllSelection}
-              className="text-sm font-bold text-primary-600 hover:text-primary-700 flex items-center gap-2 bg-primary-50 px-3 py-1.5 rounded-btn border border-primary-100 font-heading uppercase tracking-wider"
+              className="text-xs font-semibold text-gray-500 hover:text-gray-700 flex items-center gap-1.5 px-1 py-1 font-heading uppercase tracking-wider transition-colors"
             >
               {selectedLeadIds.size === filteredAndSortedLeads.length && filteredAndSortedLeads.length > 0 ? (
                 <>
-                  <CheckSquare size={16} /> Deseleccionar todos
+                  <CheckSquare size={14} /> Deseleccionar todos
                 </>
               ) : (
                 <>
-                  <CheckSquare size={16} /> Seleccionar todos
+                  <Square size={14} /> Seleccionar todos
                 </>
               )}
             </button>
@@ -1408,10 +1510,11 @@ export function Leads() {
                     </div>
                     <button
                       onClick={(e) => handleDeleteLead(e, lead)}
-                      className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-btn transition-colors flex-shrink-0 z-10"
+                      className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-3 -m-1 rounded-btn transition-colors flex-shrink-0 z-10"
                       title="Eliminar lead"
+                      aria-label={`Eliminar lead ${lead.name || formatPhone(lead.phone)}`}
                     >
-                      <Trash2 size={16} />
+                      <Trash2 size={18} />
                     </button>
                   </div>
 
@@ -1518,6 +1621,11 @@ export function Leads() {
                             Teléfono
                             {getSortIcon("phone")}
                           </div>
+                        </th>
+                      )}
+                      {visibleColumns.email && (
+                        <th className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
+                          Email
                         </th>
                       )}
                       {visibleColumns.listingCode && (
@@ -1683,6 +1791,13 @@ export function Leads() {
                                 {formatPhone(lead.phone)}
                               </span>
                             </div>
+                          </td>
+                        )}
+                        {visibleColumns.email && (
+                          <td className="px-3 py-3 whitespace-nowrap cursor-pointer" onClick={() => openEditModal(lead)}>
+                            <span className="text-xs text-gray-700 truncate max-w-[160px] inline-block align-bottom" title={lead.email || ""}>
+                              {lead.email || "—"}
+                            </span>
                           </td>
                         )}
                         {visibleColumns.listingCode && (
@@ -1954,13 +2069,12 @@ export function Leads() {
                       )}>
                         {item.role === "assistant" ? "Asistente" : "Interesado"}
                       </span>
-                      <p 
-                        className="whitespace-pre-wrap break-words" 
+                      <p
+                        className="whitespace-pre-wrap break-words"
                         style={{ wordBreak: 'break-word' }}
-                        dangerouslySetInnerHTML={{ 
-                          __html: item.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<strong>$1</strong>') 
-                        }}
-                      />
+                      >
+                        {renderMessageText(item.text)}
+                      </p>
                       {item.timestamp && (
                         <p className="text-[10px] mt-1 text-right text-gray-400">
                           {formatMessageTime(item.timestamp)}

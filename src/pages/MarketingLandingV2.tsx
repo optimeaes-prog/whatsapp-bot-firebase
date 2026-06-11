@@ -17,9 +17,6 @@ import {
 import idealistaLogo from "../../idealista.png";
 import fotocasaLogo from "../../logo-fotocasa-min.png";
 import pisosLogo from "../../logo-pisoscom.webp";
-import metaVerifiedLogo from "../../meta-verified.png";
-import nuevoAnuncioImg from "../../Nuevo_anuncio.png";
-import demoAppVideo from "../../Demo_app.mp4";
 import {
   WhatsAppAnimationShowcaseCallQualification,
   WhatsAppAnimationShowcaseSlow,
@@ -28,7 +25,7 @@ import { WhatsAppLeadsAnimationPhone } from "./WhatsAppLeadsAnimation";
 import { SegmentedControl } from "../components/ui";
 import { cn } from "../lib/utils";
 import { analytics } from "../lib/analytics";
-import whiteLogo from "../../proplead-high-resolution-logo-white.png";
+import { useCookieConsent } from "../contexts/CookieConsentContext";
 import { BreakdownModal, type CheckoutBreakdownData } from "../components/BreakdownModal";
 import { CalEuInlineEmbed } from "../components/CalEuInlineEmbed";
 
@@ -45,9 +42,12 @@ const SUBSCRIPTION_PLANS = [
     assistancesMonthly: 40,
     listingsIdeal: "1 anuncio activo/mes",
     benefits: [
-      "Respuesta de soporte maximo 72h",
       "Acceso: 1 agente",
-      "Solo leads de mensajes",
+      "Asistencia a leads provenientes de llamadas",
+      "Panel de conversaciones y leads en vivo",
+      "El asistente recopila 6 datos por lead",
+      "Tono de voz del asistente predefinido",
+      "Envía alertas de leads cualificados a un número por anuncio",
     ],
   },
   {
@@ -56,11 +56,12 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: 39,
     assistancesMonthly: 80,
     listingsIdeal: "2-4 anuncios activos/mes",
+    inheritsFromName: "Free",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
-      "Respuesta de soporte maximo 24h",
-      "Acceso: 1 agente",
-      "Asistencia a leads provenientes de mensajes o llamadas",
+      "Asistencia a leads provenientes de llamadas y mensajes",
+      "Ingesta automática de leads de Idealista",
+      "El asistente recopila 15+ datos por lead",
     ],
   },
   {
@@ -69,12 +70,11 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: 69,
     assistancesMonthly: 80,
     listingsIdeal: "3–6 anuncios activos/mes",
+    inheritsFromName: "Plus",
     benefits: [
-      "Compra 40 conversaciones por 10€ cuando quieras",
-      "Respuesta de soporte maximo 12h",
       "Acceso multi-agente",
-      "Asistencia a leads provenientes de mensajes o llamadas",
-      "Promoción de marca en cualificación",
+      "Envío de mensajes masivos",
+      "Tono de voz del asistente personalizado",
     ],
   },
   {
@@ -83,13 +83,12 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: 99,
     assistancesMonthly: 80,
     listingsIdeal: "6–12 anuncios activos/mes",
+    inheritsFromName: "Pro",
     benefits: [
-      "Compra 40 conversaciones por 10€ cuando quieras",
+      "Gestión automática de agendado de visitas y recordatorios",
+      "Importación masiva de anuncios y leads",
+      "Alertas de leads cualificados a múltiples números",
       "Soporte dedicado 1 a 1",
-      "Acceso multi-agente",
-      "Asistencia a leads provenientes de mensajes o llamadas",
-      "Promoción de marca en cualificación",
-      "Tu propio Avatar en vez de Marcos.",
     ],
   },
   {
@@ -98,6 +97,7 @@ const SUBSCRIPTION_PLANS = [
     priceMonthly: null as number | null,
     assistancesMonthly: 0,
     listingsIdeal: "A medida",
+    inheritsFromName: "Pro+",
     benefits: [
       "Soporte personalizado",
       "Acceso ilimitado",
@@ -143,58 +143,57 @@ function PricingSection() {
       <div className="max-w-7xl mx-auto px-4 relative z-10">
 
         {/* Header */}
-        <div className="text-center mb-24 px-4">
-          <h2 id="precios" className="text-3xl lg:text-4xl font-extrabold tracking-tight mb-4 font-heading scroll-mt-32" style={{ color: TITLE }}>
-            Precios
+        <div className="text-center mb-8 max-lg:mb-6 px-4">
+          <h2 id="precios" className="text-3xl lg:text-4xl font-extrabold tracking-tight font-heading scroll-mt-32" style={{ color: TITLE }}>
+            Planes
           </h2>
-          <p className="text-lg max-w-2xl mx-auto" style={{ color: BODY }}>
-            Planes que escalan contigo. Sin permanencias.<br />
-            Solo pagas por las conversaciones iniciadas con tus leads.
-          </p>
         </div>
 
 
 
         {/* Integrated Control Bar */}
-        <div className="max-w-5xl mx-auto mb-20 relative px-4 sm:px-0">
+        <div className="max-w-5xl mx-auto mb-6 max-lg:mb-6 relative px-4 sm:px-0">
           <div className="text-center mb-6">
             <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-50 font-heading" style={{ color: TITLE }}>
-              Usa este simulador para descubrir tu plan ideal
+              Usa este simulador<br /> para descubrir tu plan ideal
             </p>
           </div>
           <div className="bg-[#2d1b0d] rounded-2xl shadow-2xl shadow-primary-900/10 border border-[#3d2b1d] overflow-hidden">
-            <div className="p-5 sm:p-6 flex flex-col lg:flex-row items-center gap-8 lg:gap-12">
+            <div className="p-5 sm:p-6 flex flex-col gap-6">
 
-              {/* Volume & Demand Controls */}
-              <div className="flex-1 w-full lg:w-2/3 px-4 space-y-6">
+              {/* Row 1: Volume & Demand Controls — parallel on desktop */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-10">
                 {/* Listings Slider */}
-                <div>
-                  <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuántos anuncios tienes activos por mes?</span>
-                    <span className="text-primary-400 text-lg font-black font-heading tracking-tight">
+                <div className="flex flex-col">
+                  <div className="flex justify-between items-center gap-3 mb-3">
+                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading leading-tight">¿Cuántos anuncios<br className="sm:hidden" /> tienes activos por mes?</span>
+                    <span className="text-primary-400 text-lg font-black font-heading tracking-tight whitespace-nowrap">
                       {numListings > 25 ? "25+" : numListings} {numListings === 1 ? "anuncio" : "anuncios"}
                     </span>
                   </div>
-                  <input
-                    type="range"
-                    min="1"
-                    max="26"
-                    step="1"
-                    value={numListings}
-                    onChange={(e) => setNumListings(parseInt(e.target.value))}
-                    className="w-full h-1.5 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-primary-400 hover:accent-primary-300 transition-all slider-thumb"
-                  />
+                  <div className="flex-1 flex items-center">
+                    <input
+                      type="range"
+                      min="1"
+                      max="26"
+                      step="1"
+                      value={numListings}
+                      onChange={(e) => setNumListings(parseInt(e.target.value))}
+                      className="w-full h-1.5 bg-[#4d3b2d] rounded-full appearance-none cursor-pointer accent-primary-400 hover:accent-primary-300 transition-all slider-thumb"
+                    />
+                  </div>
                 </div>
 
                 {/* Demand Selector */}
                 <div>
-                  <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading">¿Cuál es la demanda media de cada uno?</span>
-                    <span className="text-primary-400 text-lg font-black font-heading tracking-tight">
+                  <div className="flex justify-between items-center gap-3 mb-3">
+                    <span className="text-[10px] font-black text-[#ab8b67] uppercase tracking-widest font-heading leading-tight">¿Cuál es la demanda media<br className="sm:hidden" /> de cada uno?</span>
+                    <span className="text-primary-400 text-lg font-black font-heading tracking-tight whitespace-nowrap">
                       {demandValue} leads
                     </span>
                   </div>
                   <SegmentedControl
+                    className="!flex w-full [&>button]:!flex-1 [&>button]:!min-w-0"
                     value={demandValue.toString()}
                     onChange={(v) => setDemandValue(parseInt(v))}
                     ariaLabel="Seleccionar demanda"
@@ -208,54 +207,50 @@ function PricingSection() {
                 </div>
               </div>
 
-              {/* Metrics Short Summary */}
-              <div className="flex flex-wrap items-center justify-center lg:justify-start gap-x-8 gap-y-4 px-6 lg:border-l border-white/5 py-1">
-                <div className="text-center lg:text-left text-white">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 opacity-70 font-heading leading-tight">Conversaciones<br />necesarias por mes</p>
-                  <p className="text-lg font-black font-heading leading-none tabular-nums text-primary-400">
+              {/* Row 2: Metrics Short Summary */}
+              <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center sm:justify-center gap-x-10 gap-y-4 pt-5 border-t border-white/5">
+                <div className="flex items-center justify-between sm:justify-start gap-3 text-white w-full sm:w-auto">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest opacity-70 font-heading leading-tight">Conversaciones que el<br className="sm:hidden" /> asistente iniciará por mes</p>
+                  <p className="text-lg font-black font-heading leading-none tabular-nums text-primary-400 whitespace-nowrap">
                     {conversations}
                   </p>
                 </div>
-                <div className="text-center lg:text-left group relative">
-                  <div className="flex items-center gap-1 mb-1 justify-center lg:justify-start">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest opacity-70 font-heading leading-tight">Ahorro<br />estimado</p>
+                <div className="flex items-center justify-between sm:justify-start gap-3 group relative w-full sm:w-auto">
+                  <div className="flex items-center gap-1">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest opacity-70 font-heading leading-tight">Ahorro estimado</p>
                     <Info size={10} className="text-slate-400 opacity-50 cursor-help" />
                     {/* Tooltip */}
                     <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-[10px] text-white rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 text-center font-medium leading-tight">
                       Calculado en base a un tiempo estimado de 7 minutos ahorrados por cada conversación.
                     </div>
                   </div>
-                  <p className="text-lg font-black text-emerald-400 font-heading leading-none tabular-nums">{hoursSaved}h/mes</p>
+                  <p className="text-lg font-black text-emerald-400 font-heading leading-none tabular-nums whitespace-nowrap">{hoursSaved}h/mes</p>
                 </div>
               </div>
 
-              {/* Billing Toggle */}
-              <div className="shrink-0 scale-90 sm:scale-100 lg:-translate-x-4">
-                <SegmentedControl
-                  ariaLabel="Facturación"
-                  colorScheme="amber"
-                  value={planBilling}
-                  onChange={(v) => setPlanBilling(v as "monthly" | "annual")}
-                  options={[
-                    { value: "monthly", label: "Mensual" },
-                    { value: "annual", label: "Anual", badge: "−15%" },
-                  ]}
-                />
-              </div>
             </div>
           </div>
         </div>
 
-        {/* Extra conversations info banner */}
-        <div className="max-w-xl mx-auto mb-4 mt-1 px-4">
-          <div className="flex items-center justify-center gap-1.5 py-2 px-4 bg-[#6b5240] border border-[#7a6050] rounded-xl text-xs text-primary-400">
-            <Info size={12} className="text-primary-400 shrink-0" />
-            <span>Se añaden <strong className="text-primary-400">10€</strong> por cada 40 conversaciones extra</span>
-          </div>
+        {/* Billing Toggle + extra info (right-aligned on desktop, centered on mobile) */}
+        <div className="flex flex-col items-center lg:items-end mt-10 lg:mt-16 mb-3 lg:mb-4 max-w-[1500px] mx-auto px-4">
+          <SegmentedControl
+            ariaLabel="Facturación"
+            colorScheme="amber"
+            value={planBilling}
+            onChange={(v) => setPlanBilling(v as "monthly" | "annual")}
+            options={[
+              { value: "monthly", label: "Mensual" },
+              { value: "annual", label: "Anual", badge: "−15%" },
+            ]}
+          />
+          <p className="text-center lg:text-right text-xs text-slate-500 mt-3">
+            Se añaden <strong className="font-semibold text-slate-600">10€</strong> por cada 40 conversaciones extra
+          </p>
         </div>
 
         {/* Pricing Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2 pt-8 max-w-[1500px] mx-auto">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2 max-sm:gap-y-5 pt-8 max-lg:pt-4 max-w-[1500px] mx-auto max-sm:max-w-[88%]">
           {SUBSCRIPTION_PLANS.map((plan) => {
             const isEnterprise = plan.id === "enterprise";
             const isFree = plan.id === "free";
@@ -278,7 +273,7 @@ function PricingSection() {
               (numListings > 25 && plan.id === "enterprise");
 
             return (
-              <div key={plan.id} className="relative flex flex-col h-full">
+              <div key={plan.id} className={cn("relative flex flex-col sm:h-full", isRecommended && "max-sm:mt-10")}>
                 {isRecommended && (
                   <div className="absolute -top-8 left-0 right-0 bg-primary-500 text-white text-[10px] font-black h-8 flex items-center justify-center rounded-t-xl uppercase tracking-widest border-2 border-primary-500 border-b-0 font-heading">
                     Recomendado
@@ -377,7 +372,7 @@ function PricingSection() {
                             {/* Recommended Guidance Tag */}
                             {!isFree && (
                               <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold text-gray-400">Recomendado x simulador:</span>
+                                <span className="text-[10px] font-bold text-gray-400">Recomendado por simulador:</span>
                                 <span className={cn(
                                   "text-[10px] font-black px-1.5 py-0.5 rounded",
                                   contractedValue >= recommendedValue 
@@ -405,14 +400,21 @@ function PricingSection() {
                       </div>
                     )}
 
-                    <ul className={cn("mb-4 flex-1 space-y-2 pt-3", !isEnterprise && "border-t border-gray-100")}>
-                      {plan.benefits.map((line) => (
-                        <li key={line} className="flex gap-2 text-xs text-gray-600 leading-snug">
-                          <Check className="shrink-0 text-emerald-500 mt-0.5" size={14} aria-hidden />
-                          <span>{line}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className={cn("mb-4 flex-1 pt-3", !isEnterprise && "border-t border-gray-100")}>
+                      {"inheritsFromName" in plan && plan.inheritsFromName && (
+                        <p className="text-xs font-medium text-gray-500 mb-2">
+                          Todo lo de {plan.inheritsFromName}, y además:
+                        </p>
+                      )}
+                      <ul className="space-y-2">
+                        {plan.benefits.map((line) => (
+                          <li key={line} className="flex gap-2 text-xs text-gray-600 leading-snug">
+                            <Check className="shrink-0 text-emerald-500 mt-0.5" size={14} aria-hidden />
+                            <span>{line}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
 
                     <button
                       onClick={() => {
@@ -532,11 +534,11 @@ function FAQSectionContent() {
 
 /** Retratos fijos (sin enlaces ni tracking) */
 const REVIEW_AVATAR_SRC = [
-  "https://randomuser.me/api/portraits/women/65.jpg",
-  "https://randomuser.me/api/portraits/men/32.jpg",
-  "https://randomuser.me/api/portraits/women/44.jpg",
-  "https://randomuser.me/api/portraits/men/76.jpg",
-  "https://randomuser.me/api/portraits/women/68.jpg",
+  "https://images.unsplash.com/photo-1564564321837-a57b7070ac4f?w=120&h=120&fit=crop&crop=faces&q=80",
+  "https://images.unsplash.com/photo-1502823403499-6ccfcf4fb453?w=120&h=120&fit=crop&crop=faces&q=80",
+  "https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=120&h=120&fit=crop&crop=faces&q=80",
+  "https://images.unsplash.com/photo-1521119989659-a83eee488004?w=120&h=120&fit=crop&crop=faces&q=80",
+  "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=120&h=120&fit=crop&crop=faces&q=80",
 ] as const;
 
 const STAR_GOLD = "#FFC107";
@@ -544,7 +546,7 @@ const STAR_GOLD = "#FFC107";
 function HeroReviewsRow() {
   return (
     <div
-      className="mt-8 flex flex-col items-center"
+      className="mt-12 flex flex-col items-center"
       role="img"
       aria-label="Valoración media 4,7 sobre 5 estrellas"
     >
@@ -616,19 +618,27 @@ const PRODUCT_FEATURES = [
 const DEMO_APP_TABS = [
   {
     title: "Revisa conversaciones",
-    body: "Mira cómo Marcos va cualificando a tus leads en tiempo real. Si lo prefieres, desactívalo y sigue tú con la conversación.",
+    body: "Ve a Marcos cualificar tus leads en tiempo real o desactívalo y sigue tú con la conversación.",
+    mobileVideo: "/landingv2/mobile-conversaciones.mp4",
+    desktopVideo: "/landingv2/conversaciones.mp4",
   },
   {
     title: "Analiza y filtra",
     body: "Ordena y prioriza tus leads: añade etiquetas, filtra por criterios y revisa resúmenes de los ya cualificados.",
+    mobileVideo: "/landingv2/mobile-leads-cualificados.mp4",
+    desktopVideo: "/landingv2/leads-cualificados.mp4",
   },
   {
     title: "Acciona en grupo",
     body: "Actúa sobre varios leads a la vez; por ejemplo, envía un mensaje a todos los que tengas marcados como finalistas.",
+    mobileVideo: "/landingv2/mobile-leads-bulk.mp4",
+    desktopVideo: "/landingv2/leads-bulk.mp4",
   },
   {
     title: "Revisa métricas",
     body: "Entiende el interés que despiertan tus anuncios y mide el éxito de la cualificación de tus leads.",
+    mobileVideo: "/landingv2/mobile-dashboard.mp4",
+    desktopVideo: "/landingv2/dashboard.mp4",
   },
 ] as const;
 
@@ -659,6 +669,7 @@ function TimedFeatureList({
 }) {
   const [internalActiveIndex, setInternalActiveIndex] = useState(0);
   const activeIndex = externalActiveIndex !== undefined ? externalActiveIndex : internalActiveIndex;
+  const [step2ManualSub, setStep2ManualSub] = useState<0 | 1>(0);
 
   const [progress, setProgress] = useState(0);
   const stepStartedAtRef = useRef(Date.now());
@@ -736,10 +747,24 @@ function TimedFeatureList({
             </span>
             <button
               type="button"
-              onClick={() => {
+              onClick={(e) => {
+                const target = e.currentTarget;
                 onUserInteract?.();
                 onStepSelect?.(index);
                 setActiveIndex(index);
+                // On mobile, scroll the clicked step into view so the
+                // expanded video/animation isn't hidden below the fold.
+                if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
+                  // Wait for the re-render + layout shift (previous video
+                  // collapse, new one mount) before measuring scroll target.
+                  requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                      const rect = target.getBoundingClientRect();
+                      const y = window.scrollY + rect.top - 140;
+                      window.scrollTo({ top: y, behavior: "smooth" });
+                    });
+                  });
+                }
               }}
               className="relative text-left flex-1 pb-6 transition-all duration-500"
             >
@@ -780,7 +805,7 @@ function TimedFeatureList({
                           </p>
                           <div className="flex gap-2.5 mt-3.5 mb-1.5">
                             <button
-                              onClick={(e) => { e.stopPropagation(); onUserInteract?.(); onSubStepSelect?.(1); }}
+                              onClick={(e) => { e.stopPropagation(); onUserInteract?.(); setStep2ManualSub(0); onSubStepSelect?.(1); }}
                               className={cn(
                                 "group/btn flex-1 rounded-xl border p-2.5 transition-all text-left",
                                 lightMode
@@ -800,7 +825,7 @@ function TimedFeatureList({
                               </div>
                             </button>
                             <button
-                              onClick={(e) => { e.stopPropagation(); onUserInteract?.(); onSubStepSelect?.(2); }}
+                              onClick={(e) => { e.stopPropagation(); onUserInteract?.(); setStep2ManualSub(1); onSubStepSelect?.(2); }}
                               className={cn(
                                 "group/btn flex-1 rounded-xl border p-2.5 transition-all text-left",
                                 lightMode
@@ -820,12 +845,69 @@ function TimedFeatureList({
                               </div>
                             </button>
                           </div>
+                          {(() => {
+                            const subActive: 0 | 1 = autoPlay
+                              ? ((step2SubProgress ?? 0) < 0.5 ? 0 : 1)
+                              : step2ManualSub;
+                            return (
+                              <div className="lg:hidden mt-4 mx-auto w-[300px] max-w-full aspect-[9/16] overflow-hidden rounded-2xl border border-slate-200/80 relative bg-white">
+                                <div
+                                  className="absolute top-0 left-0 origin-top-left"
+                                  style={{
+                                    width: "353px",
+                                    height: `${(353 * 16) / 9}px`,
+                                    transform: "scale(0.85)",
+                                    fontFamily: '"Helvetica Neue", Helvetica, "Lucida Grande", Arial, Ubuntu, Cantarell, "Fira Sans", sans-serif',
+                                  }}
+                                >
+                                  {subActive === 0 ? (
+                                    <WhatsAppAnimationShowcaseSlow
+                                      progress={autoPlay ? mensajesProgress : 1}
+                                      autoScroll={autoPlay}
+                                    />
+                                  ) : (
+                                    <WhatsAppAnimationShowcaseCallQualification
+                                      progress={autoPlay ? llamadasProgress : 1}
+                                      autoScroll={autoPlay}
+                                    />
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </>
                       ) : (
                         <p className="text-sm leading-relaxed" style={{ color: lightMode ? BODY : "rgba(255, 247, 231, 0.6)" }}>
                           {lines[1]}
                         </p>
                       )
+                    )}
+                    {index === 0 && (
+                      <div className="lg:hidden mt-4 mx-auto w-[300px] max-w-full aspect-[9/16] rounded-2xl overflow-hidden border border-slate-200/80 shadow-sm bg-white">
+                        <video
+                          src="/landingv2/crear-anuncio.mp4"
+                          autoPlay
+                          muted
+                          loop
+                          playsInline
+                          className="block w-full h-full object-contain"
+                        />
+                      </div>
+                    )}
+                    {index === 2 && (
+                      <div className="lg:hidden mt-14 mx-auto w-[300px] max-w-full aspect-[9/16] overflow-hidden rounded-2xl border border-slate-200/80 relative bg-white">
+                        <div
+                          className="absolute top-0 left-0 origin-top-left"
+                          style={{
+                            width: "353px",
+                            height: `${(353 * 16) / 9}px`,
+                            transform: "scale(0.85)",
+                            fontFamily: '"Helvetica Neue", Helvetica, "Lucida Grande", Arial, Ubuntu, Cantarell, "Fira Sans", sans-serif',
+                          }}
+                        >
+                          <WhatsAppLeadsAnimationPhone key={`leads-inline-${isActive ? "active" : "idle"}`} />
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
@@ -839,9 +921,59 @@ function TimedFeatureList({
 }
 
 export function MarketingLandingV2() {
+  const { openPreferences: openCookiePreferences } = useCookieConsent();
   const storyCarouselRef = useRef<HTMLDivElement | null>(null);
+
+  // Fire section_view (mapped to Meta ViewContent) when the user reaches the
+  // "Solicita Demo" section by scroll. Strong intent signal for ad optimization.
+  useEffect(() => {
+    const target = document.getElementById("solicita-demo");
+    if (!target || typeof IntersectionObserver === "undefined") return;
+    let fired = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && !fired) {
+            fired = true;
+            analytics.trackSectionView("solicita_demo");
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { threshold: 0.3 },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
   const [activeStoryIndex, setActiveStoryIndex] = useState(0);
   const [demoTabIndex, setDemoTabIndex] = useState(0);
+  const [demoProgress, setDemoProgress] = useState(0);
+  const demoVideoRefs = useRef<Array<HTMLVideoElement | null>>([]);
+  const DEMO_TAB_DURATION_MS = 10000;
+
+  useEffect(() => {
+    demoVideoRefs.current.forEach((video, i) => {
+      if (!video) return;
+      if (i === demoTabIndex) {
+        video.currentTime = 0;
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
+    });
+
+    setDemoProgress(0);
+    const raf = requestAnimationFrame(() => setDemoProgress(100));
+    const timer = setTimeout(() => {
+      setDemoTabIndex((i) => (i + 1) % DEMO_APP_TABS.length);
+    }, DEMO_TAB_DURATION_MS);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
+  }, [demoTabIndex]);
 
   const goToSlideRaw = (index: number) => {
     const el = storyCarouselRef.current;
@@ -859,10 +991,10 @@ export function MarketingLandingV2() {
   const UNIFIED_STORY_STEPS = useMemo(() => [
     {
       title: "Crea tu anuncio en Proplead",
-      durationMs: 10000,
+      durationMs: 14000,
       lines: [
         "Importa la información del inmueble desde tus portales en segundos.",
-        "Define las condiciones y filtros de cualificación que debe cumplir cada lead."
+        "Define los filtros de cualificación que debe cumplir cada lead y añade la descripción del anuncio para que el asistente pueda resolver dudas."
       ],
     },
     {
@@ -933,14 +1065,14 @@ export function MarketingLandingV2() {
 
 
   return (
-    <div className="min-h-screen text-slate-900 font-body relative bg-white">
+    <div className="min-h-screen text-slate-900 font-body relative bg-white overflow-x-hidden">
       {/* Absolute background gradient */}
       <div className="absolute inset-0 bg-gradient-to-b from-white to-[#fff7e7] pointer-events-none" aria-hidden />
 
       <div className="relative">
-        <nav className="fixed top-8 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1rem)] max-w-7xl rounded-2xl border border-slate-200 bg-white/85 backdrop-blur-md shadow-lg">
-          <div className="px-5 sm:px-6 lg:px-10 h-18 flex items-center justify-between">
-            <div className="flex items-center shrink-0">
+        <nav className="fixed top-2 lg:top-8 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1rem)] max-w-7xl rounded-2xl border border-slate-200 bg-white/85 backdrop-blur-md shadow-lg">
+          <div className="px-5 sm:px-6 lg:px-10 py-3 lg:h-18 lg:py-0 flex flex-col lg:flex-row max-lg:items-stretch lg:items-center lg:justify-between gap-3 lg:gap-0">
+            <div className="flex items-center shrink-0 max-lg:self-start">
               <img
                 src="/proplead-high-resolution-logo.png"
                 alt="Proplead"
@@ -957,65 +1089,67 @@ export function MarketingLandingV2() {
                 href="#solicita-demo"
                 onClick={() => analytics.trackSolicitaDemoClick("nav")}
                 className="text-primary-500 hover:text-primary-600 transition-colors"
+                data-cal-link="prophub/demo-proplead"
+                data-cal-namespace="demo-proplead"
+                data-cal-config='{"layout":"month_view","useSlotsViewOnSmallScreen":"true","theme":"light"}'
               >
                 Solicita Demo
               </a>
             </div>
-            <div className="flex items-center gap-2">
-              <Link to="/login" className="bg-white hover:bg-slate-50 text-slate-900 border border-slate-200 px-6 py-3 rounded-btn text-sm font-bold font-heading transition-all active:scale-95">
+            <div className="flex items-center gap-2 max-lg:w-full">
+              <Link to="/login" className="flex-1 lg:flex-none text-center bg-white hover:bg-slate-50 text-slate-900 border border-slate-200 px-6 py-3 rounded-btn text-sm font-bold font-heading transition-all active:scale-95">
                 Iniciar sesión
               </Link>
-              <Link to="/login" className="bg-primary-500 hover:bg-primary-600 text-white px-6 py-3 rounded-btn text-sm font-bold font-heading transition-all active:scale-95">
+              <Link to="/signup" className="flex-1 lg:flex-none text-center bg-primary-500 hover:bg-primary-600 text-white px-6 py-3 rounded-btn text-sm font-bold font-heading transition-all active:scale-95">
                 Empezar ahora
               </Link>
             </div>
           </div>
         </nav>
 
-        <section id="dolores" className="relative pt-36 pb-12 lg:pt-44 lg:pb-16 scroll-mt-28">
+        <section id="dolores" className="relative pt-40 pb-12 lg:pt-44 lg:pb-16 scroll-mt-28">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="max-w-4xl mx-auto text-center">
 
               <h1 className="text-5xl lg:text-7xl font-extrabold leading-[1.1] mb-6 tracking-tight mx-auto font-special" style={{ color: TITLE }}>
-                No pierdas más tiempo cualificando<br className="hidden lg:block" /> <span className="text-primary-500">leads desinteresados.</span>
+                No pierdas<br className="lg:hidden" /> más tiempo<br className="lg:hidden" /> cualificando<br className="hidden lg:block" /> <span className="text-primary-500">leads desinteresados.</span>
               </h1>
               <p className="text-base sm:text-lg mb-8 leading-relaxed max-w-2xl mx-auto" style={{ color: BODY }}>
                 Proplead es la plataforma definitiva para agentes inmobiliarios que cualifica leads 24/7 vía WhatsApp y llamadas de voz, permitiéndote cerrar más ventas y enfocarte en lo que te importa.
               </p>
-              <div className="flex flex-col sm:flex-row justify-center items-center gap-3">
+              <div className="flex flex-row justify-center items-center gap-3">
                 <a
                   href="#solicita-demo"
                   onClick={() => analytics.trackSolicitaDemoClick("hero")}
-                  className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base transition-all items-center justify-center box-border"
+                  className="inline-flex min-h-11 px-4 sm:px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base whitespace-nowrap transition-all items-center justify-center box-border"
+                  data-cal-link="prophub/demo-proplead"
+                  data-cal-namespace="demo-proplead"
+                  data-cal-config='{"layout":"month_view","useSlotsViewOnSmallScreen":"true","theme":"light"}'
                 >
                   Solicita Demo
                 </a>
                 <Link
-                  to="/login"
-                  className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 bg-primary-500 hover:border-primary-600 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base transition-all items-center justify-center gap-1.5 group box-border"
+                  to="/signup"
+                  className="inline-flex min-h-11 px-4 sm:px-7 py-2.5 border-2 border-primary-500 bg-primary-500 hover:border-primary-600 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base whitespace-nowrap transition-all items-center justify-center gap-1.5 group box-border"
                 >
                   Empezar ahora <ArrowRight className="h-4 w-4 shrink-0 group-hover:translate-x-0.5 transition-transform" />
                 </Link>
               </div>
               <p className="mt-3 text-center text-[10px] text-slate-500 max-w-sm mx-auto leading-tight sm:text-[11px] font-heading">
-                40 conversaciones gratis (5h ahorradas).<br />
+                40 conversaciones gratis (5h ahorradas).<br className="hidden lg:block" />{" "}
                 Cancela cuando quieras.
               </p>
-              <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-center gap-4 sm:gap-6">
+              <div className="mt-6 max-lg:mt-12 flex flex-col sm:flex-row sm:items-center sm:justify-center gap-4 sm:gap-6 max-sm:gap-1">
                 <p className="text-[10px] sm:text-xs font-medium text-slate-400 text-center sm:text-left uppercase tracking-widest translate-y-[1px] font-heading">Disponible para:</p>
-                <div className="flex items-center justify-center gap-6 sm:gap-8 flex-wrap">
-                  <span className="inline-flex h-[1.5rem] sm:h-[1.68rem] items-center justify-center -translate-y-[1px]">
+                <div className="flex items-center justify-center gap-4 sm:gap-8 flex-nowrap">
+                  <span className="inline-flex h-[1.2rem] sm:h-[1.68rem] items-center justify-center -translate-y-[1px] shrink-0">
                     <img src={idealistaLogo} alt="Idealista" className="max-h-full w-auto grayscale opacity-80" loading="lazy" />
                   </span>
-                  <span className="inline-flex h-8 sm:h-9 items-center justify-center">
+                  <span className="inline-flex h-6 sm:h-9 items-center justify-center shrink-0">
                     <img src={fotocasaLogo} alt="Fotocasa" className="max-h-full w-auto grayscale opacity-80" loading="lazy" />
                   </span>
-                  <span className="inline-flex h-[2.3rem] sm:h-[2.6rem] items-center justify-center translate-y-[4px]">
+                  <span className="inline-flex h-[1.8rem] sm:h-[2.6rem] items-center justify-center translate-y-[4px] shrink-0">
                     <img src={pisosLogo} alt="Pisos.com" className="max-h-full w-auto grayscale opacity-80" loading="lazy" />
-                  </span>
-                  <span className="hidden sm:block h-5 w-px bg-slate-200" aria-hidden />
-                  <span className="inline-flex h-9 w-24 items-center justify-center">
-                    <img src={metaVerifiedLogo} alt="Meta Verified" className="max-h-[85%] w-auto" loading="lazy" />
                   </span>
                 </div>
               </div>
@@ -1035,7 +1169,7 @@ export function MarketingLandingV2() {
             </div>
 
             {/* Centered heading */}
-            <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-center font-heading mb-28" style={{ color: TITLE }}>
+            <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-center font-heading mb-28 max-lg:mb-10" style={{ color: TITLE }}>
               Empieza a recibir leads cualificados<br />de forma automática en pocos pasos
             </h2>
 
@@ -1060,31 +1194,34 @@ export function MarketingLandingV2() {
                     goToStorySlide(idx);
                   }}
                 />
-                <div className="mt-8 flex flex-col gap-3">
-                  <div className="flex flex-col sm:flex-row items-center gap-3">
+                <div className="mt-8 flex flex-col gap-3 items-center lg:items-stretch">
+                  <div className="flex flex-row items-center justify-center lg:justify-start gap-3">
                     <a
                       href="#solicita-demo"
                       onClick={() => analytics.trackSolicitaDemoClick("solucion_cta")}
-                      className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base transition-all items-center justify-center box-border"
+                      className="inline-flex min-h-11 px-4 sm:px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base whitespace-nowrap transition-all items-center justify-center box-border"
+                      data-cal-link="prophub/demo-proplead"
+                      data-cal-namespace="demo-proplead"
+                      data-cal-config='{"layout":"month_view","useSlotsViewOnSmallScreen":"true","theme":"light"}'
                     >
                       Solicita Demo
                     </a>
                     <Link
-                      to="/login"
-                      className="inline-flex min-h-11 px-7 py-2.5 border-2 border-primary-500 bg-primary-500 hover:border-primary-600 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base transition-all items-center justify-center gap-1.5 group box-border"
+                      to="/signup"
+                      className="inline-flex min-h-11 px-4 sm:px-7 py-2.5 border-2 border-primary-500 bg-primary-500 hover:border-primary-600 hover:bg-primary-600 text-white rounded-btn font-bold font-heading text-base whitespace-nowrap transition-all items-center justify-center gap-1.5 group box-border"
                     >
                       Empezar ahora <ArrowRight className="h-4 w-4 shrink-0 group-hover:translate-x-0.5 transition-transform" />
                     </Link>
                   </div>
-                  <p className="text-[11px] text-slate-500 leading-tight block">
-                    40 conversaciones gratis (5h ahorradas).<br />
+                  <p className="text-[11px] text-slate-500 leading-tight block text-center lg:text-left">
+                    40 conversaciones gratis (5h ahorradas).<br className="hidden lg:block" />{" "}
                     Cancela cuando quieras.
                   </p>
                 </div>
               </div>
 
               {/* Right column: Unified Carousel */}
-              <div className="lg:col-span-7 w-full relative lg:translate-x-[1.5cm] lg:scale-110" onClick={handleUserInteract} onTouchStart={handleUserInteract}>
+              <div className="hidden lg:block lg:col-span-7 w-full relative lg:translate-x-[1.5cm] lg:scale-110" onClick={handleUserInteract} onTouchStart={handleUserInteract}>
                 <div ref={storyCarouselRef} onTouchStart={handleUserInteract} onMouseDown={handleUserInteract} className="flex overflow-hidden snap-x snap-mandatory [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                   
                   {/* Step 1: Video */}
@@ -1094,11 +1231,16 @@ export function MarketingLandingV2() {
                     </div>
                     <div className="w-full flex justify-center">
                       <div className="inline-flex w-auto rounded-[1.75rem] sm:rounded-[2.1rem] px-12 sm:px-24 py-2 sm:py-2.5" style={{ border: "2px solid transparent", background: "linear-gradient(to bottom right, rgba(244, 217, 173, 0.2) 0%, rgba(244, 217, 173, 0) 100%) border-box, linear-gradient(to bottom right, rgba(244, 217, 173, 0.04) 0%, rgba(244, 217, 173, 0) 100%) padding-box", backgroundClip: "border-box, padding-box" }}>
-                        <div className="w-[min(100vw-3rem,352px)] aspect-[9/16] overflow-hidden rounded-[1.2rem] sm:rounded-[1.4rem] border border-slate-200/80">
-                          <img 
-                            className="block w-full h-full object-cover align-top" 
-                            src={nuevoAnuncioImg} 
-                            alt="Nuevo anuncio en Proplead"
+                        <div className="w-[min(100vw-3rem,352px)] aspect-[9/16] overflow-hidden rounded-[1.2rem] sm:rounded-[1.4rem] border border-slate-200/80 bg-white">
+                          <video
+                            src="/landingv2/crear-anuncio.mp4"
+                            autoPlay
+                            muted
+                            loop
+                            playsInline
+                            preload="auto"
+                            aria-label="Crea tu anuncio en Proplead"
+                            className="block w-full h-full object-contain"
                           />
                         </div>
                       </div>
@@ -1173,7 +1315,7 @@ export function MarketingLandingV2() {
 
 
         <section id="demo" className="pt-0 scroll-mt-14">
-          <div className="relative h-16 sm:h-20" aria-hidden>
+          <div className="relative h-16 sm:h-20 -mt-12 lg:mt-0" aria-hidden>
             <svg viewBox="0 0 1440 120" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
               <path d="M0,0 C320,95 1120,95 1440,0 L1440,120 L0,120 Z" className="fill-primary-500" />
             </svg>
@@ -1182,11 +1324,8 @@ export function MarketingLandingV2() {
             <div className="max-w-[90rem] mx-auto px-4 sm:px-6 lg:px-12">
               <div className="text-center mb-10 lg:mb-16">
                 <h2 className="text-2xl lg:text-4xl font-bold tracking-tight mb-4" style={{ color: TITLE }}>
-                  Control total de tu leads<br />y el trabajo de tu asistente, estés donde estés
+                  Control total de tu leads<br />y el trabajo de tu asistente
                 </h2>
-                <p className="text-lg opacity-80 font-medium" style={{ color: TITLE }}>
-                  Gestiona todo desde tu móvil u ordenador
-                </p>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-16 items-center lg:translate-x-12">
@@ -1207,15 +1346,30 @@ export function MarketingLandingV2() {
                             <span
                               className="absolute left-0 right-0 top-0 rounded-full"
                               style={{
-                                height: isActive ? "100%" : "0%",
+                                height: isActive ? `${demoProgress}%` : "0%",
                                 backgroundColor: TITLE,
+                                transition: isActive
+                                  ? `height ${DEMO_TAB_DURATION_MS}ms linear`
+                                  : "none",
                               }}
                             />
                           </span>
                           <div className="w-full">
                             <button
                               type="button"
-                              onClick={() => selectDemoTab(i)}
+                              onClick={(e) => {
+                                const target = e.currentTarget;
+                                selectDemoTab(i);
+                                // On mobile, scroll the clicked tab into view so
+                                // the video that expands below it stays visible.
+                                if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
+                                  requestAnimationFrame(() => {
+                                    const rect = target.getBoundingClientRect();
+                                    const y = window.scrollY + rect.top - 140;
+                                    window.scrollTo({ top: y, behavior: "smooth" });
+                                  });
+                                }
+                              }}
                               className="w-full text-left focus:outline-none"
                             >
                               <h4
@@ -1236,6 +1390,19 @@ export function MarketingLandingV2() {
                                 {tab.body}
                               </p>
                             </div>
+                            {isActive && (
+                              <div className="lg:hidden mt-4 mx-auto w-[300px] max-w-full aspect-[9/16] rounded-2xl overflow-hidden border border-slate-200/80 shadow-sm bg-white">
+                                <video
+                                  key={tab.mobileVideo}
+                                  src={tab.mobileVideo}
+                                  autoPlay
+                                  muted
+                                  loop
+                                  playsInline
+                                  className="block w-full h-full object-contain"
+                                />
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -1244,7 +1411,7 @@ export function MarketingLandingV2() {
                 </div>
 
                 {/* Right side: Decorative Frame with Video */}
-                <div className="lg:col-span-9 order-1 lg:order-2 lg:-mr-24">
+                <div className="hidden lg:block lg:col-span-9 order-1 lg:order-2 lg:-mr-24">
                   <div
                     className="rounded-[1.75rem] sm:rounded-[2.1rem] px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-5"
                     style={{
@@ -1254,19 +1421,25 @@ export function MarketingLandingV2() {
                     }}
                   >
                     <div className="flex justify-center leading-none">
-                      <div className="w-[90%] mx-auto overflow-hidden rounded-[1.35rem] sm:rounded-[1.6rem] shadow-2xl bg-black">
-                        <video
-                          className="block w-full h-auto align-top outline-none ring-0 focus:outline-none focus:ring-0"
-                          src={demoAppVideo}
-                          playsInline
-                          autoPlay
-                          muted
-                          loop
-                          preload="metadata"
-                          aria-label="Proplead app demo"
-                        >
-                          Your browser does not support HTML5 video.
-                        </video>
+                      <div className="relative w-[90%] mx-auto aspect-video overflow-hidden rounded-[1.35rem] sm:rounded-[1.6rem] shadow-2xl bg-black">
+                        {DEMO_APP_TABS.map((tab, i) => (
+                          <video
+                            key={tab.desktopVideo}
+                            ref={(el) => { demoVideoRefs.current[i] = el; }}
+                            className={cn(
+                              "absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ease-out",
+                              i === demoTabIndex ? "opacity-100" : "opacity-0"
+                            )}
+                            src={tab.desktopVideo}
+                            playsInline
+                            autoPlay={i === 0}
+                            muted
+                            loop
+                            preload="auto"
+                            aria-label={`Proplead — ${tab.title}`}
+                            aria-hidden={i !== demoTabIndex}
+                          />
+                        ))}
                       </div>
                     </div>
                   </div>
@@ -1286,7 +1459,7 @@ export function MarketingLandingV2() {
           <PricingSection />
 
           {/* Inverted Decorative Arc Line (Stroke) */}
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 max-lg:py-2 max-lg:-mt-12">
             <div className="relative h-10 sm:h-12" aria-hidden="true">
               <svg viewBox="0 0 1440 120" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
                 <path d="M0,10 C360,95 1080,95 1440,10" fill="none" stroke="#f4d9ad" strokeWidth="4" strokeLinecap="round" />
@@ -1317,20 +1490,22 @@ export function MarketingLandingV2() {
           <FAQSectionContent />
         </div>
 
-        <footer className="bg-slate-950 pt-16 pb-8">
+        <footer className="bg-primary-500 pt-16 pb-8">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-12 pb-12 border-b border-white/10">
+            <div className="grid grid-cols-3 md:grid-cols-2 lg:grid-cols-4 gap-12 max-md:gap-6 pb-12 border-b border-white/20">
               {/* Brand */}
-              <div className="flex flex-col gap-5">
-                <img src={whiteLogo} alt="Proplead" className="h-9 w-auto" />
-                <p className="text-sm text-slate-400 leading-relaxed max-w-xs">
+              <div className="flex flex-col gap-5 max-md:col-span-3">
+                <div className="inline-flex items-center justify-center bg-white rounded-xl px-4 py-3 w-fit shadow-sm">
+                  <img src="/proplead-high-resolution-logo.png" alt="Proplead" className="h-8 w-auto" />
+                </div>
+                <p className="text-sm text-white/90 leading-relaxed max-w-xs">
                   Automatizando el sector inmobiliario con inteligencia artificial 24/7.
                 </p>
                 <div className="flex gap-3">
-                  <a href="https://www.instagram.com/proplead.io" target="_blank" rel="noopener noreferrer" className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors">
+                  <a href="https://www.instagram.com/proplead.io" target="_blank" rel="noopener noreferrer" className="w-9 h-9 rounded-full bg-white/15 border border-white/30 flex items-center justify-center hover:bg-white/25 transition-colors">
                     <Instagram size={15} className="text-white" />
                   </a>
-                  <a href="https://www.linkedin.com/company/proplead" target="_blank" rel="noopener noreferrer" className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors">
+                  <a href="https://www.linkedin.com/company/proplead" target="_blank" rel="noopener noreferrer" className="w-9 h-9 rounded-full bg-white/15 border border-white/30 flex items-center justify-center hover:bg-white/25 transition-colors">
                     <Linkedin size={15} className="text-white" />
                   </a>
                 </div>
@@ -1338,47 +1513,54 @@ export function MarketingLandingV2() {
 
               {/* Producto */}
               <div className="flex flex-col gap-4">
-                <h3 className="text-[10px] font-black tracking-[0.2em] text-white/40 uppercase font-heading">Producto</h3>
+                <h3 className="text-xs font-black tracking-[0.2em] text-white uppercase font-heading">Producto</h3>
                 <nav className="flex flex-col gap-3">
-                  <a href="#dolores" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Problemas</a>
-                  <a href="#solucion" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Solución</a>
-                  <a href="#demo" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Demostración</a>
-                  <a href="#precios" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Precios</a>
-                  <a href="#faq" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">FAQ</a>
+                  <a href="#dolores" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Problemas</a>
+                  <a href="#solucion" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Solución</a>
+                  <a href="#demo" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Demostración</a>
+                  <a href="#precios" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Precios</a>
+                  <a href="#faq" className="text-xs text-white hover:text-white/80 transition-colors font-heading">FAQ</a>
                 </nav>
               </div>
 
               {/* Legal */}
               <div className="flex flex-col gap-4">
-                <h3 className="text-[10px] font-black tracking-[0.2em] text-white/40 uppercase font-heading">Legal</h3>
+                <h3 className="text-xs font-black tracking-[0.2em] text-white uppercase font-heading">Legal</h3>
                 <nav className="flex flex-col gap-3">
-                  <Link to="/legal/privacy-policy" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Política de Privacidad</Link>
-                  <Link to="/legal/terms" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Términos y Condiciones</Link>
-                  <Link to="/legal/cookies" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Política de Cookies</Link>
-                  <Link to="/legal/aup" className="text-sm font-semibold text-slate-300 hover:text-white transition-colors font-heading">Uso Aceptable</Link>
+                  <Link to="/legal/privacy-policy" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Política de Privacidad</Link>
+                  <Link to="/legal/terms" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Términos y Condiciones</Link>
+                  <Link to="/legal/cookies" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Política de Cookies</Link>
+                  <button
+                    type="button"
+                    onClick={openCookiePreferences}
+                    className="text-left text-xs text-white hover:text-white/80 transition-colors font-heading"
+                  >
+                    Gestionar cookies
+                  </button>
+                  <Link to="/legal/aup" className="text-xs text-white hover:text-white/80 transition-colors font-heading">Uso Aceptable</Link>
                 </nav>
               </div>
 
               {/* Contacto */}
               <div className="flex flex-col gap-4">
-                <h3 className="text-[10px] font-black tracking-[0.2em] text-white/40 uppercase font-heading">Contacto</h3>
+                <h3 className="text-xs font-black tracking-[0.2em] text-white uppercase font-heading">Contacto</h3>
                 <a
                   href="mailto:soporte@proplead.io"
-                  className="inline-flex items-center justify-center px-4 py-2.5 rounded-lg bg-white text-slate-950 text-sm font-bold font-heading hover:bg-slate-100 transition-colors w-fit"
+                  className="inline-flex items-center justify-center px-4 py-2.5 rounded-lg bg-white/15 border border-white/30 text-white text-sm font-bold font-heading hover:bg-white/25 transition-colors w-fit"
                 >
-                  Contactar soporte
+                  Contactar con soporte
                 </a>
                 <div className="flex flex-col gap-1">
-                  <span className="text-[10px] font-black tracking-[0.15em] text-white/30 uppercase font-heading">Email</span>
-                  <a href="mailto:soporte@proplead.io" className="text-sm text-slate-300 hover:text-white transition-colors">soporte@proplead.io</a>
+                  <span className="text-[10px] font-black tracking-[0.15em] text-white uppercase font-heading">Email</span>
+                  <a href="mailto:soporte@proplead.io" className="text-xs text-white hover:text-white/80 transition-colors">soporte@proplead.io</a>
                 </div>
               </div>
             </div>
 
             {/* Bottom bar */}
-            <div className="pt-8 flex flex-col sm:flex-row items-center justify-between gap-3">
-              <p className="text-sm font-bold text-white/30 font-heading">© 2026 Talmate Limited · Proplead</p>
-              <p className="text-xs text-white/20 text-center sm:text-right">
+            <div className="pt-8 flex flex-col sm:flex-row items-center sm:items-center justify-between gap-3 max-sm:items-start">
+              <p className="text-sm font-bold text-white/90 font-heading">© 2026 Talmate Limited · Proplead</p>
+              <p className="text-xs text-white/80 text-center sm:text-right max-sm:text-left">
                 Talmate Limited (Companies House nº 16733027) · 191 King's Cross Road, Flat 2, London, WC1X 9DB, United Kingdom.
               </p>
             </div>

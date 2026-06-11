@@ -1,10 +1,15 @@
 import React, { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink, ChevronDown, CheckSquare, Square } from "lucide-react";
-import type { Lead, QualificationStatus, OperationType } from "../types";
-import { updateLead } from "../services/leads";
+import { Timestamp } from "firebase/firestore";
+import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink, ChevronDown, CheckSquare, Square, Mail, PhoneCall, History } from "lucide-react";
+import type { Lead, QualificationStatus, OperationType, Activity, LeadFollowUpStatus } from "../types";
+import { LEAD_FOLLOWUP_STATUSES, LEAD_FOLLOWUP_STATUS_LABELS } from "../types";
+import { updateLead, addLeadActivity, setLeadNextAction } from "../services/leads";
 import { updateConversation } from "../services/conversations";
-import { formatPhone, cn } from "../lib/utils";
+import { formatPhone, formatDate, cn } from "../lib/utils";
+import { LEAD_ACTIVITY_OUTCOMES, PROSPECT_CHANNEL_LABELS, PROSPECT_OUTCOME_LABELS, toDateTimeInputValue } from "../lib/prospectMeta";
+import { useAuth } from "../contexts/AuthContext";
+import { ContactLogForm } from "./ContactLogForm";
 import { Button } from "./ui";
 
 interface LeadEditModalProps {
@@ -24,9 +29,16 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
     const [income, setIncome] = useState<number | "">(lead.income ?? "");
     const [paymentMethod, setPaymentMethod] = useState<"Contado" | "Hipoteca" | "">(lead.paymentMethod ?? "");
     const [notes, setNotes] = useState(lead.notes || "");
+    const [email, setEmail] = useState(lead.email || "");
     const [tags, setTags] = useState<string[]>((lead.tags || []).filter((t) => t.toLowerCase() !== "lead"));
     const [newTag, setNewTag] = useState("");
     const [saving, setSaving] = useState(false);
+
+    // Seguimiento del comprador (agenda + historial), reutiliza la maquinaria de Prospect.
+    const { effectiveUid, user } = useAuth();
+    const [followUpStatus, setFollowUpStatus] = useState<LeadFollowUpStatus | "">(lead.followUpStatus || "");
+    const [activities, setActivities] = useState<Activity[]>(lead.activities || []);
+    const [logging, setLogging] = useState(false);
 
     const [isOperationTypeDropdownOpen, setIsOperationTypeDropdownOpen] = useState(false);
     const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
@@ -42,7 +54,10 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
         setIncome(lead.income ?? "");
         setPaymentMethod(lead.paymentMethod ?? "");
         setNotes(lead.notes || "");
+        setEmail(lead.email || "");
         setTags((lead.tags || []).filter((t) => t.toLowerCase() !== "lead"));
+        setFollowUpStatus(lead.followUpStatus || "");
+        setActivities(lead.activities || []);
     }, [lead]);
 
     const handleAddTag = (e?: React.FormEvent) => {
@@ -80,7 +95,9 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
                 income: income !== "" ? Number(income) : undefined,
                 paymentMethod: paymentMethod !== "" ? (paymentMethod as "Contado" | "Hipoteca") : undefined,
                 notes,
-                tags
+                email: email.trim() || undefined,
+                tags,
+                followUpStatus: followUpStatus || undefined,
             };
 
             await updateLead(lead.id, data);
@@ -105,6 +122,34 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
             toast.error("Error al actualizar el lead");
         } finally {
             setSaving(false);
+        }
+    };
+
+    const handleLogContact = async (
+        entry: { channel: Activity["channel"]; outcome: Activity["outcome"]; note?: string },
+        nextDate: Date | null,
+        reminderMinutes: number | null
+    ) => {
+        if (readOnly) {
+            toast.message("Solo lectura en modo vista como usuario");
+            return;
+        }
+        setLogging(true);
+        try {
+            const createdByName = user?.displayName || user?.email || undefined;
+            await addLeadActivity(lead.id, { ...entry, createdByUid: effectiveUid, createdByName });
+            await setLeadNextAction(lead.id, nextDate, reminderMinutes);
+            setActivities((prev) => [
+                { ...entry, id: crypto.randomUUID(), at: Timestamp.now(), createdByUid: effectiveUid, createdByName },
+                ...prev,
+            ]);
+            toast.success("Contacto registrado");
+            onUpdate();
+        } catch (error) {
+            console.error("Error logging lead contact:", error);
+            toast.error("Error al registrar el contacto");
+        } finally {
+            setLogging(false);
         }
     };
 
@@ -152,6 +197,21 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
                                 value={name}
                                 onChange={(e) => setName(e.target.value)}
                                 placeholder="Nombre del cliente"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                            />
+                        </div>
+
+                        {/* Email */}
+                        <div className="space-y-2">
+                            <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                <Mail size={16} className="text-primary-500" />
+                                Correo electrónico
+                            </label>
+                            <input
+                                type="email"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                placeholder="cliente@ejemplo.com"
                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
                             />
                         </div>
@@ -442,6 +502,57 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
                             placeholder="Añade información relevante sobre el lead..."
                             className="w-full px-4 py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none min-h-[120px] resize-none"
                         />
+                    </div>
+
+                    {/* Seguimiento del comprador */}
+                    <div className="space-y-3 border-t border-gray-100 pt-6">
+                        <div className="flex items-center justify-between gap-3">
+                            <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                <PhoneCall size={16} className="text-primary-500" />
+                                Seguimiento
+                            </label>
+                            <select
+                                value={followUpStatus}
+                                onChange={(e) => setFollowUpStatus(e.target.value as LeadFollowUpStatus | "")}
+                                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                            >
+                                <option value="">Sin estado</option>
+                                {LEAD_FOLLOWUP_STATUSES.map((s) => (
+                                    <option key={s} value={s}>{LEAD_FOLLOWUP_STATUS_LABELS[s]}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                            Registra una llamada o fija cuándo volver a contactar (p. ej. “llamar el jueves”). Aparecerá en Seguimiento.
+                        </p>
+                        <ContactLogForm
+                            disabled={readOnly}
+                            loading={logging}
+                            outcomes={LEAD_ACTIVITY_OUTCOMES}
+                            initialNextDate={lead.nextActionDate ? toDateTimeInputValue(lead.nextActionDate.toMillis()) : ""}
+                            initialReminderMinutes={lead.reminderMinutesBefore ?? null}
+                            onSubmit={handleLogContact}
+                        />
+                        {activities.length > 0 && (
+                            <div className="pt-1">
+                                <p className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                                    <History size={14} /> Historial
+                                </p>
+                                <ul className="space-y-2">
+                                    {[...activities].sort((a, b) => b.at.toMillis() - a.at.toMillis()).map((a) => (
+                                        <li key={a.id} className="text-sm border-l-2 border-gray-200 pl-3 py-0.5">
+                                            <p className="font-semibold text-gray-800">
+                                                {PROSPECT_OUTCOME_LABELS[a.outcome]} · <span className="font-normal text-gray-500">{PROSPECT_CHANNEL_LABELS[a.channel]}</span>
+                                            </p>
+                                            {a.note && <p className="text-gray-600 break-words">{a.note}</p>}
+                                            <p className="text-[11px] text-gray-400">
+                                                {formatDate(a.at.toMillis())}{a.createdByName ? ` · ${a.createdByName}` : ""}
+                                            </p>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
                     </div>
                 </div>
 
