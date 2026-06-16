@@ -2,7 +2,7 @@ import Cal, { getCalApi } from "@calcom/embed-react";
 import { useEffect } from "react";
 
 const NAMESPACE = "demo-proplead";
-const DEFAULT_CAL_LINK = "prophub/demo-proplead";
+const DEFAULT_CAL_LINK = "propgroup/demo-proplead";
 
 /** Host por defecto: Cal.eu (el mismo slug en cal.com suele dar 404). */
 const DEFAULT_CAL_ORIGIN = "https://app.cal.eu";

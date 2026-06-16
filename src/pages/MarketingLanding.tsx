@@ -402,7 +402,7 @@ function FAQSectionContent() {
 
         <div className="mt-12 text-center">
           <p className="text-sm font-bold mb-4 font-heading" style={{ color: BODY }}>¿Tienes más preguntas?</p>
-          <a href="https://wa.me/34600000000" target="_blank" className="inline-flex items-center gap-2 text-primary-600 font-bold font-heading hover:text-primary-700 transition-colors">
+          <a href="https://wa.me/34681106443" target="_blank" className="inline-flex items-center gap-2 text-primary-600 font-bold font-heading hover:text-primary-700 transition-colors">
             Hablar con soporte por WhatsApp
             <ArrowRight size={16} />
           </a>

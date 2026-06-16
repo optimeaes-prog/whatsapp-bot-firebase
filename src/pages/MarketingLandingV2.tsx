@@ -522,7 +522,7 @@ function FAQSectionContent() {
 
         <div className="mt-12 text-center">
           <p className="text-sm font-bold mb-4 font-heading" style={{ color: BODY }}>¿Tienes más preguntas?</p>
-          <a href="https://wa.me/34600000000" target="_blank" className="inline-flex items-center gap-2 text-primary-600 font-bold font-heading hover:text-primary-700 transition-colors">
+          <a href="https://wa.me/34681106443" target="_blank" className="inline-flex items-center gap-2 text-primary-600 font-bold font-heading hover:text-primary-700 transition-colors">
             Hablar con soporte por WhatsApp
             <ArrowRight size={16} />
           </a>
@@ -1089,7 +1089,7 @@ export function MarketingLandingV2() {
                 href="#solicita-demo"
                 onClick={() => analytics.trackSolicitaDemoClick("nav")}
                 className="text-primary-500 hover:text-primary-600 transition-colors"
-                data-cal-link="prophub/demo-proplead"
+                data-cal-link="propgroup/demo-proplead"
                 data-cal-namespace="demo-proplead"
                 data-cal-config='{"layout":"month_view","useSlotsViewOnSmallScreen":"true","theme":"light"}'
               >
@@ -1122,7 +1122,7 @@ export function MarketingLandingV2() {
                   href="#solicita-demo"
                   onClick={() => analytics.trackSolicitaDemoClick("hero")}
                   className="inline-flex min-h-11 px-4 sm:px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base whitespace-nowrap transition-all items-center justify-center box-border"
-                  data-cal-link="prophub/demo-proplead"
+                  data-cal-link="propgroup/demo-proplead"
                   data-cal-namespace="demo-proplead"
                   data-cal-config='{"layout":"month_view","useSlotsViewOnSmallScreen":"true","theme":"light"}'
                 >
@@ -1200,7 +1200,7 @@ export function MarketingLandingV2() {
                       href="#solicita-demo"
                       onClick={() => analytics.trackSolicitaDemoClick("solucion_cta")}
                       className="inline-flex min-h-11 px-4 sm:px-7 py-2.5 border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/10 rounded-btn font-bold font-heading text-base whitespace-nowrap transition-all items-center justify-center box-border"
-                      data-cal-link="prophub/demo-proplead"
+                      data-cal-link="propgroup/demo-proplead"
                       data-cal-namespace="demo-proplead"
                       data-cal-config='{"layout":"month_view","useSlotsViewOnSmallScreen":"true","theme":"light"}'
                     >

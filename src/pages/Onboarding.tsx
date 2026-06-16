@@ -1299,7 +1299,7 @@ export function Onboarding() {
             <div className="p-4 overflow-y-auto max-h-[calc(90vh-72px)]">
               <CalEuInlineEmbed
                 namespace="onboarding-proplead"
-                calLink="prophub/onboarding-proplead"
+                calLink="propgroup/onboarding-proplead"
                 minHeight={isDesktop ? 520 : 650}
               />
               <div className="mt-4 flex flex-col sm:flex-row gap-3 justify-end">
