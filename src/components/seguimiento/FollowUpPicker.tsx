@@ -82,7 +82,7 @@ export function FollowUpPicker({
             options={[
               { value: "all", label: "Todos" },
               { value: "prospect", label: "Propietarios" },
-              { value: "lead", label: "Compradores" },
+              { value: "lead", label: "Leads" },
             ]}
           />
         </div>

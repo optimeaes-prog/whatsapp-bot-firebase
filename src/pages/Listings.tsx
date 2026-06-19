@@ -127,7 +127,7 @@ const emptyFormData: ListingFormState = {
 
 /**
  * Mapea una captación (Prospect) a los campos del formulario de Anuncio para autocompletar.
- * "Traspaso" no existe en anuncios (solo Venta/Alquiler): se deja vacío para que el usuario elija.
+ * Solo Venta/Alquiler; cualquier otro valor heredado se deja vacío para que el usuario elija.
  * No rellena listingCode/link: el código real de Idealista lo pone el usuario.
  */
 function mapCaptacionToListingForm(c: Prospect): Partial<ListingFormState> {

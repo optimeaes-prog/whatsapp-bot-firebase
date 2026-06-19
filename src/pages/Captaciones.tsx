@@ -14,7 +14,7 @@ import { PageHeader, PageLoading, FilterCard, SegmentedControl, Button } from ".
 import { ProspectDrawer } from "../components/ProspectDrawer";
 import { ProspectCreateModal } from "../components/ProspectCreateModal";
 
-type OpFilter = "all" | "Venta" | "Alquiler" | "Traspaso";
+type OpFilter = "all" | "Venta" | "Alquiler";
 type AnuncioFilter = "all" | "with" | "without";
 
 /**
@@ -103,7 +103,6 @@ export function Captaciones() {
     <div>
       <div className="mb-6">
         <PageHeader
-          icon={<FolderOpen size={26} />}
           title="Captaciones"
           subtitle={`Inmuebles y propietarios captados · ${filtered.length} de ${items.length}`}
           actions={
@@ -149,7 +148,6 @@ export function Captaciones() {
                 { value: "all", label: "Todas" },
                 { value: "Venta", label: "Venta" },
                 { value: "Alquiler", label: "Alquiler" },
-                { value: "Traspaso", label: "Traspaso" },
               ]}
             />
             <SegmentedControl
@@ -175,7 +173,7 @@ export function Captaciones() {
           <p className="text-sm">Crea tu primera captación con el botón “Nueva captación”.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="flex flex-col gap-3">
           {filtered.map((p) => (
             <CaptacionCard key={p.id} c={p} onOpen={setSelected} />
           ))}
@@ -218,19 +216,19 @@ function CaptacionCard({ c, onOpen }: { c: Prospect; onOpen: (p: Prospect) => vo
   return (
     <div
       onClick={() => onOpen(c)}
-      className="card !p-0 overflow-hidden cursor-pointer hover:border-primary-300 hover:shadow-md transition-all"
+      className="card !p-0 overflow-hidden cursor-pointer hover:border-primary-300 hover:shadow-md transition-all flex items-stretch"
     >
-      <div className="aspect-[4/3] bg-gray-100 flex items-center justify-center relative">
+      <div className="w-32 sm:w-44 shrink-0 bg-gray-100 flex items-center justify-center relative">
         {cover ? (
           <img src={cover} alt={c.ownerName || "Captación"} className="w-full h-full object-cover" />
         ) : (
-          <ImageOff className="text-gray-300" size={30} />
+          <ImageOff className="text-gray-300" size={28} />
         )}
         {c.wonListingId && (
           <Link
             to="/anuncios"
             onClick={(e) => e.stopPropagation()}
-            className="absolute top-2 right-2 inline-flex items-center gap-1 rounded-full bg-emerald-600/95 text-white text-[10px] font-bold px-2 py-1 shadow-sm hover:bg-emerald-700"
+            className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-full bg-emerald-600/95 text-white text-[10px] font-bold px-2 py-1 shadow-sm hover:bg-emerald-700"
             title="Esta captación ya tiene anuncio"
           >
             <Megaphone size={11} /> Con anuncio
@@ -238,21 +236,23 @@ function CaptacionCard({ c, onOpen }: { c: Prospect; onOpen: (p: Prospect) => vo
         )}
       </div>
 
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-2">
-          <p className="font-bold text-gray-900 text-sm truncate">{c.ownerName || "Sin nombre"}</p>
-          <OperationTypeBadge type={c.operationType} />
+      <div className="flex-1 min-w-0 p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6">
+        <div className="min-w-0 sm:flex-1">
+          <div className="flex items-center gap-2">
+            <p className="font-bold text-gray-900 text-sm truncate">{c.ownerName || "Sin nombre"}</p>
+            <OperationTypeBadge type={c.operationType} />
+          </div>
+
+          <p className="text-xs text-gray-500 truncate mt-0.5 flex items-center gap-1">
+            <MapPin size={12} className="shrink-0" /> {location || "Sin ubicación"}
+          </p>
+
+          {metrics.length > 0 && (
+            <p className="text-xs font-semibold text-gray-700 mt-1.5">{metrics.join(" · ")}</p>
+          )}
         </div>
 
-        <p className="text-xs text-gray-500 truncate mt-0.5 flex items-center gap-1">
-          <MapPin size={12} className="shrink-0" /> {location || "Sin ubicación"}
-        </p>
-
-        {metrics.length > 0 && (
-          <p className="text-xs font-semibold text-gray-700 mt-2">{metrics.join(" · ")}</p>
-        )}
-
-        <div className="flex flex-col gap-1 mt-3 text-xs text-gray-600">
+        <div className="flex flex-col gap-1 text-xs text-gray-600 sm:w-52 sm:shrink-0">
           {c.phone && (
             <a href={`tel:${c.phone}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-primary-600 hover:text-primary-700 truncate">
               <Phone size={12} className="shrink-0" /> {formatPhoneWhatsApp(c.phone)}
@@ -265,7 +265,7 @@ function CaptacionCard({ c, onOpen }: { c: Prospect; onOpen: (p: Prospect) => vo
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 mt-3">
+        <div className="flex items-center gap-2 sm:flex-col sm:items-end sm:gap-1 sm:w-36 sm:shrink-0">
           <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", PROSPECT_STAGE_CLASSES[c.stage])}>
             {PROSPECT_STAGE_LABELS[c.stage]}
           </span>

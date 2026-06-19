@@ -34,7 +34,7 @@ import { NewActionMenu } from "../components/seguimiento/NewActionMenu";
 import { SinSeguimientoSection } from "../components/seguimiento/SinSeguimientoSection";
 
 type ViewMode = "kanban" | "lista";
-type OpFilter = "all" | "Venta" | "Alquiler" | "Traspaso";
+type OpFilter = "all" | "Venta" | "Alquiler";
 type Subject = "all" | "owner" | "buyer";
 type StatusFilterValue = LeadFollowUpStatus | "sin_estado";
 
@@ -254,11 +254,23 @@ export function Seguimiento() {
     <div>
       <div className="mb-6">
         <PageHeader
-          icon={<PhoneCall size={26} />}
+          className="flex-col md:flex-row md:items-end"
           title="Seguimiento"
-          subtitle={`Propietarios y compradores · agenda de próximas acciones${dueCount ? ` · ${dueCount} pendientes hoy` : ""}`}
+          subtitle={`Propietarios y leads · agenda de próximas acciones${dueCount ? ` · ${dueCount} pendientes hoy` : ""}`}
           actions={
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Tipo: todos / propietarios / compradores */}
+              <SegmentedControl
+                ariaLabel="Tipo"
+                mode="single"
+                value={subject}
+                onChange={(v) => setSubject(v)}
+                options={[
+                  { value: "all", label: "Todos" },
+                  { value: "owner", label: "Propietarios" },
+                  { value: "buyer", label: "Leads" },
+                ]}
+              />
               {subject === "owner" && (
                 <SegmentedControl
                   ariaLabel="Vista"
@@ -279,21 +291,6 @@ export function Seguimiento() {
               />
             </div>
           }
-        />
-      </div>
-
-      {/* Tipo: todos / propietarios / compradores */}
-      <div className="mb-4">
-        <SegmentedControl
-          ariaLabel="Tipo"
-          mode="single"
-          value={subject}
-          onChange={(v) => setSubject(v)}
-          options={[
-            { value: "all", label: "Todos" },
-            { value: "owner", label: "Propietarios" },
-            { value: "buyer", label: "Compradores" },
-          ]}
         />
       </div>
 
@@ -344,7 +341,6 @@ export function Seguimiento() {
                 { value: "all", label: "Todas" },
                 { value: "Venta", label: "Venta" },
                 { value: "Alquiler", label: "Alquiler" },
-                { value: "Traspaso", label: "Traspaso" },
               ]}
             />
             {subject === "owner" && (

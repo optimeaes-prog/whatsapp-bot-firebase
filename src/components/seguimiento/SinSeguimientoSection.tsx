@@ -50,7 +50,7 @@ export function SinSeguimientoSection({
           Sin seguimiento <span className="text-gray-400 font-semibold">({leads.length})</span>
         </span>
         <span className="flex items-center gap-2 text-xs text-gray-500">
-          <span className="hidden sm:inline">Compradores sin próxima acción ni historial</span>
+          <span className="hidden sm:inline">Leads sin próxima acción ni historial</span>
           <ChevronDown size={16} className={cn("transition-transform shrink-0", open && "rotate-180")} />
         </span>
       </button>

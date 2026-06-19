@@ -104,7 +104,7 @@ export const PROSPECT_PROPERTY_TYPES: ProspectPropertyType[] = [
   "Otro",
 ];
 
-export const PROSPECT_OPERATION_TYPES: ProspectOperationType[] = ["Venta", "Alquiler", "Traspaso"];
+export const PROSPECT_OPERATION_TYPES: ProspectOperationType[] = ["Venta", "Alquiler"];
 
 export const PROSPECT_SOURCE_LABELS: Record<ProspectSource, string> = {
   idealista: "Idealista",
