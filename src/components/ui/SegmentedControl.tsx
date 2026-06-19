@@ -36,24 +36,24 @@ type Props<T extends string> = SingleProps<T> | MultiProps<T>;
 
 const scheme = {
   amber: {
-    rootBorder: "border-primary-500",
+    rootBorder: "border-gray-200",
     selectedBg: "bg-primary-500",
     selectedText: "text-gray-900",
     hoverBg: "hover:bg-gray-50",
     focusRing: "focus-visible:ring-primary-500",
   },
   primary: {
-    rootBorder: "border-primary-400",
+    rootBorder: "border-gray-200",
     selectedBg: "bg-primary-500",
     selectedText: "text-white",
-    hoverBg: "hover:bg-primary-50",
+    hoverBg: "hover:bg-gray-50",
     focusRing: "focus-visible:ring-primary-500",
   },
   emerald: {
-    rootBorder: "border-emerald-500",
+    rootBorder: "border-gray-200",
     selectedBg: "bg-emerald-600",
     selectedText: "text-white",
-    hoverBg: "hover:bg-emerald-50",
+    hoverBg: "hover:bg-gray-50",
     focusRing: "focus-visible:ring-emerald-500",
   },
 } as const;
@@ -75,7 +75,7 @@ export function SegmentedControl<T extends string>({
       className={cn(
         // Mobile-first: flex-wrap allows multi-row layout when buttons don't fit
         // on a single line. On sm+ we stay inline so the control hugs content.
-        "flex flex-wrap sm:inline-flex sm:flex-nowrap gap-1 rounded-xl border-2 bg-white p-1 shadow-sm",
+        "flex flex-wrap sm:inline-flex sm:flex-nowrap gap-1 rounded-xl border bg-white p-1",
         s.rootBorder,
         className
       )}

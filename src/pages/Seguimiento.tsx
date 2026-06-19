@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { PhoneCall, Search, LayoutGrid, List, CalendarClock, Target } from "lucide-react";
+import { ListTodo, Search, CalendarClock, Target, ChevronDown, CheckSquare, Square } from "lucide-react";
 import type { Lead, LeadFollowUpStatus, Prospect, ProspectStage } from "../types";
 import {
   PROSPECT_STAGES, PROSPECT_STAGE_LABELS,
@@ -11,30 +11,31 @@ import {
   getProspects, getProspectsForAgent, updateProspectStage,
   prospectsByStage, isDueToday,
 } from "../services/prospects";
-import { getLeads, getLeadsForAgent, isLeadDueToday } from "../services/leads";
+import { getLeads, getLeadsForAgent, isLeadDueToday, updateLead } from "../services/leads";
 import { getOrgMembers, type SystemUser } from "../services/users";
 import { useAuth } from "../contexts/AuthContext";
 import { cn } from "../lib/utils";
-import { PROSPECT_STAGE_CLASSES, LEAD_FOLLOWUP_STATUS_CLASSES } from "../lib/prospectMeta";
+import {
+  OPERATION_FILTER_LABEL, PROSPECT_OPERATION_FILTER_OPTIONS, type OperationFilterValue,
+} from "../lib/operationFilter";
 import {
   leadHasFollowUp, leadMatchesStatusFilter, prospectToItem, leadToItem,
-  sortProspectsByNextAction, sortLeadsByNextAction, compareByNextAction,
+  sortProspectsByNextAction, sortLeadsByNextAction, compareByNextAction, leadsByStatus,
   type FollowUpItem,
 } from "../lib/followUp";
-import { PageHeader, PageLoading, FilterCard, SegmentedControl, Button } from "../components/ui";
+import { PageHeader, PageLoading, FilterCard, Button, SegmentedControl, FilterDropdown } from "../components/ui";
 import { ProspectDrawer } from "../components/ProspectDrawer";
 import { ProspectCreateModal } from "../components/ProspectCreateModal";
 import { LeadEditModal } from "../components/LeadEditModal";
-import { KanbanBoard } from "../components/seguimiento/KanbanBoard";
+import { KanbanBoard, LeadKanbanBoard } from "../components/seguimiento/KanbanBoard";
 import { ProspectTable, BuyerTable, EmptyState } from "../components/seguimiento/FollowUpTables";
 import { AgendaList } from "../components/seguimiento/AgendaList";
 import { QuickLogModal } from "../components/seguimiento/QuickLogModal";
 import { FollowUpPicker } from "../components/seguimiento/FollowUpPicker";
-import { NewActionMenu } from "../components/seguimiento/NewActionMenu";
 import { SinSeguimientoSection } from "../components/seguimiento/SinSeguimientoSection";
 
 type ViewMode = "kanban" | "lista";
-type OpFilter = "all" | "Venta" | "Alquiler";
+type OpFilter = OperationFilterValue;
 type Subject = "all" | "owner" | "buyer";
 type StatusFilterValue = LeadFollowUpStatus | "sin_estado";
 
@@ -45,6 +46,96 @@ const SEARCH_PLACEHOLDER: Record<Subject, string> = {
   owner: "Buscar por nombre, teléfono, municipio...",
   buyer: "Buscar por nombre, teléfono o email...",
 };
+
+/** Toggle de pestañas estilo Conversaciones (fondo gris, pastilla blanca activa). */
+function PillToggle({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex bg-gray-100 p-1 rounded-lg">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          className={cn(
+            "py-1.5 px-3 text-xs font-bold rounded-md transition-all font-heading uppercase tracking-wider whitespace-nowrap",
+            value === opt.value ? "bg-white text-primary-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Filtro desplegable de selección múltiple estilo Leads (varios estados a la vez). */
+function MultiFilterDropdown({
+  label,
+  options,
+  isActive,
+  activeCount,
+  onToggle,
+  onClear,
+}: {
+  label: string;
+  options: { value: string; label: string }[];
+  isActive: (v: string) => boolean;
+  activeCount: number;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative min-w-[150px]">
+      <div
+        className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-btn border shadow-sm cursor-pointer hover:bg-gray-50 transition-colors w-full"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1 overflow-hidden">
+          <span className="text-xs font-semibold text-gray-600 shrink-0 font-heading uppercase tracking-wider">{label}:</span>
+          <div className="flex items-center gap-1 flex-1 overflow-hidden justify-end">
+            <span className="truncate">{activeCount === 0 ? "Todos" : `${activeCount} seleccionados`}</span>
+            <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1 shrink-0", open && "rotate-180")} />
+          </div>
+        </div>
+      </div>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
+            <div className="space-y-1 max-h-[280px] overflow-y-auto">
+              <button
+                onClick={onClear}
+                className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+              >
+                {activeCount === 0 ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                <span className="text-xs text-gray-700 font-medium">Todos</span>
+              </button>
+              {options.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => onToggle(opt.value)}
+                  className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-gray-50 rounded-btn transition-colors text-left"
+                >
+                  {isActive(opt.value) ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} className="text-gray-300" />}
+                  <span className="text-xs text-gray-700 font-medium">{opt.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 export function Seguimiento() {
   const navigate = useNavigate();
@@ -67,7 +158,6 @@ export function Seguimiento() {
   }, [search]);
 
   const [opFilter, setOpFilter] = useState<OpFilter>("all");
-  const [municipality, setMunicipality] = useState<string>("all");
   const [stageFilter, setStageFilter] = useState<Set<ProspectStage>>(new Set());
   const [statusFilter, setStatusFilter] = useState<Set<StatusFilterValue>>(new Set());
   const [dueOnly, setDueOnly] = useState(false);
@@ -103,7 +193,7 @@ export function Seguimiento() {
       setProspects(data);
     } catch (e) {
       console.error("[Seguimiento] loadProspects failed", e);
-      toast.error("Error al cargar el seguimiento");
+      toast.error("Error al cargar las tareas");
     } finally {
       if (!opts?.silent) setLoading(false);
     }
@@ -125,12 +215,6 @@ export function Seguimiento() {
     loadProspects({ silent: true });
     loadLeads();
   }
-
-  const municipalities = useMemo(() => {
-    const set = new Set<string>();
-    prospects.forEach((p) => { if (p.municipality) set.add(p.municipality); });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [prospects]);
 
   // --- Filtros comunes (todas las pestañas): búsqueda + operación + pendientes ---
 
@@ -162,16 +246,15 @@ export function Seguimiento() {
     });
   }, [leads, debouncedSearch, opFilter, dueOnly]);
 
-  // --- Pestaña Propietarios: además municipio + etapa, ordenado por próxima acción ---
+  // --- Pestaña Propietarios: además etapa, ordenado por próxima acción ---
 
   const ownerRows = useMemo(() => {
     const base = prospectsCommon.filter((p) => {
-      const matchesMuni = municipality === "all" || p.municipality === municipality;
       const matchesStage = stageFilter.size === 0 || stageFilter.has(p.stage);
-      return matchesMuni && matchesStage;
+      return matchesStage;
     });
     return sortProspectsByNextAction(base);
-  }, [prospectsCommon, municipality, stageFilter]);
+  }, [prospectsCommon, stageFilter]);
 
   const grouped = useMemo(() => prospectsByStage(ownerRows), [ownerRows]);
 
@@ -183,6 +266,8 @@ export function Seguimiento() {
     () => sortLeadsByNextAction(buyersWithFollowUp.filter((l) => leadMatchesStatusFilter(l, statusFilter))),
     [buyersWithFollowUp, statusFilter]
   );
+
+  const groupedLeads = useMemo(() => leadsByStatus(buyerRows), [buyerRows]);
 
   const leadsSinSeguimiento = useMemo(
     () => leadsCommon.filter((l) => !leadHasFollowUp(l)),
@@ -245,6 +330,21 @@ export function Seguimiento() {
     }
   }
 
+  async function moveStatus(l: Lead, followUpStatus: LeadFollowUpStatus) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
+    setLeads((prev) => prev.map((x) => (x.id === l.id ? { ...x, followUpStatus } : x)));
+    try {
+      await updateLead(l.id, { followUpStatus });
+    } catch (e) {
+      console.error(e);
+      toast.error("Error al cambiar el estado");
+      loadLeads();
+    }
+  }
+
   const openQuickLogProspect = (p: Prospect) => setQuickLogTarget(prospectToItem(p));
   const openQuickLogLead = (l: Lead) => setQuickLogTarget(leadToItem(l));
 
@@ -255,40 +355,25 @@ export function Seguimiento() {
       <div className="mb-6">
         <PageHeader
           className="flex-col md:flex-row md:items-end"
-          title="Seguimiento"
-          subtitle={`Propietarios y leads · agenda de próximas acciones${dueCount ? ` · ${dueCount} pendientes hoy` : ""}`}
+          title="Tareas"
+          subtitle={`Captaciones y leads · agenda de próximas acciones${dueCount ? ` · ${dueCount} pendientes hoy` : ""}`}
           actions={
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Tipo: todos / propietarios / compradores */}
+            <div className="flex flex-wrap items-center gap-3">
               <SegmentedControl
-                ariaLabel="Tipo"
-                mode="single"
+                ariaLabel="Ámbito de tareas"
+                colorScheme="amber"
                 value={subject}
-                onChange={(v) => setSubject(v)}
+                onChange={(v) => setSubject(v as Subject)}
                 options={[
                   { value: "all", label: "Todos" },
-                  { value: "owner", label: "Propietarios" },
+                  { value: "owner", label: "Captaciones" },
                   { value: "buyer", label: "Leads" },
                 ]}
               />
-              {subject === "owner" && (
-                <SegmentedControl
-                  ariaLabel="Vista"
-                  mode="single"
-                  value={view}
-                  onChange={(v) => setView(v)}
-                  options={[
-                    { value: "kanban", label: <span className="flex items-center gap-1.5"><LayoutGrid size={15} /> Kanban</span> },
-                    { value: "lista", label: <span className="flex items-center gap-1.5"><List size={15} /> Lista</span> },
-                  ]}
-                />
-              )}
-              <NewActionMenu
-                subject={subject}
-                disabled={isImpersonationReadOnly}
-                onNewCaptacion={() => setCreateOpen(true)}
-                onRegistrarSeguimiento={() => setPickerOpen(true)}
-              />
+              <div className="hidden sm:block h-6 w-px bg-gray-200" />
+              <Button onClick={() => setPickerOpen(true)} disabled={isImpersonationReadOnly}>
+                <ListTodo size={16} /> Registrar tarea
+              </Button>
             </div>
           }
         />
@@ -305,19 +390,45 @@ export function Seguimiento() {
                 placeholder={SEARCH_PLACEHOLDER[subject]}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+                className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-shadow"
               />
             </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Filtros que acotan los resultados */}
+            <FilterDropdown
+              label={OPERATION_FILTER_LABEL}
+              value={opFilter}
+              onChange={(v) => setOpFilter(v as OpFilter)}
+              options={PROSPECT_OPERATION_FILTER_OPTIONS}
+            />
             {subject === "owner" && (
-              <select
-                value={municipality}
-                onChange={(e) => setMunicipality(e.target.value)}
-                className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none bg-white"
-              >
-                <option value="all">Todos los municipios</option>
-                {municipalities.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
+              <MultiFilterDropdown
+                label="Etapa"
+                activeCount={stageFilter.size}
+                isActive={(v) => stageFilter.has(v as ProspectStage)}
+                onToggle={(v) => toggleStageFilter(v as ProspectStage)}
+                onClear={() => setStageFilter(new Set())}
+                options={PROSPECT_STAGES.map((s) => ({ value: s, label: PROSPECT_STAGE_LABELS[s] }))}
+              />
             )}
+            {subject === "buyer" && (
+              <MultiFilterDropdown
+                label="Estado"
+                activeCount={statusFilter.size}
+                isActive={(v) => statusFilter.has(v as StatusFilterValue)}
+                onToggle={(v) => toggleStatusFilter(v as StatusFilterValue)}
+                onClear={() => setStatusFilter(new Set())}
+                options={STATUS_FILTER_OPTIONS.map((s) => ({
+                  value: s,
+                  label: s === "sin_estado" ? "Sin estado" : LEAD_FOLLOWUP_STATUS_LABELS[s],
+                }))}
+              />
+            )}
+
+            {/* Filtro rápido, pegado a los filtros con un separador */}
+            <div className="hidden sm:block h-6 w-px bg-gray-200" />
             <button
               type="button"
               onClick={() => setDueOnly((v) => !v)}
@@ -329,91 +440,59 @@ export function Seguimiento() {
               <CalendarClock size={16} /> Pendientes hoy
             </button>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <SegmentedControl
-              ariaLabel="Operación"
-              mode="single"
-              value={opFilter}
-              onChange={(v) => setOpFilter(v)}
-              className="!shadow-none"
-              options={[
-                { value: "all", label: "Todas" },
-                { value: "Venta", label: "Venta" },
-                { value: "Alquiler", label: "Alquiler" },
-              ]}
-            />
-            {subject === "owner" && (
-              <div className="flex flex-wrap gap-1.5">
-                {PROSPECT_STAGES.map((s) => {
-                  const active = stageFilter.has(s);
-                  return (
-                    <button
-                      key={s}
-                      onClick={() => toggleStageFilter(s)}
-                      className={cn(
-                        "px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors",
-                        active ? cn(PROSPECT_STAGE_CLASSES[s], "border-transparent ring-2 ring-offset-1 ring-primary-300")
-                               : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
-                      )}
-                    >
-                      {PROSPECT_STAGE_LABELS[s]}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {subject === "buyer" && (
-              <div className="flex flex-wrap gap-1.5">
-                {STATUS_FILTER_OPTIONS.map((s) => {
-                  const active = statusFilter.has(s);
-                  const activeClasses = s === "sin_estado" ? "bg-gray-100 text-gray-600" : LEAD_FOLLOWUP_STATUS_CLASSES[s];
-                  return (
-                    <button
-                      key={s}
-                      onClick={() => toggleStatusFilter(s)}
-                      className={cn(
-                        "px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors",
-                        active ? cn(activeClasses, "border-transparent ring-2 ring-offset-1 ring-primary-300")
-                               : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
-                      )}
-                    >
-                      {s === "sin_estado" ? "Sin estado" : LEAD_FOLLOWUP_STATUS_LABELS[s]}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         </div>
       </FilterCard>
 
       {subject === "owner" ? (
-        ownerRows.length === 0 ? (
-          <EmptyState
-            text="No hay propietarios en captación con estos filtros."
-            actions={
-              <Button onClick={() => setCreateOpen(true)} disabled={isImpersonationReadOnly}>
-                <Target size={15} /> Nueva captación
-              </Button>
-            }
-          />
-        ) : view === "kanban" ? (
-          <KanbanBoard grouped={grouped} onOpen={setSelected} onMove={moveStage} onQuickLog={openQuickLogProspect} readOnly={isImpersonationReadOnly} />
-        ) : (
-          <ProspectTable rows={ownerRows} onOpen={setSelected} onQuickLog={openQuickLogProspect} readOnly={isImpersonationReadOnly} />
-        )
-      ) : subject === "buyer" ? (
         <>
-          {buyerRows.length === 0 ? (
+          <div className="mb-4 flex justify-end">
+            <PillToggle
+              value={view}
+              onChange={(v) => setView(v as ViewMode)}
+              options={[
+                { value: "kanban", label: "Kanban" },
+                { value: "lista", label: "Lista" },
+              ]}
+            />
+          </div>
+          {ownerRows.length === 0 ? (
             <EmptyState
-              text="Ningún comprador en seguimiento todavía."
+              text="No hay propietarios en captación con estos filtros."
               actions={
-                <Button onClick={() => setPickerOpen(true)} disabled={isImpersonationReadOnly}>
-                  <PhoneCall size={15} /> Iniciar seguimiento de un comprador
+                <Button onClick={() => setCreateOpen(true)} disabled={isImpersonationReadOnly}>
+                  <Target size={15} /> Nueva captación
                 </Button>
               }
             />
+          ) : view === "kanban" ? (
+            <KanbanBoard grouped={grouped} onOpen={setSelected} onMove={moveStage} onQuickLog={openQuickLogProspect} readOnly={isImpersonationReadOnly} />
+          ) : (
+            <ProspectTable rows={ownerRows} onOpen={setSelected} onQuickLog={openQuickLogProspect} readOnly={isImpersonationReadOnly} />
+          )}
+        </>
+      ) : subject === "buyer" ? (
+        <>
+          <div className="mb-4 flex justify-end">
+            <PillToggle
+              value={view}
+              onChange={(v) => setView(v as ViewMode)}
+              options={[
+                { value: "kanban", label: "Kanban" },
+                { value: "lista", label: "Lista" },
+              ]}
+            />
+          </div>
+          {buyerRows.length === 0 ? (
+            <EmptyState
+              text="Ningún comprador con tareas todavía."
+              actions={
+                <Button onClick={() => setPickerOpen(true)} disabled={isImpersonationReadOnly}>
+                  <ListTodo size={15} /> Crear tarea para un comprador
+                </Button>
+              }
+            />
+          ) : view === "kanban" ? (
+            <LeadKanbanBoard grouped={groupedLeads} onOpen={setSelectedLead} onMove={moveStatus} onQuickLog={openQuickLogLead} readOnly={isImpersonationReadOnly} />
           ) : (
             <BuyerTable rows={buyerRows} onOpen={setSelectedLead} onQuickLog={openQuickLogLead} readOnly={isImpersonationReadOnly} />
           )}
@@ -421,11 +500,11 @@ export function Seguimiento() {
         </>
       ) : agendaItems.length === 0 ? (
         <EmptyState
-          text="Nada en la agenda todavía. Crea una captación o registra un seguimiento."
+          text="Nada en la agenda todavía. Crea una captación o una tarea."
           actions={
             <>
               <Button variant="outline" onClick={() => setPickerOpen(true)} disabled={isImpersonationReadOnly}>
-                <PhoneCall size={15} /> Registrar seguimiento
+                <ListTodo size={15} /> Registrar tarea
               </Button>
               <Button onClick={() => setCreateOpen(true)} disabled={isImpersonationReadOnly}>
                 <Target size={15} /> Nueva captación

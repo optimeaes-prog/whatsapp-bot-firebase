@@ -9,12 +9,13 @@ import { getOrgMembers, type SystemUser } from "../services/users";
 import { useAuth } from "../contexts/AuthContext";
 import { cn, formatPhoneWhatsApp } from "../lib/utils";
 import { PROSPECT_SOURCE_LABELS, PROSPECT_STAGE_CLASSES } from "../lib/prospectMeta";
+import { OPERATION_FILTER_LABEL, PROSPECT_OPERATION_FILTER_OPTIONS } from "../lib/operationFilter";
 import { OperationTypeBadge } from "../components/StatusBadges";
-import { PageHeader, PageLoading, FilterCard, SegmentedControl, Button } from "../components/ui";
+import { PageHeader, PageLoading, FilterCard, FilterDropdown, Button } from "../components/ui";
 import { ProspectDrawer } from "../components/ProspectDrawer";
 import { ProspectCreateModal } from "../components/ProspectCreateModal";
 
-type OpFilter = "all" | "Venta" | "Alquiler";
+type OpFilter = "all" | "Venta" | "Alquiler" | "Traspaso";
 type AnuncioFilter = "all" | "with" | "without";
 
 /**
@@ -40,7 +41,6 @@ export function Captaciones() {
   }, [search]);
 
   const [opFilter, setOpFilter] = useState<OpFilter>("all");
-  const [municipality, setMunicipality] = useState<string>("all");
   const [anuncioFilter, setAnuncioFilter] = useState<AnuncioFilter>("all");
 
   const [selected, setSelected] = useState<Prospect | null>(null);
@@ -73,12 +73,6 @@ export function Captaciones() {
     }
   }
 
-  const municipalities = useMemo(() => {
-    const set = new Set<string>();
-    items.forEach((p) => { if (p.municipality) set.add(p.municipality); });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [items]);
-
   const filtered = useMemo(() => {
     const q = debouncedSearch.toLowerCase();
     return items.filter((p) => {
@@ -90,12 +84,11 @@ export function Captaciones() {
         p.zone?.toLowerCase().includes(q) ||
         p.address?.toLowerCase().includes(q);
       const matchesOp = opFilter === "all" || p.operationType === opFilter;
-      const matchesMuni = municipality === "all" || p.municipality === municipality;
       const matchesAnuncio = anuncioFilter === "all" ||
         (anuncioFilter === "with" ? !!p.wonListingId : !p.wonListingId);
-      return matchesSearch && matchesOp && matchesMuni && matchesAnuncio;
+      return matchesSearch && matchesOp && matchesAnuncio;
     });
-  }, [items, debouncedSearch, opFilter, municipality, anuncioFilter]);
+  }, [items, debouncedSearch, opFilter, anuncioFilter]);
 
   if (loading) return <PageLoading className="h-64" />;
 
@@ -116,46 +109,28 @@ export function Captaciones() {
       {/* Filtros */}
       <FilterCard className="mb-6">
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="flex-1 relative min-w-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-              <input
-                type="text"
-                placeholder="Buscar por propietario, teléfono, email, municipio..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-              />
-            </div>
-            <select
-              value={municipality}
-              onChange={(e) => setMunicipality(e.target.value)}
-              className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none bg-white"
-            >
-              <option value="all">Todos los municipios</option>
-              {municipalities.map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
+          <div className="relative min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+            <input
+              type="text"
+              placeholder="Buscar por propietario, teléfono, email, municipio..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-10 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <SegmentedControl
-              ariaLabel="Operación"
-              mode="single"
+            <FilterDropdown
+              label={OPERATION_FILTER_LABEL}
               value={opFilter}
-              onChange={(v) => setOpFilter(v)}
-              className="!shadow-none"
-              options={[
-                { value: "all", label: "Todas" },
-                { value: "Venta", label: "Venta" },
-                { value: "Alquiler", label: "Alquiler" },
-              ]}
+              onChange={(v) => setOpFilter(v as OpFilter)}
+              options={PROSPECT_OPERATION_FILTER_OPTIONS}
             />
-            <SegmentedControl
-              ariaLabel="Anuncio"
-              mode="single"
+            <FilterDropdown
+              label="Anuncio"
               value={anuncioFilter}
-              onChange={(v) => setAnuncioFilter(v)}
-              className="!shadow-none"
+              onChange={(v) => setAnuncioFilter(v as AnuncioFilter)}
               options={[
                 { value: "all", label: "Todas" },
                 { value: "without", label: "Sin anuncio" },

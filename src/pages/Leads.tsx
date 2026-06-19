@@ -20,6 +20,7 @@ import { Button, PageHeader, PageLoading, FilterCard, SegmentedControl } from ".
 import { QualificationBadge, OperationTypeBadge } from "../components/StatusBadges";
 import { useAuth } from "../contexts/AuthContext";
 import { analytics, hashIdSync } from "../lib/analytics";
+import { OPERATION_FILTER_LABEL, LISTING_OPERATION_FILTER_OPTIONS } from "../lib/operationFilter";
 
 /** `?status=non_qualified_all` (p. ej. desde Anuncios) = todos salvo cualificados */
 const NON_QUALIFIED_ALL_STATUSES = ["not_qualified", "rejected", "no_response"] as const;
@@ -1172,9 +1173,9 @@ export function Leads() {
                  onClick={() => setIsTipoDropdownOpen(!isTipoDropdownOpen)}
               >
                 <div className="text-sm text-gray-700 font-medium flex-1 flex items-center justify-between gap-1">
-                  <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Tipo:</span>
+                  <span className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">{OPERATION_FILTER_LABEL}:</span>
                   <div className="flex items-center gap-1 justify-end flex-1">
-                    {filterTipo === "all" ? "Todos" : filterTipo}
+                    {filterTipo === "all" ? "Todas" : filterTipo}
                     <ChevronDown size={14} className={cn("text-gray-400 transition-transform ml-1", isTipoDropdownOpen && "rotate-180")} />
                   </div>
                 </div>
@@ -1184,11 +1185,7 @@ export function Leads() {
                   <div className="fixed inset-0 z-40" onClick={() => setIsTipoDropdownOpen(false)} />
                   <div className="absolute left-0 mt-2 w-40 bg-white rounded-xl shadow-xl border border-gray-200 z-50 p-2 animate-in fade-in zoom-in-95 duration-100">
                     <div className="space-y-1">
-                    {[
-                      { value: "all", label: "Todos" },
-                      { value: "Venta", label: "Venta" },
-                      { value: "Alquiler", label: "Alquiler" }
-                    ].map(tipo => (
+                    {LISTING_OPERATION_FILTER_OPTIONS.map(tipo => (
                       <button
                         key={tipo.value}
                         onClick={() => {

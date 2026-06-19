@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, PhoneCall, ExternalLink } from "lucide-react";
+import { ChevronDown, ListTodo, ExternalLink } from "lucide-react";
 import type { Lead } from "../../types";
 import { isQualifiedLead, leadRecencyMillis } from "../../services/leads";
 import { cn, formatPhone } from "../../lib/utils";
@@ -47,7 +47,7 @@ export function SinSeguimientoSection({
         className="w-full flex items-center justify-between gap-3 rounded-xl border border-dashed border-gray-300 bg-gray-50/60 px-4 py-3 text-left hover:bg-gray-100/70 transition-colors"
       >
         <span className="text-sm font-bold text-gray-700 font-heading">
-          Sin seguimiento <span className="text-gray-400 font-semibold">({leads.length})</span>
+          Sin tareas <span className="text-gray-400 font-semibold">({leads.length})</span>
         </span>
         <span className="flex items-center gap-2 text-xs text-gray-500">
           <span className="hidden sm:inline">Leads sin próxima acción ni historial</span>
@@ -78,7 +78,7 @@ export function SinSeguimientoSection({
                   onClick={() => onStart(l)}
                   className="ml-auto inline-flex items-center gap-1 rounded-btn border border-primary-200 bg-primary-50 px-2.5 py-1.5 text-xs font-bold text-primary-700 hover:bg-primary-100 disabled:opacity-40 transition-colors"
                 >
-                  <PhoneCall size={12} /> Iniciar seguimiento
+                  <ListTodo size={12} /> Crear tarea
                 </button>
               </div>
             );

@@ -150,7 +150,7 @@ export const LEAD_FOLLOWUP_STATUS_LABELS: Record<LeadFollowUpStatus, string> = {
 // de Idealista/Fotocasa…) para conseguir el encargo de vender/alquilar. Es
 // independiente de los Leads compradores que entran por WhatsApp.
 
-export type ProspectOperationType = "Venta" | "Alquiler";
+export type ProspectOperationType = "Venta" | "Alquiler" | "Traspaso";
 
 export type ProspectStage =
   | "por_llamar"     // nuevo, sin contactar (LLAMADO = NO)

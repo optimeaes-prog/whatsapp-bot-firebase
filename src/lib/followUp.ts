@@ -108,6 +108,26 @@ export function sortLeadsByNextAction(list: Lead[]): Lead[] {
   return list.map(leadToItem).sort(compareByNextAction).map((i) => i.lead);
 }
 
+/** Clave de columna en el Kanban de leads: estado del comprador o "sin_estado". */
+export type LeadStatusKey = LeadFollowUpStatus | "sin_estado";
+
+/** Agrupa compradores por estado de seguimiento (espejo de prospectsByStage). */
+export function leadsByStatus(list: Lead[]): Record<LeadStatusKey, Lead[]> {
+  const groups: Record<LeadStatusKey, Lead[]> = {
+    sin_estado: [],
+    nuevo: [],
+    contactar: [],
+    en_conversacion: [],
+    visita: [],
+    cerrado: [],
+  };
+  for (const l of list) {
+    const key = l.followUpStatus ?? "sin_estado";
+    (groups[key] || (groups[key] = [])).push(l);
+  }
+  return groups;
+}
+
 // --- Buckets de agenda (hora local) ------------------------------------------
 // Mismo criterio de "fin de día" que isDueToday / isLeadDueToday (23:59:59.999).
 

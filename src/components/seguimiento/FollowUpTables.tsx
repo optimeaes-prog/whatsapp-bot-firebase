@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { MessageSquare, Phone, PhoneCall } from "lucide-react";
+import { MessageSquare, Phone, ListTodo } from "lucide-react";
 import type { Lead, Prospect } from "../../types";
 import { PROSPECT_STAGE_LABELS, LEAD_FOLLOWUP_STATUS_LABELS } from "../../types";
 import { isDueToday } from "../../services/prospects";
@@ -54,7 +54,7 @@ function RowActionsCell({ phone, onQuickLog, readOnly }: { phone?: string | null
           onClick={onQuickLog}
           className="inline-flex items-center gap-1 rounded-btn border border-primary-200 bg-primary-50 px-2 py-1 text-xs font-bold text-primary-700 hover:bg-primary-100 disabled:opacity-40 transition-colors"
         >
-          <PhoneCall size={12} /> Registrar
+          <ListTodo size={12} /> Registrar
         </button>
       </div>
     </td>
@@ -183,8 +183,8 @@ export function BuyerTable({
 export function EmptyState({ text, actions }: { text: string; actions?: ReactNode }) {
   return (
     <div className="text-center py-16 text-gray-500">
-      <PhoneCall size={40} className="mx-auto text-gray-300 mb-3" />
-      <p className="font-semibold text-gray-700">Seguimiento</p>
+      <ListTodo size={40} className="mx-auto text-gray-300 mb-3" />
+      <p className="font-semibold text-gray-700">Tareas</p>
       <p className="text-sm">{text}</p>
       {actions && <div className="mt-4 flex flex-wrap items-center justify-center gap-2">{actions}</div>}
     </div>

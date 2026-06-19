@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { Timestamp } from "firebase/firestore";
-import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink, ChevronDown, CheckSquare, Square, Mail, PhoneCall, History } from "lucide-react";
+import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink, ChevronDown, CheckSquare, Square, Mail, ListTodo, History } from "lucide-react";
 import type { Lead, QualificationStatus, OperationType, Activity, LeadFollowUpStatus } from "../types";
 import { LEAD_FOLLOWUP_STATUSES, LEAD_FOLLOWUP_STATUS_LABELS } from "../types";
 import { updateLead, addLeadActivity, setLeadNextAction } from "../services/leads";
@@ -508,8 +508,8 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
                     <div className="space-y-3 border-t border-gray-100 pt-6">
                         <div className="flex items-center justify-between gap-3">
                             <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-                                <PhoneCall size={16} className="text-primary-500" />
-                                Seguimiento
+                                <ListTodo size={16} className="text-primary-500" />
+                                Tareas
                             </label>
                             <select
                                 value={followUpStatus}
@@ -523,7 +523,7 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
                             </select>
                         </div>
                         <p className="text-xs text-gray-500">
-                            Registra una llamada o fija cuándo volver a contactar (p. ej. “llamar el jueves”). Aparecerá en Seguimiento.
+                            Registra una llamada o fija cuándo volver a contactar (p. ej. “llamar el jueves”). Aparecerá en Tareas.
                         </p>
                         <ContactLogForm
                             disabled={readOnly}

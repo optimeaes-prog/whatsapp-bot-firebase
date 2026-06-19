@@ -54,7 +54,7 @@ export function FollowUpPicker({
       >
         <div className="px-5 py-4 border-b border-gray-100 bg-gray-50 space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-base font-bold text-gray-900 font-heading">Registrar seguimiento</h2>
+            <h2 className="text-base font-bold text-gray-900 font-heading">Registrar tarea</h2>
             <Button onClick={onClose} variant="ghost" size="icon" className="text-gray-400 hover:text-gray-600" title="Cerrar">
               <X size={20} />
             </Button>

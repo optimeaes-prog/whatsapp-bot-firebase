@@ -1,4 +1,3 @@
-import { Home, User } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 /** Distingue propietario (captación) de comprador (lead) en listas mezcladas. */
@@ -12,8 +11,7 @@ export function KindBadge({ kind, className }: { kind: "prospect" | "lead"; clas
         className
       )}
     >
-      {isProspect ? <Home size={10} /> : <User size={10} />}
-      {isProspect ? "Propietario" : "Comprador"}
+      {isProspect ? "Captación" : "Lead"}
     </span>
   );
 }

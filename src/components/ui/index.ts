@@ -7,3 +7,4 @@ export { PageContainer } from "./PageContainer";
 export { PageLoading } from "./PageLoading";
 export { InboxShell } from "./InboxShell";
 export { FilterCard } from "./FilterCard";
+export { FilterDropdown } from "./FilterDropdown";

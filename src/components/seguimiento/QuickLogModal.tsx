@@ -65,13 +65,13 @@ export function QuickLogModal({
           await updateLead(target.lead.id, { followUpStatus });
         }
       }
-      toast.success("Seguimiento registrado");
+      toast.success("Tarea registrada");
       onLogged();
       if (nextPending && onOpenNext) setJustLogged(true);
       else onClose();
     } catch (e) {
       console.error("[QuickLog] error al registrar", e);
-      toast.error("Error al registrar el seguimiento");
+      toast.error("Error al registrar la tarea");
     } finally {
       setLogging(false);
     }
@@ -141,7 +141,7 @@ export function QuickLogModal({
           {justLogged ? (
             <div className="text-center py-6">
               <CheckCircle2 size={36} className="mx-auto text-emerald-500 mb-2" />
-              <p className="font-semibold text-gray-800">Seguimiento registrado</p>
+              <p className="font-semibold text-gray-800">Tarea registrada</p>
               {nextPending ? (
                 <>
                   <p className="text-sm text-gray-500 mt-1">
@@ -169,7 +169,7 @@ export function QuickLogModal({
               outcomes={target.kind === "lead" ? LEAD_ACTIVITY_OUTCOMES : undefined}
               initialNextDate={entity.nextActionDate ? toDateTimeInputValue(entity.nextActionDate.toMillis()) : ""}
               initialReminderMinutes={entity.reminderMinutesBefore ?? null}
-              submitLabel="Registrar seguimiento"
+              submitLabel="Registrar tarea"
               extraFields={extraFields}
               onSubmit={handleSubmit}
             />

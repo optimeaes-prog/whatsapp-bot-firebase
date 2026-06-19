@@ -77,6 +77,16 @@ export const LEAD_FOLLOWUP_STATUS_CLASSES: Record<LeadFollowUpStatus, string> = 
   cerrado: "bg-gray-100 text-gray-600",
 };
 
+/** Acento de la columna del Kanban de leads (barra superior) — espejo de PROSPECT_STAGE_ACCENT. */
+export const LEAD_FOLLOWUP_STATUS_ACCENT: Record<LeadFollowUpStatus | "sin_estado", string> = {
+  sin_estado: "bg-gray-300",
+  nuevo: "bg-slate-400",
+  contactar: "bg-primary-500",
+  en_conversacion: "bg-blue-500",
+  visita: "bg-violet-500",
+  cerrado: "bg-gray-400",
+};
+
 export const PROSPECT_CHANNEL_LABELS: Record<ProspectActivityChannel, string> = {
   call: "Llamada",
   whatsapp: "WhatsApp",
@@ -104,7 +114,7 @@ export const PROSPECT_PROPERTY_TYPES: ProspectPropertyType[] = [
   "Otro",
 ];
 
-export const PROSPECT_OPERATION_TYPES: ProspectOperationType[] = ["Venta", "Alquiler"];
+export const PROSPECT_OPERATION_TYPES: ProspectOperationType[] = ["Venta", "Alquiler", "Traspaso"];
 
 export const PROSPECT_SOURCE_LABELS: Record<ProspectSource, string> = {
   idealista: "Idealista",

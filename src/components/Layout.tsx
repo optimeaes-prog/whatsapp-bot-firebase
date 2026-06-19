@@ -3,12 +3,12 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { useCookieConsent } from "../contexts/CookieConsentContext";
 import {
-  Home,
+  Target,
+  LayoutDashboard,
   Megaphone,
-  FolderOpen,
   Users,
   MessageSquare,
-  PhoneCall,
+  ListTodo,
 
   Settings,
   LogOut,
@@ -40,11 +40,11 @@ type NavItem = {
 
 const mainNavItems: NavItem[] = [
   { href: "/onboarding", label: "Onboarding", icon: <Rocket size={20} /> },
-  { href: "/dashboard", label: "Dashboard", icon: <Home size={20} /> },
+  { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={20} /> },
   { href: "/anuncios", label: "Anuncios", icon: <Megaphone size={20} /> },
-  { href: "/captaciones", label: "Captaciones", icon: <FolderOpen size={20} /> },
+  { href: "/captaciones", label: "Captaciones", icon: <Target size={20} /> },
   { href: "/leads", label: "Leads", icon: <Users size={20} /> },
-  { href: "/seguimiento", label: "Seguimiento", icon: <PhoneCall size={20} /> },
+  { href: "/seguimiento", label: "Tareas", icon: <ListTodo size={20} /> },
   { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
 
   { href: "/suscripcion", label: "Suscripción", icon: <CreditCard size={20} /> },
