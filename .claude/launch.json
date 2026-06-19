@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "linkedin-cover",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "public", "-p", "4321", "--no-clipboard"],
+      "port": 4321
+    },
+    {
+      "name": "vite-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    }
+  ]
+}
