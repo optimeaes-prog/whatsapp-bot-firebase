@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { MessageSquare, Phone, ListTodo } from "lucide-react";
+import { MessageSquare, Phone, ListTodo, CheckSquare, Square } from "lucide-react";
 import type { Lead, Prospect } from "../../types";
 import { PROSPECT_STAGE_LABELS, LEAD_FOLLOWUP_STATUS_LABELS } from "../../types";
 import { isDueToday } from "../../services/prospects";
@@ -61,6 +61,38 @@ function RowActionsCell({ phone, onQuickLog, readOnly }: { phone?: string | null
   );
 }
 
+/** Cabecera "seleccionar todo" (solo cuando hay selección activa). */
+function SelectAllHeader({ allSelected, onToggleAll }: { allSelected: boolean; onToggleAll: () => void }) {
+  return (
+    <th className="px-4 py-3 w-10">
+      <button
+        type="button"
+        title={allSelected ? "Quitar selección" : "Seleccionar todo"}
+        onClick={onToggleAll}
+        className="text-gray-400 hover:text-primary-600 transition-colors align-middle"
+      >
+        {allSelected ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} />}
+      </button>
+    </th>
+  );
+}
+
+/** Celda de selección por fila (no abre el detalle). */
+function SelectCell({ checked, onToggle }: { checked: boolean; onToggle: () => void }) {
+  return (
+    <td className="px-4 py-3 w-10" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        title={checked ? "Quitar de la selección" : "Seleccionar"}
+        onClick={onToggle}
+        className="text-gray-400 hover:text-primary-600 transition-colors align-middle"
+      >
+        {checked ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} />}
+      </button>
+    </td>
+  );
+}
+
 function PhoneCellLink({ phone }: { phone?: string | null }) {
   return (
     <td className="px-4 py-3 text-gray-600">
@@ -74,18 +106,24 @@ function PhoneCellLink({ phone }: { phone?: string | null }) {
 }
 
 export function ProspectTable({
-  rows, onOpen, onQuickLog, readOnly,
+  rows, onOpen, onQuickLog, readOnly, selectable = false, selectedIds, onToggleSelect, onToggleAll,
 }: {
   rows: Prospect[];
   onOpen: (p: Prospect) => void;
   onQuickLog: (p: Prospect) => void;
   readOnly: boolean;
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onToggleAll?: () => void;
 }) {
+  const allSelected = selectable && rows.length > 0 && rows.every((p) => selectedIds?.has(p.id));
   return (
     <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-100 bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider font-heading">
+            {selectable && <SelectAllHeader allSelected={!!allSelected} onToggleAll={() => onToggleAll?.()} />}
             <th className={thClass}>Propietario</th>
             <th className={thClass}>Teléfono</th>
             <th className={thClass}>Municipio</th>
@@ -104,8 +142,14 @@ export function ProspectTable({
               <tr
                 key={p.id}
                 onClick={() => onOpen(p)}
-                className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+                className={cn(
+                  "border-b border-gray-50 hover:bg-gray-50 cursor-pointer",
+                  selectable && selectedIds?.has(p.id) && "bg-primary-50/60"
+                )}
               >
+                {selectable && (
+                  <SelectCell checked={selectedIds?.has(p.id) ?? false} onToggle={() => onToggleSelect?.(p.id)} />
+                )}
                 <td className="px-4 py-3 font-semibold text-gray-900">{p.ownerName || "Sin nombre"}</td>
                 <PhoneCellLink phone={p.phone} />
                 <td className="px-4 py-3 text-gray-600">{[p.municipality, p.zone].filter(Boolean).join(" · ") || "—"}</td>
@@ -129,18 +173,24 @@ export function ProspectTable({
 }
 
 export function BuyerTable({
-  rows, onOpen, onQuickLog, readOnly,
+  rows, onOpen, onQuickLog, readOnly, selectable = false, selectedIds, onToggleSelect, onToggleAll,
 }: {
   rows: Lead[];
   onOpen: (l: Lead) => void;
   onQuickLog: (l: Lead) => void;
   readOnly: boolean;
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onToggleAll?: () => void;
 }) {
+  const allSelected = selectable && rows.length > 0 && rows.every((l) => selectedIds?.has(l.id));
   return (
     <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-100 bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider font-heading">
+            {selectable && <SelectAllHeader allSelected={!!allSelected} onToggleAll={() => onToggleAll?.()} />}
             <th className={thClass}>Comprador</th>
             <th className={thClass}>Teléfono</th>
             <th className={thClass}>Operación</th>
@@ -154,7 +204,17 @@ export function BuyerTable({
           {rows.map((l) => {
             const due = isLeadDueToday(l);
             return (
-              <tr key={l.id} onClick={() => onOpen(l)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+              <tr
+                key={l.id}
+                onClick={() => onOpen(l)}
+                className={cn(
+                  "border-b border-gray-50 hover:bg-gray-50 cursor-pointer",
+                  selectable && selectedIds?.has(l.id) && "bg-primary-50/60"
+                )}
+              >
+                {selectable && (
+                  <SelectCell checked={selectedIds?.has(l.id) ?? false} onToggle={() => onToggleSelect?.(l.id)} />
+                )}
                 <td className="px-4 py-3 font-semibold text-gray-900">{l.name || "Sin nombre"}</td>
                 <PhoneCellLink phone={l.phone} />
                 <td className="px-4 py-3"><OperationTypeBadge type={l.operationType} /></td>

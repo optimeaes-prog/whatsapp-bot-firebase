@@ -1,4 +1,4 @@
-import { Phone, MessageSquare, PhoneCall } from "lucide-react";
+import { Phone, MessageSquare, PhoneCall, CheckSquare, Square } from "lucide-react";
 import {
   AGENDA_BUCKETS, AGENDA_BUCKET_LABELS, groupByAgendaBucket,
   isOverdueMillis, formatRelativeDays, whatsappLink, type FollowUpItem,
@@ -14,12 +14,15 @@ import { KindBadge } from "./KindBadge";
  * y ordenados por próxima acción dentro de cada grupo.
  */
 export function AgendaList({
-  items, onOpen, onQuickLog, readOnly,
+  items, onOpen, onQuickLog, readOnly, selectable = false, isSelected, onToggleSelect,
 }: {
   items: FollowUpItem[];
   onOpen: (item: FollowUpItem) => void;
   onQuickLog: (item: FollowUpItem) => void;
   readOnly: boolean;
+  selectable?: boolean;
+  isSelected?: (item: FollowUpItem) => boolean;
+  onToggleSelect?: (item: FollowUpItem) => void;
 }) {
   const groups = groupByAgendaBucket(items);
 
@@ -41,13 +44,27 @@ export function AgendaList({
           <div className="rounded-xl border border-gray-200 bg-white shadow-sm divide-y divide-gray-50">
             {groups[bucket].map((item) => {
               const wa = whatsappLink(item.phone);
+              const selected = selectable && (isSelected?.(item) ?? false);
               return (
                 <div
                   key={item.id}
                   onClick={() => onOpen(item)}
-                  className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-3 hover:bg-gray-50 cursor-pointer transition-colors"
+                  className={cn(
+                    "flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-3 hover:bg-gray-50 cursor-pointer transition-colors",
+                    selected && "bg-primary-50/60"
+                  )}
                 >
                   <div className="flex items-center gap-2 min-w-0 flex-1 basis-52">
+                    {selectable && (
+                      <button
+                        type="button"
+                        title={selected ? "Quitar de la selección" : "Seleccionar"}
+                        onClick={(e) => { e.stopPropagation(); onToggleSelect?.(item); }}
+                        className="shrink-0 text-gray-400 hover:text-primary-600 transition-colors"
+                      >
+                        {selected ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} />}
+                      </button>
+                    )}
                     <KindBadge kind={item.kind} />
                     <span className="font-semibold text-gray-900 text-sm truncate">{item.name}</span>
                   </div>

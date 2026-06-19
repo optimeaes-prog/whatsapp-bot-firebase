@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
-import type { Lead, LeadFormData, Activity } from "../types";
+import type { Lead, LeadFormData, Activity, LeadFollowUpStatus } from "../types";
 import { deleteConversationByChatId } from "./conversations";
 import { updateConversation } from "./conversations";
 import { auth } from "../lib/firebase";
@@ -158,7 +158,7 @@ export async function updateLeadQualificationStatus(
 
 export async function updateLead(
   id: string,
-  data: Partial<Pick<Lead, "notes" | "email" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus" | "consent" | "pets" | "income" | "paymentMethod" | "nextActionDate" | "lastContactAt" | "activities" | "followUpStatus">>
+  data: Partial<Pick<Lead, "notes" | "email" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus" | "consent" | "pets" | "income" | "paymentMethod" | "nextActionDate" | "lastContactAt" | "activities" | "followUpStatus" | "assignedAgentUid">>
 ): Promise<void> {
   const docRef = doc(db, getLeadsCollection(), id);
   const normalized = data.tags ? { ...data, tags: normalizeLeadTags(data.tags) } : data;
@@ -280,6 +280,24 @@ async function parallelLimit<T, R>(
 
 export async function deleteLeads(ids: string[], concurrency: number = 4): Promise<void> {
   await parallelLimit(ids, concurrency, async (id) => deleteLead(id));
+}
+
+/** Cambiar el estado de seguimiento de varios leads a la vez. */
+export async function bulkUpdateLeadsFollowUpStatus(
+  ids: string[],
+  followUpStatus: LeadFollowUpStatus,
+  concurrency: number = 4
+): Promise<void> {
+  await parallelLimit(ids, concurrency, async (id) => updateLead(id, { followUpStatus }));
+}
+
+/** Reasignar el agente responsable de varios leads a la vez. Pasar cadena vacía para "Sin asignar". */
+export async function bulkAssignLeads(
+  ids: string[],
+  agentUid: string,
+  concurrency: number = 4
+): Promise<void> {
+  await parallelLimit(ids, concurrency, async (id) => updateLead(id, { assignedAgentUid: agentUid }));
 }
 
 function qualificationStatusToConversationQualified(

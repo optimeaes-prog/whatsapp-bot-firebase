@@ -1,4 +1,4 @@
-import { CalendarClock, ListTodo } from "lucide-react";
+import { CalendarClock, ListTodo, CheckSquare, Square } from "lucide-react";
 import type { Lead, LeadFollowUpStatus, Prospect, ProspectStage } from "../../types";
 import {
   PROSPECT_STAGES, PROSPECT_STAGE_LABELS,
@@ -11,15 +11,49 @@ import { PROSPECT_STAGE_ACCENT, LEAD_FOLLOWUP_STATUS_ACCENT } from "../../lib/pr
 import { sortProspectsByNextAction, sortLeadsByNextAction, type LeadStatusKey } from "../../lib/followUp";
 import { OperationTypeBadge } from "../StatusBadges";
 
+/** Casilla de selección para acciones en grupo (no abre el detalle). */
+function SelectBox({ checked, onToggle }: { checked: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      title={checked ? "Quitar de la selección" : "Seleccionar"}
+      onClick={(e) => { e.stopPropagation(); onToggle(); }}
+      className="shrink-0 p-0.5 -ml-0.5 text-gray-400 hover:text-primary-600 transition-colors"
+    >
+      {checked ? <CheckSquare size={16} className="text-primary-600" /> : <Square size={16} />}
+    </button>
+  );
+}
+
+/** Casilla "seleccionar toda la columna" para la cabecera de cada etapa/estado. */
+function ColumnSelectAll({ ids, selectedIds, onToggleColumn }: { ids: string[]; selectedIds?: Set<string>; onToggleColumn?: (ids: string[]) => void }) {
+  if (ids.length === 0) return null;
+  const allSelected = ids.every((id) => selectedIds?.has(id));
+  return (
+    <button
+      type="button"
+      title={allSelected ? "Quitar selección de la columna" : "Seleccionar toda la columna"}
+      onClick={() => onToggleColumn?.(ids)}
+      className="ml-auto shrink-0 text-gray-400 hover:text-primary-600 transition-colors"
+    >
+      {allSelected ? <CheckSquare size={15} className="text-primary-600" /> : <Square size={15} />}
+    </button>
+  );
+}
+
 /** Tablero de captaciones por etapa. Cada columna ordenada por próxima acción (vencidas primero). */
 export function KanbanBoard({
-  grouped, onOpen, onMove, onQuickLog, readOnly,
+  grouped, onOpen, onMove, onQuickLog, readOnly, selectable = false, selectedIds, onToggleSelect, onToggleColumn,
 }: {
   grouped: Record<ProspectStage, Prospect[]>;
   onOpen: (p: Prospect) => void;
   onMove: (p: Prospect, stage: ProspectStage) => void;
   onQuickLog: (p: Prospect) => void;
   readOnly: boolean;
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onToggleColumn?: (ids: string[]) => void;
 }) {
   return (
     <div className="flex gap-4 overflow-x-auto pb-4">
@@ -31,10 +65,21 @@ export function KanbanBoard({
               <span className={cn("w-2 h-2 rounded-full", PROSPECT_STAGE_ACCENT[stage])} />
               <h3 className="text-sm font-bold text-gray-800 font-heading">{PROSPECT_STAGE_LABELS[stage]}</h3>
               <span className="text-xs font-semibold text-gray-400">{items.length}</span>
+              {selectable && <ColumnSelectAll ids={items.map((p) => p.id)} selectedIds={selectedIds} onToggleColumn={onToggleColumn} />}
             </div>
             <div className="space-y-2.5">
               {items.map((p) => (
-                <ProspectCard key={p.id} prospect={p} onOpen={onOpen} onMove={onMove} onQuickLog={onQuickLog} readOnly={readOnly} />
+                <ProspectCard
+                  key={p.id}
+                  prospect={p}
+                  onOpen={onOpen}
+                  onMove={onMove}
+                  onQuickLog={onQuickLog}
+                  readOnly={readOnly}
+                  selectable={selectable}
+                  selected={selectedIds?.has(p.id) ?? false}
+                  onToggleSelect={onToggleSelect}
+                />
               ))}
             </div>
           </div>
@@ -45,22 +90,31 @@ export function KanbanBoard({
 }
 
 function ProspectCard({
-  prospect, onOpen, onMove, onQuickLog, readOnly,
+  prospect, onOpen, onMove, onQuickLog, readOnly, selectable, selected, onToggleSelect,
 }: {
   prospect: Prospect;
   onOpen: (p: Prospect) => void;
   onMove: (p: Prospect, stage: ProspectStage) => void;
   onQuickLog: (p: Prospect) => void;
   readOnly: boolean;
+  selectable: boolean;
+  selected: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const due = isDueToday(prospect);
   return (
     <div
       onClick={() => onOpen(prospect)}
-      className="card !p-3 cursor-pointer hover:border-primary-300 hover:shadow-md transition-all"
+      className={cn(
+        "card !p-3 cursor-pointer hover:border-primary-300 hover:shadow-md transition-all",
+        selected && "!border-primary-500 ring-2 ring-primary-500 shadow-md"
+      )}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="font-bold text-gray-900 text-sm truncate">{prospect.ownerName || "Sin nombre"}</p>
+        <div className="flex items-start gap-1.5 min-w-0">
+          {selectable && <SelectBox checked={selected} onToggle={() => onToggleSelect?.(prospect.id)} />}
+          <p className="font-bold text-gray-900 text-sm truncate">{prospect.ownerName || "Sin nombre"}</p>
+        </div>
         <OperationTypeBadge type={prospect.operationType} />
       </div>
       <p className="text-xs text-gray-500 truncate mt-0.5">
@@ -107,13 +161,17 @@ const LEAD_COLUMN_LABELS: Record<LeadStatusKey, string> = {
 
 /** Tablero de leads compradores por estado. Cada columna ordenada por próxima acción (vencidas primero). */
 export function LeadKanbanBoard({
-  grouped, onOpen, onMove, onQuickLog, readOnly,
+  grouped, onOpen, onMove, onQuickLog, readOnly, selectable = false, selectedIds, onToggleSelect, onToggleColumn,
 }: {
   grouped: Record<LeadStatusKey, Lead[]>;
   onOpen: (l: Lead) => void;
   onMove: (l: Lead, status: LeadFollowUpStatus) => void;
   onQuickLog: (l: Lead) => void;
   readOnly: boolean;
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onToggleColumn?: (ids: string[]) => void;
 }) {
   return (
     <div className="flex gap-4 overflow-x-auto pb-4">
@@ -125,10 +183,21 @@ export function LeadKanbanBoard({
               <span className={cn("w-2 h-2 rounded-full", LEAD_FOLLOWUP_STATUS_ACCENT[col])} />
               <h3 className="text-sm font-bold text-gray-800 font-heading">{LEAD_COLUMN_LABELS[col]}</h3>
               <span className="text-xs font-semibold text-gray-400">{items.length}</span>
+              {selectable && <ColumnSelectAll ids={items.map((l) => l.id)} selectedIds={selectedIds} onToggleColumn={onToggleColumn} />}
             </div>
             <div className="space-y-2.5">
               {items.map((l) => (
-                <LeadCard key={l.id} lead={l} onOpen={onOpen} onMove={onMove} onQuickLog={onQuickLog} readOnly={readOnly} />
+                <LeadCard
+                  key={l.id}
+                  lead={l}
+                  onOpen={onOpen}
+                  onMove={onMove}
+                  onQuickLog={onQuickLog}
+                  readOnly={readOnly}
+                  selectable={selectable}
+                  selected={selectedIds?.has(l.id) ?? false}
+                  onToggleSelect={onToggleSelect}
+                />
               ))}
             </div>
           </div>
@@ -139,22 +208,31 @@ export function LeadKanbanBoard({
 }
 
 function LeadCard({
-  lead, onOpen, onMove, onQuickLog, readOnly,
+  lead, onOpen, onMove, onQuickLog, readOnly, selectable, selected, onToggleSelect,
 }: {
   lead: Lead;
   onOpen: (l: Lead) => void;
   onMove: (l: Lead, status: LeadFollowUpStatus) => void;
   onQuickLog: (l: Lead) => void;
   readOnly: boolean;
+  selectable: boolean;
+  selected: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const due = isLeadDueToday(lead);
   return (
     <div
       onClick={() => onOpen(lead)}
-      className="card !p-3 cursor-pointer hover:border-primary-300 hover:shadow-md transition-all"
+      className={cn(
+        "card !p-3 cursor-pointer hover:border-primary-300 hover:shadow-md transition-all",
+        selected && "!border-primary-500 ring-2 ring-primary-500 shadow-md"
+      )}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="font-bold text-gray-900 text-sm truncate">{lead.name || "Sin nombre"}</p>
+        <div className="flex items-start gap-1.5 min-w-0">
+          {selectable && <SelectBox checked={selected} onToggle={() => onToggleSelect?.(lead.id)} />}
+          <p className="font-bold text-gray-900 text-sm truncate">{lead.name || "Sin nombre"}</p>
+        </div>
         {lead.operationType && <OperationTypeBadge type={lead.operationType} />}
       </div>
       <p className="text-xs text-gray-500 truncate mt-0.5">{lead.phone || "Sin teléfono"}</p>

@@ -203,6 +203,27 @@ export async function deleteProspects(ids: string[], concurrency = 4): Promise<v
   await parallelLimit(ids, concurrency, async (id) => deleteProspect(id));
 }
 
+/** Cambiar la etapa de varias captaciones a la vez. */
+export async function bulkUpdateProspectsStage(
+  ids: string[],
+  stage: ProspectStage,
+  concurrency = 4
+): Promise<void> {
+  await parallelLimit(ids, concurrency, async (id) => updateProspectStage(id, stage));
+}
+
+/** Reasignar el agente responsable de varias captaciones a la vez. Pasar cadenas vacías para "Sin asignar". */
+export async function bulkAssignProspects(
+  ids: string[],
+  agentUid: string,
+  agentName: string,
+  concurrency = 4
+): Promise<void> {
+  await parallelLimit(ids, concurrency, async (id) =>
+    updateProspect(id, { assignedAgentUid: agentUid, assignedAgentName: agentName })
+  );
+}
+
 /**
  * Busca captaciones existentes que coincidan por teléfono (normalizado) o email, para
  * avisar de posibles duplicados al crear una nueva. Filtra en memoria porque el teléfono

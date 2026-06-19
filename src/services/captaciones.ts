@@ -14,6 +14,8 @@ export {
   updateProspectStage as updateCaptacionStage,
   deleteProspect as deleteCaptacion,
   deleteProspects as deleteCaptaciones,
+  bulkUpdateProspectsStage as bulkUpdateCaptacionesStage,
+  bulkAssignProspects as bulkAssignCaptaciones,
   addProspectActivity as addCaptacionActivity,
   setProspectNextAction as setCaptacionNextAction,
   findCaptacionByPhoneOrEmail,

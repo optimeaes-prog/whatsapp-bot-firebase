@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { ListTodo, Search, CalendarClock, Target, ChevronDown, CheckSquare, Square } from "lucide-react";
+import { ListTodo, Search, CalendarClock, Target, ChevronDown, CheckSquare, Square, Trash2, RefreshCw, UserCog, Users, X } from "lucide-react";
 import type { Lead, LeadFollowUpStatus, Prospect, ProspectStage } from "../types";
 import {
   PROSPECT_STAGES, PROSPECT_STAGE_LABELS,
@@ -10,9 +10,14 @@ import {
 import {
   getProspects, getProspectsForAgent, updateProspectStage,
   prospectsByStage, isDueToday,
+  deleteProspects, bulkUpdateProspectsStage, bulkAssignProspects,
 } from "../services/prospects";
-import { getLeads, getLeadsForAgent, isLeadDueToday, updateLead } from "../services/leads";
+import {
+  getLeads, getLeadsForAgent, isLeadDueToday, updateLead,
+  deleteLeads, bulkUpdateLeadsFollowUpStatus, bulkAssignLeads,
+} from "../services/leads";
 import { getOrgMembers, type SystemUser } from "../services/users";
+import { analytics } from "../lib/analytics";
 import { useAuth } from "../contexts/AuthContext";
 import { cn } from "../lib/utils";
 import {
@@ -172,6 +177,18 @@ export function Seguimiento() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
 
+  // --- Selección múltiple (acciones en grupo) ---
+  // Solo para managers (las reglas de Firestore solo permiten borrar a owner/admin/super_admin).
+  const selectable = isManager && !isImpersonationReadOnly;
+  const [selectedProspectIds, setSelectedProspectIds] = useState<Set<string>>(new Set());
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
+  const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
+  const [bulkModal, setBulkModal] = useState<null | "delete" | "stage" | "status" | "assign">(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkStage, setBulkStage] = useState<ProspectStage>(PROSPECT_STAGES[0]);
+  const [bulkStatus, setBulkStatus] = useState<LeadFollowUpStatus>(LEAD_FOLLOWUP_STATUSES[0]);
+  const [bulkAssignUid, setBulkAssignUid] = useState<string>("");
+
   useEffect(() => {
     if (!organizationId || !effectiveRole) return;
     if (isAgent && !effectiveUid) return;
@@ -298,6 +315,169 @@ export function Seguimiento() {
     ].sort(compareByNextAction);
     return due.find((i) => i.id !== quickLogTarget.id) || null;
   }, [prospects, leads, quickLogTarget]);
+
+  // --- Selección múltiple: helpers y acciones en grupo ---
+
+  const selectedCount = selectedProspectIds.size + selectedLeadIds.size;
+
+  function clearSelection() {
+    setSelectedProspectIds(new Set());
+    setSelectedLeadIds(new Set());
+    setBulkMenuOpen(false);
+  }
+
+  // Limpiar la selección al cambiar de pestaña o de filtros (no actuar sobre lo que ya no se ve).
+  useEffect(() => {
+    setSelectedProspectIds(new Set());
+    setSelectedLeadIds(new Set());
+    setBulkMenuOpen(false);
+  }, [subject, debouncedSearch, opFilter, stageFilter, statusFilter, dueOnly]);
+
+  function toggleProspectSelection(id: string) {
+    setSelectedProspectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleLeadSelection(id: string) {
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllProspects() {
+    const allSelected = ownerRows.length > 0 && ownerRows.every((p) => selectedProspectIds.has(p.id));
+    setSelectedProspectIds(allSelected ? new Set() : new Set(ownerRows.map((p) => p.id)));
+  }
+
+  function toggleAllLeads() {
+    const allSelected = buyerRows.length > 0 && buyerRows.every((l) => selectedLeadIds.has(l.id));
+    setSelectedLeadIds(allSelected ? new Set() : new Set(buyerRows.map((l) => l.id)));
+  }
+
+  // Seleccionar/deseleccionar de golpe todas las tarjetas de una columna (una etapa o estado).
+  function toggleProspectColumn(ids: string[]) {
+    setSelectedProspectIds((prev) => {
+      const allSelected = ids.length > 0 && ids.every((id) => prev.has(id));
+      const next = new Set(prev);
+      ids.forEach((id) => (allSelected ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  }
+
+  function toggleLeadColumn(ids: string[]) {
+    setSelectedLeadIds((prev) => {
+      const allSelected = ids.length > 0 && ids.every((id) => prev.has(id));
+      const next = new Set(prev);
+      ids.forEach((id) => (allSelected ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  }
+
+  const agendaIsSelected = (item: FollowUpItem) =>
+    item.kind === "prospect" ? selectedProspectIds.has(item.prospect.id) : selectedLeadIds.has(item.lead.id);
+  const agendaToggleSelect = (item: FollowUpItem) =>
+    item.kind === "prospect" ? toggleProspectSelection(item.prospect.id) : toggleLeadSelection(item.lead.id);
+
+  function guardBulk(): boolean {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return false;
+    }
+    return true;
+  }
+
+  async function runBulkDelete() {
+    if (!guardBulk()) return;
+    const pIds = Array.from(selectedProspectIds);
+    const lIds = Array.from(selectedLeadIds);
+    const total = pIds.length + lIds.length;
+    if (total === 0) return;
+    setBulkBusy(true);
+    try {
+      if (pIds.length) await deleteProspects(pIds);
+      if (lIds.length) await deleteLeads(lIds);
+      analytics.trackBulkActionExecuted({ action: "delete", count: total });
+      toast.success(`Eliminados ${total} registro${total === 1 ? "" : "s"}`);
+      setBulkModal(null);
+      clearSelection();
+      refreshAll();
+    } catch (e) {
+      console.error("[Seguimiento] bulk delete failed", e);
+      toast.error("Error al eliminar los registros seleccionados");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function runBulkStage() {
+    if (!guardBulk()) return;
+    const pIds = Array.from(selectedProspectIds);
+    if (pIds.length === 0) return;
+    setBulkBusy(true);
+    try {
+      await bulkUpdateProspectsStage(pIds, bulkStage);
+      analytics.trackBulkActionExecuted({ action: `stage_${bulkStage}`, count: pIds.length });
+      toast.success(`Etapa actualizada en ${pIds.length} captación${pIds.length === 1 ? "" : "es"}`);
+      setBulkModal(null);
+      clearSelection();
+      refreshAll();
+    } catch (e) {
+      console.error("[Seguimiento] bulk stage failed", e);
+      toast.error("Error al cambiar la etapa");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function runBulkStatus() {
+    if (!guardBulk()) return;
+    const lIds = Array.from(selectedLeadIds);
+    if (lIds.length === 0) return;
+    setBulkBusy(true);
+    try {
+      await bulkUpdateLeadsFollowUpStatus(lIds, bulkStatus);
+      analytics.trackBulkActionExecuted({ action: `status_${bulkStatus}`, count: lIds.length });
+      toast.success(`Estado actualizado en ${lIds.length} lead${lIds.length === 1 ? "" : "s"}`);
+      setBulkModal(null);
+      clearSelection();
+      refreshAll();
+    } catch (e) {
+      console.error("[Seguimiento] bulk status failed", e);
+      toast.error("Error al cambiar el estado");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function runBulkAssign() {
+    if (!guardBulk()) return;
+    const pIds = Array.from(selectedProspectIds);
+    const lIds = Array.from(selectedLeadIds);
+    const total = pIds.length + lIds.length;
+    if (total === 0) return;
+    const member = members.find((m) => m.uid === bulkAssignUid);
+    const name = member ? (member.name || member.displayName || member.email) : "";
+    setBulkBusy(true);
+    try {
+      if (pIds.length) await bulkAssignProspects(pIds, bulkAssignUid, name);
+      if (lIds.length) await bulkAssignLeads(lIds, bulkAssignUid);
+      analytics.trackBulkActionExecuted({ action: bulkAssignUid ? "assign" : "unassign", count: total });
+      toast.success(`Reasignados ${total} registro${total === 1 ? "" : "s"}`);
+      setBulkModal(null);
+      clearSelection();
+      refreshAll();
+    } catch (e) {
+      console.error("[Seguimiento] bulk assign failed", e);
+      toast.error("Error al reasignar");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   function toggleStageFilter(stage: ProspectStage) {
     setStageFilter((prev) => {
@@ -465,9 +645,28 @@ export function Seguimiento() {
               }
             />
           ) : view === "kanban" ? (
-            <KanbanBoard grouped={grouped} onOpen={setSelected} onMove={moveStage} onQuickLog={openQuickLogProspect} readOnly={isImpersonationReadOnly} />
+            <KanbanBoard
+              grouped={grouped}
+              onOpen={setSelected}
+              onMove={moveStage}
+              onQuickLog={openQuickLogProspect}
+              readOnly={isImpersonationReadOnly}
+              selectable={selectable}
+              selectedIds={selectedProspectIds}
+              onToggleSelect={toggleProspectSelection}
+              onToggleColumn={toggleProspectColumn}
+            />
           ) : (
-            <ProspectTable rows={ownerRows} onOpen={setSelected} onQuickLog={openQuickLogProspect} readOnly={isImpersonationReadOnly} />
+            <ProspectTable
+              rows={ownerRows}
+              onOpen={setSelected}
+              onQuickLog={openQuickLogProspect}
+              readOnly={isImpersonationReadOnly}
+              selectable={selectable}
+              selectedIds={selectedProspectIds}
+              onToggleSelect={toggleProspectSelection}
+              onToggleAll={toggleAllProspects}
+            />
           )}
         </>
       ) : subject === "buyer" ? (
@@ -492,9 +691,28 @@ export function Seguimiento() {
               }
             />
           ) : view === "kanban" ? (
-            <LeadKanbanBoard grouped={groupedLeads} onOpen={setSelectedLead} onMove={moveStatus} onQuickLog={openQuickLogLead} readOnly={isImpersonationReadOnly} />
+            <LeadKanbanBoard
+              grouped={groupedLeads}
+              onOpen={setSelectedLead}
+              onMove={moveStatus}
+              onQuickLog={openQuickLogLead}
+              readOnly={isImpersonationReadOnly}
+              selectable={selectable}
+              selectedIds={selectedLeadIds}
+              onToggleSelect={toggleLeadSelection}
+              onToggleColumn={toggleLeadColumn}
+            />
           ) : (
-            <BuyerTable rows={buyerRows} onOpen={setSelectedLead} onQuickLog={openQuickLogLead} readOnly={isImpersonationReadOnly} />
+            <BuyerTable
+              rows={buyerRows}
+              onOpen={setSelectedLead}
+              onQuickLog={openQuickLogLead}
+              readOnly={isImpersonationReadOnly}
+              selectable={selectable}
+              selectedIds={selectedLeadIds}
+              onToggleSelect={toggleLeadSelection}
+              onToggleAll={toggleAllLeads}
+            />
           )}
           <SinSeguimientoSection leads={leadsSinSeguimiento} onStart={openQuickLogLead} readOnly={isImpersonationReadOnly} />
         </>
@@ -518,6 +736,9 @@ export function Seguimiento() {
           onOpen={(item) => (item.kind === "prospect" ? setSelected(item.prospect) : setSelectedLead(item.lead))}
           onQuickLog={setQuickLogTarget}
           readOnly={isImpersonationReadOnly}
+          selectable={selectable}
+          isSelected={agendaIsSelected}
+          onToggleSelect={agendaToggleSelect}
         />
       )}
 
@@ -580,6 +801,188 @@ export function Seguimiento() {
           nextPending={nextPending}
           onOpenNext={(item) => setQuickLogTarget(item)}
         />
+      )}
+
+      {/* Barra flotante de acciones en grupo (aparece al seleccionar registros) */}
+      {selectable && selectedCount > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[90%] max-w-md animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="bg-white rounded-xl shadow-md border border-gray-200 p-3 sm:p-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-primary-50 border border-primary-100 rounded-lg flex items-center justify-center text-primary-700">
+                <Users size={20} />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-gray-900 leading-tight">
+                  {selectedCount} seleccionado{selectedCount === 1 ? "" : "s"}
+                </p>
+                <button
+                  onClick={clearSelection}
+                  className="text-[11px] text-gray-600 font-semibold hover:text-gray-800 hover:underline"
+                >
+                  Deseleccionar todos
+                </button>
+              </div>
+            </div>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setBulkMenuOpen((v) => !v)}
+                className="px-4 py-2 bg-primary-600 text-white rounded-btn text-sm font-bold hover:bg-primary-700 transition-all shadow-sm active:scale-95 flex items-center gap-2"
+              >
+                <ChevronDown size={16} className={cn("transition-transform", bulkMenuOpen && "rotate-180")} />
+                <span>Acciones</span>
+              </button>
+
+              {bulkMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setBulkMenuOpen(false)} />
+                  <div className="absolute right-0 bottom-12 z-50 w-56 bg-white rounded-xl shadow-xl border border-gray-200 p-1.5">
+                    <button
+                      onClick={() => { setBulkMenuOpen(false); setBulkAssignUid(""); setBulkModal("assign"); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                    >
+                      <UserCog size={16} className="text-gray-600" />
+                      Reasignar agente
+                    </button>
+                    {subject === "owner" && (
+                      <button
+                        onClick={() => { setBulkMenuOpen(false); setBulkModal("stage"); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                      >
+                        <RefreshCw size={16} className="text-gray-600" />
+                        Cambiar etapa
+                      </button>
+                    )}
+                    {subject === "buyer" && (
+                      <button
+                        onClick={() => { setBulkMenuOpen(false); setBulkModal("status"); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 rounded-btn transition-colors"
+                      >
+                        <RefreshCw size={16} className="text-gray-600" />
+                        Cambiar estado
+                      </button>
+                    )}
+                    <div className="h-px bg-gray-100 my-1" />
+                    <button
+                      onClick={() => { setBulkMenuOpen(false); setBulkModal("delete"); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50 rounded-btn transition-colors"
+                    >
+                      <Trash2 size={16} className="text-rose-600" />
+                      Eliminar
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modales de las acciones en grupo */}
+      {bulkModal && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          onClick={() => { if (!bulkBusy) setBulkModal(null); }}
+        >
+          <div
+            className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-gray-200 p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <h3 className="text-base font-bold text-gray-900 font-heading">
+                {bulkModal === "delete" && "Eliminar selección"}
+                {bulkModal === "stage" && "Cambiar etapa"}
+                {bulkModal === "status" && "Cambiar estado"}
+                {bulkModal === "assign" && "Reasignar agente"}
+              </h3>
+              <button
+                type="button"
+                onClick={() => { if (!bulkBusy) setBulkModal(null); }}
+                className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {bulkModal === "delete" && (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">
+                  Vas a eliminar <strong>{selectedCount}</strong> registro{selectedCount === 1 ? "" : "s"}
+                  {selectedLeadIds.size > 0 && " (los leads borran también su conversación asociada)"}.
+                  Esta acción <strong>no se puede deshacer</strong>.
+                </p>
+              </div>
+            )}
+
+            {bulkModal === "stage" && (
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Nueva etapa</label>
+                <select
+                  value={bulkStage}
+                  onChange={(e) => setBulkStage(e.target.value as ProspectStage)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  {PROSPECT_STAGES.map((s) => <option key={s} value={s}>{PROSPECT_STAGE_LABELS[s]}</option>)}
+                </select>
+                <p className="text-xs text-gray-500">Se aplicará a {selectedProspectIds.size} captación{selectedProspectIds.size === 1 ? "" : "es"}.</p>
+              </div>
+            )}
+
+            {bulkModal === "status" && (
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Nuevo estado</label>
+                <select
+                  value={bulkStatus}
+                  onChange={(e) => setBulkStatus(e.target.value as LeadFollowUpStatus)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  {LEAD_FOLLOWUP_STATUSES.map((s) => <option key={s} value={s}>{LEAD_FOLLOWUP_STATUS_LABELS[s]}</option>)}
+                </select>
+                <p className="text-xs text-gray-500">Se aplicará a {selectedLeadIds.size} lead{selectedLeadIds.size === 1 ? "" : "s"}.</p>
+              </div>
+            )}
+
+            {bulkModal === "assign" && (
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-gray-600 font-heading uppercase tracking-wider">Agente responsable</label>
+                <select
+                  value={bulkAssignUid}
+                  onChange={(e) => setBulkAssignUid(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="">Sin asignar</option>
+                  {members.map((m) => (
+                    <option key={m.uid} value={m.uid}>{m.name || m.displayName || m.email}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500">Se aplicará a {selectedCount} registro{selectedCount === 1 ? "" : "s"}.</p>
+              </div>
+            )}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button variant="outline" onClick={() => setBulkModal(null)} disabled={bulkBusy}>
+                Cancelar
+              </Button>
+              {bulkModal === "delete" ? (
+                <button
+                  type="button"
+                  onClick={runBulkDelete}
+                  disabled={bulkBusy}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-btn bg-rose-600 text-white text-sm font-bold hover:bg-rose-700 disabled:opacity-50 transition-colors"
+                >
+                  <Trash2 size={15} /> {bulkBusy ? "Eliminando…" : "Eliminar"}
+                </button>
+              ) : (
+                <Button
+                  onClick={bulkModal === "stage" ? runBulkStage : bulkModal === "status" ? runBulkStatus : runBulkAssign}
+                  disabled={bulkBusy}
+                >
+                  {bulkBusy ? "Aplicando…" : "Aplicar"}
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

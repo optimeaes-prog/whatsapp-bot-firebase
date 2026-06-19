@@ -300,9 +300,9 @@ export function ProspectDrawer({
   const waLink = current.phone ? `https://wa.me/${current.phone.replace(/[^\d]/g, "")}` : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div
-        className="bg-white w-full max-w-md h-full overflow-y-auto shadow-2xl flex flex-col animate-in slide-in-from-right duration-200"
+        className="bg-white w-full max-w-lg max-h-[90vh] rounded-xl overflow-y-auto shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
