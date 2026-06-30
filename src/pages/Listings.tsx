@@ -22,7 +22,7 @@ import { OperationTypeBadge } from "../components/StatusBadges";
 import { useAuth } from "../contexts/AuthContext";
 import { isNotificationNumbersV2Enabled } from "../lib/featureFlags";
 import { NotificationNumberSelector } from "../components/NotificationNumberSelector";
-import { getMaxListingNotificationNumbers } from "../utils/planLimits";
+import { getMaxListingNotificationNumbers, getMaxActiveListings } from "../utils/planLimits";
 import { getSubscription, type OrgSubscriptionInfo } from "../services/subscription";
 import { analytics } from "../lib/analytics";
 
@@ -438,10 +438,10 @@ export function Listings() {
     loader.then(setCaptaciones).catch((e) => console.error("[Listings] load captaciones failed", e));
   }, [organizationId, effectiveRole, effectiveUid]);
 
-  // Load subscription info once when the v2 flag is on so the listing form can
-  // size the notificationNumberIds cap based on plan tier.
+  // Load subscription info so the listing form can size the notificationNumberIds
+  // cap and so we can enforce the per-plan active-listings limit (applies to all
+  // orgs, independent of the notificationNumbers feature flag).
   useEffect(() => {
-    if (!notificationNumbersV2) return;
     if (!organizationId) return;
     let cancelled = false;
     getSubscription()
@@ -454,7 +454,7 @@ export function Listings() {
     return () => {
       cancelled = true;
     };
-  }, [notificationNumbersV2, organizationId]);
+  }, [organizationId]);
 
   useEffect(() => {
     const el = featuresRef.current;
@@ -719,6 +719,11 @@ export function Listings() {
         await updateListing(editingId, dataToSave);
         analytics.trackListingEdited("form");
       } else {
+        // Un anuncio nuevo nace activo: comprobar el tope del plan antes de crear.
+        if (!(await ensureCanActivateOneMore())) {
+          setSaving(false);
+          return;
+        }
         const newListingId = await createListing(dataToSave);
         analytics.trackListingCreated("manual");
         // Back-ref: marcar la captación como "ya tiene anuncio" (best-effort, no rompe el alta).
@@ -817,11 +822,38 @@ export function Listings() {
     }
   }
 
+  // Comprueba contra el backend si la org puede tener un anuncio activo más
+  // según su plan. Devuelve true si se permite; si no, muestra un aviso para
+  // subir de plan. Re-consulta la suscripción para tener el recuento fresco; si
+  // falla, usa el último valor en caché. El trigger del backend es la red de
+  // seguridad final ante carreras o clientes manipulados.
+  async function ensureCanActivateOneMore(): Promise<boolean> {
+    let info = subscriptionInfo;
+    try {
+      info = await getSubscription();
+      setSubscriptionInfo(info);
+    } catch (err) {
+      console.warn("No se pudo verificar el plan; usando datos en caché:", err);
+    }
+    const max = getMaxActiveListings(info?.planId);
+    if (!Number.isFinite(max)) return true; // Enterprise / ilimitado
+    const count = info?.activeListingsCount ?? 0;
+    if (count >= max) {
+      toast.error(
+        `Has alcanzado el máximo de ${max} ${max === 1 ? "anuncio activo" : "anuncios activos"} de tu plan. Mejora tu plan para publicar más.`,
+        { action: { label: "Mejorar plan", onClick: () => navigate("/suscripcion") } }
+      );
+      return false;
+    }
+    return true;
+  }
+
   async function handleReactivate(id: string) {
     if (isImpersonationReadOnly) {
       toast.message("Solo lectura en modo vista como usuario");
       return;
     }
+    if (!(await ensureCanActivateOneMore())) return;
     try {
       await reactivateListing(id);
       loadListings();

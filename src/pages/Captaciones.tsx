@@ -10,7 +10,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { cn, formatPhoneWhatsApp } from "../lib/utils";
 import { PROSPECT_SOURCE_LABELS, PROSPECT_STAGE_CLASSES } from "../lib/prospectMeta";
 import { OPERATION_FILTER_LABEL, PROSPECT_OPERATION_FILTER_OPTIONS } from "../lib/operationFilter";
-import { OperationTypeBadge } from "../components/StatusBadges";
+import { OperationTypeBadge, StillListedBadge } from "../components/StatusBadges";
 import { PageHeader, PageLoading, FilterCard, FilterDropdown, Button } from "../components/ui";
 import { ProspectDrawer } from "../components/ProspectDrawer";
 import { ProspectCreateModal } from "../components/ProspectCreateModal";
@@ -244,6 +244,7 @@ function CaptacionCard({ c, onOpen }: { c: Prospect; onOpen: (p: Prospect) => vo
           <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", PROSPECT_STAGE_CLASSES[c.stage])}>
             {PROSPECT_STAGE_LABELS[c.stage]}
           </span>
+          <StillListedBadge value={c.stillListed} />
           {c.source && (
             <span className="text-[11px] text-gray-400">{PROSPECT_SOURCE_LABELS[c.source]}</span>
           )}

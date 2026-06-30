@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { ListTodo, Search, CalendarClock, Target, ChevronDown, CheckSquare, Square, Trash2, RefreshCw, UserCog, Users, X } from "lucide-react";
+import { ListTodo, Search, CalendarClock, Target, ChevronDown, CheckSquare, Square, Trash2, RefreshCw, UserCog, Users, X, Plus } from "lucide-react";
 import type { Lead, LeadFollowUpStatus, Prospect, ProspectStage } from "../types";
 import {
   PROSPECT_STAGES, PROSPECT_STAGE_LABELS,
   LEAD_FOLLOWUP_STATUSES, LEAD_FOLLOWUP_STATUS_LABELS,
 } from "../types";
 import {
-  getProspects, getProspectsForAgent, updateProspectStage,
+  getProspects, getProspectsForAgent, updateProspect, updateProspectStage,
   prospectsByStage, isDueToday,
   deleteProspects, bulkUpdateProspectsStage, bulkAssignProspects,
 } from "../services/prospects";
@@ -34,12 +34,15 @@ import { ProspectCreateModal } from "../components/ProspectCreateModal";
 import { LeadEditModal } from "../components/LeadEditModal";
 import { KanbanBoard, LeadKanbanBoard } from "../components/seguimiento/KanbanBoard";
 import { ProspectTable, BuyerTable, EmptyState } from "../components/seguimiento/FollowUpTables";
+import { ProspectSpreadsheet } from "../components/seguimiento/ProspectSpreadsheet";
+import { BuyerSpreadsheet } from "../components/seguimiento/BuyerSpreadsheet";
+import { ZoomControl, DEFAULT_ZOOM, type SpreadsheetZoomId } from "../components/seguimiento/spreadsheetZoom";
 import { AgendaList } from "../components/seguimiento/AgendaList";
 import { QuickLogModal } from "../components/seguimiento/QuickLogModal";
 import { FollowUpPicker } from "../components/seguimiento/FollowUpPicker";
 import { SinSeguimientoSection } from "../components/seguimiento/SinSeguimientoSection";
 
-type ViewMode = "kanban" | "lista";
+type ViewMode = "kanban" | "lista" | "tabla";
 type OpFilter = OperationFilterValue;
 type Subject = "all" | "owner" | "buyer";
 type StatusFilterValue = LeadFollowUpStatus | "sin_estado";
@@ -154,6 +157,12 @@ export function Seguimiento() {
 
   const [view, setView] = useState<ViewMode>(() => (localStorage.getItem("seguimiento_view") as ViewMode) || "kanban");
   useEffect(() => { localStorage.setItem("seguimiento_view", view); }, [view]);
+
+  // Tamaño de letra de la vista "Tabla" (control lupa). Se recuerda entre sesiones.
+  const [tableZoom, setTableZoom] = useState<SpreadsheetZoomId>(
+    () => (localStorage.getItem("seguimiento_table_zoom") as SpreadsheetZoomId) || DEFAULT_ZOOM
+  );
+  useEffect(() => { localStorage.setItem("seguimiento_table_zoom", tableZoom); }, [tableZoom]);
 
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -525,6 +534,48 @@ export function Seguimiento() {
     }
   }
 
+  // --- Edición en línea desde la vista "Tabla" (parche optimista, sin re-ordenar) ---
+
+  /** Guarda un cambio de un campo de una captación sin recargar (la fila no salta). */
+  async function patchProspect(id: string, partial: Partial<Prospect>) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      throw new Error("read-only");
+    }
+    const prev = prospects;
+    setProspects((rows) => rows.map((x) => (x.id === id ? { ...x, ...partial } : x)));
+    try {
+      if ("stage" in partial && partial.stage) {
+        await updateProspectStage(id, partial.stage);
+      } else {
+        await updateProspect(id, partial);
+      }
+    } catch (e) {
+      console.error("[Seguimiento] patchProspect failed", e);
+      toast.error("No se pudo guardar el cambio");
+      setProspects(prev); // revertir
+      throw e;
+    }
+  }
+
+  /** Guarda un cambio de un campo de un lead sin recargar. */
+  async function patchLead(id: string, partial: Partial<Lead>) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      throw new Error("read-only");
+    }
+    const prev = leads;
+    setLeads((rows) => rows.map((x) => (x.id === id ? { ...x, ...partial } : x)));
+    try {
+      await updateLead(id, partial);
+    } catch (e) {
+      console.error("[Seguimiento] patchLead failed", e);
+      toast.error("No se pudo guardar el cambio");
+      setLeads(prev); // revertir
+      throw e;
+    }
+  }
+
   const openQuickLogProspect = (p: Prospect) => setQuickLogTarget(prospectToItem(p));
   const openQuickLogLead = (l: Lead) => setQuickLogTarget(leadToItem(l));
 
@@ -535,12 +586,12 @@ export function Seguimiento() {
       <div className="mb-6">
         <PageHeader
           className="flex-col md:flex-row md:items-end"
-          title="Tareas"
-          subtitle={`Captaciones y leads · agenda de próximas acciones${dueCount ? ` · ${dueCount} pendientes hoy` : ""}`}
+          title="Seguimiento"
+          subtitle={`Captaciones y leads · agenda de tareas y eventos${dueCount ? ` · ${dueCount} pendientes hoy` : ""}`}
           actions={
             <div className="flex flex-wrap items-center gap-3">
               <SegmentedControl
-                ariaLabel="Ámbito de tareas"
+                ariaLabel="Ámbito de seguimiento"
                 colorScheme="amber"
                 value={subject}
                 onChange={(v) => setSubject(v as Subject)}
@@ -551,8 +602,8 @@ export function Seguimiento() {
                 ]}
               />
               <div className="hidden sm:block h-6 w-px bg-gray-200" />
-              <Button onClick={() => setPickerOpen(true)} disabled={isImpersonationReadOnly}>
-                <ListTodo size={16} /> Registrar tarea
+              <Button size="lg" onClick={() => setPickerOpen(true)} disabled={isImpersonationReadOnly}>
+                <Plus size={20} /> Seguimiento
               </Button>
             </div>
           }
@@ -625,13 +676,15 @@ export function Seguimiento() {
 
       {subject === "owner" ? (
         <>
-          <div className="mb-4 flex justify-end">
+          <div className="mb-4 flex items-center justify-end gap-2">
+            {view === "tabla" && <ZoomControl zoom={tableZoom} onChange={setTableZoom} />}
             <PillToggle
               value={view}
               onChange={(v) => setView(v as ViewMode)}
               options={[
                 { value: "kanban", label: "Kanban" },
                 { value: "lista", label: "Lista" },
+                { value: "tabla", label: "Tabla" },
               ]}
             />
           </div>
@@ -656,7 +709,7 @@ export function Seguimiento() {
               onToggleSelect={toggleProspectSelection}
               onToggleColumn={toggleProspectColumn}
             />
-          ) : (
+          ) : view === "lista" ? (
             <ProspectTable
               rows={ownerRows}
               onOpen={setSelected}
@@ -667,17 +720,31 @@ export function Seguimiento() {
               onToggleSelect={toggleProspectSelection}
               onToggleAll={toggleAllProspects}
             />
+          ) : (
+            <ProspectSpreadsheet
+              rows={ownerRows}
+              onOpen={setSelected}
+              onChanged={patchProspect}
+              readOnly={isImpersonationReadOnly}
+              zoom={tableZoom}
+              selectable={selectable}
+              selectedIds={selectedProspectIds}
+              onToggleSelect={toggleProspectSelection}
+              onToggleAll={toggleAllProspects}
+            />
           )}
         </>
       ) : subject === "buyer" ? (
         <>
-          <div className="mb-4 flex justify-end">
+          <div className="mb-4 flex items-center justify-end gap-2">
+            {view === "tabla" && <ZoomControl zoom={tableZoom} onChange={setTableZoom} />}
             <PillToggle
               value={view}
               onChange={(v) => setView(v as ViewMode)}
               options={[
                 { value: "kanban", label: "Kanban" },
                 { value: "lista", label: "Lista" },
+                { value: "tabla", label: "Tabla" },
               ]}
             />
           </div>
@@ -702,12 +769,24 @@ export function Seguimiento() {
               onToggleSelect={toggleLeadSelection}
               onToggleColumn={toggleLeadColumn}
             />
-          ) : (
+          ) : view === "lista" ? (
             <BuyerTable
               rows={buyerRows}
               onOpen={setSelectedLead}
               onQuickLog={openQuickLogLead}
               readOnly={isImpersonationReadOnly}
+              selectable={selectable}
+              selectedIds={selectedLeadIds}
+              onToggleSelect={toggleLeadSelection}
+              onToggleAll={toggleAllLeads}
+            />
+          ) : (
+            <BuyerSpreadsheet
+              rows={buyerRows}
+              onOpen={setSelectedLead}
+              onChanged={patchLead}
+              readOnly={isImpersonationReadOnly}
+              zoom={tableZoom}
               selectable={selectable}
               selectedIds={selectedLeadIds}
               onToggleSelect={toggleLeadSelection}
@@ -745,6 +824,7 @@ export function Seguimiento() {
       {selected && (
         <ProspectDrawer
           prospect={selected}
+          context="seguimiento"
           readOnly={isImpersonationReadOnly}
           isManager={isManager}
           currentUid={effectiveUid}

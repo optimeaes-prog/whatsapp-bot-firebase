@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Settings, Check, MessageSquare } from "lucide-react";
+import { Settings, Check, MessageSquare, Phone } from "lucide-react";
 import type { BotConfig, BotStyle } from "../types";
-import { getBotConfig, updateActiveStyle, DEFAULT_STYLES } from "../services/botConfig";
+import {
+  getBotConfig,
+  updateActiveStyle,
+  updateVoiceNumber,
+  updateInboundVoicePerOrgEnabled,
+  DEFAULT_STYLES,
+} from "../services/botConfig";
 import { useAuth } from "../contexts/AuthContext";
 import { cn } from "../lib/utils";
 import { Button, PageHeader, PageLoading } from "../components/ui";
@@ -30,6 +36,9 @@ export function Configuracion() {
   const [previewStyle, setPreviewStyle] = useState<BotStyle | null>(null);
   const [exporting, setExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [voiceNumberInput, setVoiceNumberInput] = useState("");
+  const [savingVoice, setSavingVoice] = useState(false);
+  const [perOrgVoiceEnabled, setPerOrgVoiceEnabled] = useState(false);
 
   async function handleExportData() {
     if (isImpersonationReadOnly) {
@@ -81,6 +90,8 @@ export function Configuracion() {
       const data = await getBotConfig();
       console.log("[Diagnostic] loadConfig() success:", data);
       setConfig(data);
+      setVoiceNumberInput(data.twilioConfig?.voiceNumber || "");
+      setPerOrgVoiceEnabled(data.inboundVoicePerOrgEnabled === true);
     } catch (error: any) {
       console.error("[Diagnostic] loadConfig() FAILED:", error);
       if (error.code === "permission-denied") {
@@ -88,6 +99,42 @@ export function Configuracion() {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSaveVoiceNumber() {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
+    setSavingVoice(true);
+    try {
+      await updateVoiceNumber(voiceNumberInput.trim());
+      const normalized = voiceNumberInput.replace(/\D/g, "");
+      setConfig((prev) =>
+        prev ? { ...prev, twilioConfig: { ...prev.twilioConfig, voiceNumber: normalized } } : prev
+      );
+      toast.success("Número de voz guardado");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo guardar el número de voz");
+    } finally {
+      setSavingVoice(false);
+    }
+  }
+
+  async function handleTogglePerOrgVoice(next: boolean) {
+    if (isImpersonationReadOnly) {
+      toast.message("Solo lectura en modo vista como usuario");
+      return;
+    }
+    setPerOrgVoiceEnabled(next);
+    try {
+      await updateInboundVoicePerOrgEnabled(next);
+      setConfig((prev) => (prev ? { ...prev, inboundVoicePerOrgEnabled: next } : prev));
+      toast.success(next ? "Flujo de voz por organización activado" : "Flujo de voz por organización desactivado");
+    } catch (e) {
+      setPerOrgVoiceEnabled(!next); // revert optimistic toggle
+      toast.error(e instanceof Error ? e.message : "No se pudo actualizar el ajuste");
     }
   }
 
@@ -219,6 +266,52 @@ export function Configuracion() {
           </div>
         </div>
       </div>
+
+      {effectiveRole !== "member" && (
+        <div className="mt-8 bg-white rounded-xl border border-gray-200 p-6">
+          <div className="flex items-center gap-2 mb-1">
+            <Phone className="text-primary-500" size={22} />
+            <h3 className="text-lg font-bold text-gray-900 font-heading">Llamadas entrantes (voz)</h3>
+          </div>
+          <p className="text-sm text-gray-600 mb-4">
+            Número de teléfono dedicado donde tu organización recibe llamadas. Cuando el flujo por
+            organización está activo, el asistente atiende la llamada, pide consentimiento y continúa
+            por WhatsApp <strong>desde tu propio número</strong>, buscando el anuncio entre los tuyos
+            (sin transferencias).
+          </p>
+          <div className="flex flex-col sm:flex-row sm:items-end gap-3 mb-4">
+            <div className="flex-1">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1 font-heading">
+                Número de voz (E.164)
+              </label>
+              <input
+                type="tel"
+                value={voiceNumberInput}
+                onChange={(e) => setVoiceNumberInput(e.target.value)}
+                placeholder="+34 911 22 33 44"
+                disabled={isImpersonationReadOnly || savingVoice}
+                className="w-full px-3 py-2 border border-gray-300 rounded-btn focus:border-primary-500 focus:ring-1 focus:ring-primary-500 outline-none"
+              />
+            </div>
+            <Button onClick={handleSaveVoiceNumber} disabled={savingVoice || isImpersonationReadOnly} variant="secondary">
+              {savingVoice ? "Guardando..." : "Guardar número"}
+            </Button>
+          </div>
+          <label className="flex items-center gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={perOrgVoiceEnabled}
+              onChange={(e) => handleTogglePerOrgVoice(e.target.checked)}
+              disabled={isImpersonationReadOnly}
+              className="h-4 w-4 accent-primary-500"
+            />
+            <span className="text-sm text-gray-700">
+              Activar flujo de voz por organización (sin transferencia). Si está desactivado, las
+              llamadas usan el flujo clásico.
+            </span>
+          </label>
+        </div>
+      )}
 
       {effectiveRole === "owner" && (
         <div className="mt-8 bg-white rounded-xl border border-gray-200 p-6">

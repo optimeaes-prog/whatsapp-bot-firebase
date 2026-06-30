@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { X, PhoneCall, MessageSquare, ArrowRight, CheckCircle2 } from "lucide-react";
-import type { ActivityChannel, ActivityOutcome, LeadFollowUpStatus } from "../../types";
+import type { LeadFollowUpStatus } from "../../types";
 import { LEAD_FOLLOWUP_STATUSES, LEAD_FOLLOWUP_STATUS_LABELS } from "../../types";
-import { addProspectActivity, setProspectNextAction } from "../../services/prospects";
-import { addLeadActivity, setLeadNextAction, updateLead } from "../../services/leads";
+import { updateLead } from "../../services/leads";
+import { generateFollowUpMessage } from "../../services/conversations";
 import { cn } from "../../lib/utils";
-import { LEAD_ACTIVITY_OUTCOMES, toDateTimeInputValue } from "../../lib/prospectMeta";
+import { LEAD_ACTIVITY_OUTCOMES } from "../../lib/prospectMeta";
 import { whatsappLink, type FollowUpItem } from "../../lib/followUp";
-import { ContactLogForm } from "../ContactLogForm";
+import { EventTaskPicker } from "../EventTaskPicker";
 import { Button } from "../ui";
 import { KindBadge } from "./KindBadge";
 
@@ -28,62 +28,81 @@ interface Props {
 }
 
 /**
- * Registro rápido de seguimiento desde la página Seguimiento: funciona para
- * propietarios (Prospect) y compradores (Lead) sin abrir el detalle completo.
- * Pasa `key={target.id}` al montarlo para resetear el formulario por registro.
+ * Registro rápido desde la página Seguimiento: funciona para propietarios (Prospect)
+ * y compradores (Lead) sin abrir el detalle completo. Dos acciones bien separadas
+ * (vía EventTaskPicker): "Crear evento" (algo que ya pasó) y "Crear tarea" (algo por hacer).
+ * Pasa `key={target.id}` al montarlo para resetear el estado por registro.
  */
 export function QuickLogModal({
   target, readOnly, currentUid, currentName, onClose, onLogged, nextPending, onOpenNext,
 }: Props) {
-  const [logging, setLogging] = useState(false);
-  const [justLogged, setJustLogged] = useState(false);
+  const [justLogged, setJustLogged] = useState<string | null>(null);
   const [followUpStatus, setFollowUpStatus] = useState<LeadFollowUpStatus | "">(
     target.kind === "lead" ? target.lead.followUpStatus || "" : ""
   );
 
-  const entity = target.kind === "prospect" ? target.prospect : target.lead;
+  const id = target.kind === "prospect" ? target.prospect.id : target.lead.id;
   const wa = whatsappLink(target.phone);
 
-  async function handleSubmit(
-    entry: { channel: ActivityChannel; outcome: ActivityOutcome; note?: string },
-    nextDate: Date | null,
-    reminderMinutes: number | null
-  ) {
-    if (readOnly) {
-      toast.message("Solo lectura en modo vista como usuario");
-      return;
-    }
-    setLogging(true);
+  /** El estado del comprador se guarda al instante al cambiarlo (no va atado a una tarjeta). */
+  async function handleStatusChange(value: LeadFollowUpStatus | "") {
+    setFollowUpStatus(value);
+    if (readOnly || target.kind !== "lead") return;
+    if (!value || value === (target.lead.followUpStatus || "")) return;
     try {
-      if (target.kind === "prospect") {
-        await addProspectActivity(target.prospect.id, { ...entry, createdByUid: currentUid, createdByName: currentName });
-        await setProspectNextAction(target.prospect.id, nextDate, reminderMinutes);
-      } else {
-        await addLeadActivity(target.lead.id, { ...entry, createdByUid: currentUid, createdByName: currentName });
-        await setLeadNextAction(target.lead.id, nextDate, reminderMinutes);
-        if (followUpStatus && followUpStatus !== target.lead.followUpStatus) {
-          await updateLead(target.lead.id, { followUpStatus });
-        }
-      }
-      toast.success("Tarea registrada");
+      await updateLead(target.lead.id, { followUpStatus: value });
       onLogged();
-      if (nextPending && onOpenNext) setJustLogged(true);
-      else onClose();
     } catch (e) {
-      console.error("[QuickLog] error al registrar", e);
-      toast.error("Error al registrar la tarea");
-    } finally {
-      setLogging(false);
+      console.error("[QuickLog] update status", e);
+      toast.error("No se pudo actualizar el estado");
     }
   }
 
-  const extraFields = target.kind === "lead" ? (
-    <div className="mt-3">
+  /** Pide a la IA un borrador de mensaje de seguimiento con el contexto del contacto. */
+  async function handleGenerateMessage(channel: "message" | "email", note: string): Promise<string> {
+    try {
+      const todayLabel = new Date().toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" });
+      if (target.kind === "prospect") {
+        const p = target.prospect;
+        const property = [
+          p.propertyType,
+          p.address || [p.zone, p.municipality].filter(Boolean).join(" "),
+          p.price,
+          p.m2 ? `${p.m2} m²` : undefined,
+          p.rooms ? `${p.rooms} hab.` : undefined,
+        ].filter(Boolean).join(", ");
+        const recentNotes = (p.activities || [])
+          .map((a) => a.note?.trim())
+          .filter((n): n is string => !!n)
+          .slice(-8);
+        return await generateFollowUpMessage({
+          channel, name: p.ownerName, operationType: p.operationType,
+          property: property || undefined, note: note.trim() || undefined, recentNotes, todayLabel,
+        });
+      }
+      const l = target.lead;
+      const recentNotes = [
+        l.conversationSummary?.trim(),
+        ...(l.activities || []).map((a) => a.note?.trim()),
+      ].filter((n): n is string => !!n).slice(-8);
+      return await generateFollowUpMessage({
+        channel, name: l.name, operationType: l.operationType,
+        note: note.trim() || undefined, recentNotes, todayLabel,
+      });
+    } catch (e) {
+      console.error("[QuickLog] generar mensaje", e);
+      toast.error("No se pudo generar el mensaje");
+      throw e;
+    }
+  }
+
+  const leadStatusSelect = target.kind === "lead" ? (
+    <div className="mb-4">
       <label className={labelClass}>Estado del comprador</label>
       <select
         className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
         value={followUpStatus}
-        onChange={(e) => setFollowUpStatus(e.target.value as LeadFollowUpStatus | "")}
+        onChange={(e) => handleStatusChange(e.target.value as LeadFollowUpStatus | "")}
         disabled={readOnly}
       >
         <option value="">Sin estado</option>
@@ -92,11 +111,7 @@ export function QuickLogModal({
         ))}
       </select>
     </div>
-  ) : (
-    <p className="mt-2 text-[11px] text-gray-400">
-      El resultado puede mover la etapa automáticamente (p. ej. «Cita agendada» → Citado).
-    </p>
-  );
+  ) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
@@ -141,38 +156,54 @@ export function QuickLogModal({
           {justLogged ? (
             <div className="text-center py-6">
               <CheckCircle2 size={36} className="mx-auto text-emerald-500 mb-2" />
-              <p className="font-semibold text-gray-800">Tarea registrada</p>
-              {nextPending ? (
+              <p className="font-semibold text-gray-800">{justLogged}</p>
+              {nextPending && onOpenNext ? (
                 <>
                   <p className="text-sm text-gray-500 mt-1">
                     Siguiente pendiente: <span className="font-semibold text-gray-700">{nextPending.name}</span>
                   </p>
-                  <div className="mt-4 flex items-center justify-center gap-2">
-                    <Button variant="secondary" onClick={onClose}>Cerrar</Button>
-                    <Button onClick={() => onOpenNext?.(nextPending)}>
+                  <div className="mt-4 flex flex-col items-center gap-2">
+                    <Button onClick={() => onOpenNext(nextPending)}>
                       Registrar siguiente <ArrowRight size={15} />
                     </Button>
+                    <Button variant="secondary" onClick={() => setJustLogged(null)}>Añadir otra cosa</Button>
+                    <Button variant="ghost" onClick={onClose}>Cerrar</Button>
                   </div>
                 </>
               ) : (
                 <>
-                  <p className="text-sm text-gray-500 mt-1">No quedan pendientes para hoy 🎉</p>
-                  <Button variant="secondary" onClick={onClose} className="mt-4">Cerrar</Button>
+                  <p className="text-sm text-gray-500 mt-1">¿Algo más para este contacto?</p>
+                  <div className="mt-4 flex flex-col items-center gap-2">
+                    <Button variant="secondary" onClick={() => setJustLogged(null)}>Añadir otra cosa</Button>
+                    <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+                  </div>
                 </>
               )}
             </div>
           ) : (
-            <ContactLogForm
-              key={target.id}
-              disabled={readOnly}
-              loading={logging}
-              outcomes={target.kind === "lead" ? LEAD_ACTIVITY_OUTCOMES : undefined}
-              initialNextDate={entity.nextActionDate ? toDateTimeInputValue(entity.nextActionDate.toMillis()) : ""}
-              initialReminderMinutes={entity.reminderMinutesBefore ?? null}
-              submitLabel="Registrar tarea"
-              extraFields={extraFields}
-              onSubmit={handleSubmit}
-            />
+            <>
+              {leadStatusSelect}
+              <EventTaskPicker
+                kind={target.kind}
+                id={id}
+                readOnly={readOnly}
+                currentUid={currentUid}
+                currentName={currentName}
+                outcomes={target.kind === "lead" ? LEAD_ACTIVITY_OUTCOMES : undefined}
+                onGenerateMessage={handleGenerateMessage}
+                onLogged={(what) => {
+                  onLogged();
+                  setJustLogged(what === "evento" ? "Evento registrado" : "Tarea creada");
+                }}
+                eventExtraFields={
+                  target.kind === "prospect" ? (
+                    <p className="mt-2 text-[11px] text-gray-400">
+                      El resultado puede mover la etapa automáticamente (p. ej. «Cita agendada» → Citado).
+                    </p>
+                  ) : undefined
+                }
+              />
+            </>
           )}
         </div>
 

@@ -9,11 +9,12 @@ import {
   PROSPECT_STAGE_CLASSES, LEAD_FOLLOWUP_STATUS_CLASSES, formatShortDate, formatShortDateTime,
 } from "../../lib/prospectMeta";
 import { isOverdueMillis, formatRelativeDays, whatsappLink } from "../../lib/followUp";
-import { OperationTypeBadge } from "../StatusBadges";
+import { OperationTypeBadge, StillListedBadge } from "../StatusBadges";
+import { WhatsAppIconLink } from "../WhatsAppIconLink";
 
 const thClass = "px-4 py-3";
 
-/** Celda "Próx. acción": fecha + badge "hace X días" si está vencida (solo registros activos). */
+/** Celda "Próx. tarea": fecha + badge "hace X días" si está vencida (solo registros activos). */
 function NextActionCell({ ms, due }: { ms: number | null; due: boolean }) {
   return (
     <td className={cn("px-4 py-3 whitespace-nowrap", due ? "text-rose-600 font-semibold" : "text-gray-600")}>
@@ -32,7 +33,7 @@ function NextActionCell({ ms, due }: { ms: number | null; due: boolean }) {
 }
 
 /** Acciones rápidas de la fila: WhatsApp + registrar seguimiento sin abrir el detalle. */
-function RowActionsCell({ phone, onQuickLog, readOnly }: { phone?: string | null; onQuickLog: () => void; readOnly: boolean }) {
+export function RowActionsCell({ phone, onQuickLog, readOnly }: { phone?: string | null; onQuickLog: () => void; readOnly: boolean }) {
   const wa = whatsappLink(phone);
   return (
     <td className="px-4 py-3">
@@ -62,7 +63,7 @@ function RowActionsCell({ phone, onQuickLog, readOnly }: { phone?: string | null
 }
 
 /** Cabecera "seleccionar todo" (solo cuando hay selección activa). */
-function SelectAllHeader({ allSelected, onToggleAll }: { allSelected: boolean; onToggleAll: () => void }) {
+export function SelectAllHeader({ allSelected, onToggleAll }: { allSelected: boolean; onToggleAll: () => void }) {
   return (
     <th className="px-4 py-3 w-10">
       <button
@@ -78,7 +79,7 @@ function SelectAllHeader({ allSelected, onToggleAll }: { allSelected: boolean; o
 }
 
 /** Celda de selección por fila (no abre el detalle). */
-function SelectCell({ checked, onToggle }: { checked: boolean; onToggle: () => void }) {
+export function SelectCell({ checked, onToggle }: { checked: boolean; onToggle: () => void }) {
   return (
     <td className="px-4 py-3 w-10" onClick={(e) => e.stopPropagation()}>
       <button
@@ -97,9 +98,12 @@ function PhoneCellLink({ phone }: { phone?: string | null }) {
   return (
     <td className="px-4 py-3 text-gray-600">
       {phone ? (
-        <a href={`tel:${phone}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 text-primary-600 hover:text-primary-700">
-          <Phone size={13} /> {phone}
-        </a>
+        <span className="inline-flex items-center gap-2">
+          <a href={`tel:${phone}`} onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 text-primary-600 hover:text-primary-700">
+            <Phone size={13} /> {phone}
+          </a>
+          <WhatsAppIconLink phone={phone} />
+        </span>
       ) : "—"}
     </td>
   );
@@ -128,8 +132,9 @@ export function ProspectTable({
             <th className={thClass}>Teléfono</th>
             <th className={thClass}>Municipio</th>
             <th className={thClass}>Operación</th>
+            <th className={thClass}>Sigue publicado</th>
             <th className={thClass}>Etapa</th>
-            <th className={thClass}>Próx. acción</th>
+            <th className={thClass}>Próx. tarea</th>
             <th className={thClass}>Último contacto</th>
             <th className={thClass}>Precio</th>
             <th className={cn(thClass, "text-right")}>Acciones</th>
@@ -154,6 +159,7 @@ export function ProspectTable({
                 <PhoneCellLink phone={p.phone} />
                 <td className="px-4 py-3 text-gray-600">{[p.municipality, p.zone].filter(Boolean).join(" · ") || "—"}</td>
                 <td className="px-4 py-3"><OperationTypeBadge type={p.operationType} /></td>
+                <td className="px-4 py-3"><StillListedBadge value={p.stillListed} /></td>
                 <td className="px-4 py-3">
                   <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold whitespace-nowrap", PROSPECT_STAGE_CLASSES[p.stage])}>
                     {PROSPECT_STAGE_LABELS[p.stage]}
@@ -195,7 +201,7 @@ export function BuyerTable({
             <th className={thClass}>Teléfono</th>
             <th className={thClass}>Operación</th>
             <th className={thClass}>Estado</th>
-            <th className={thClass}>Próx. acción</th>
+            <th className={thClass}>Próx. tarea</th>
             <th className={thClass}>Último contacto</th>
             <th className={cn(thClass, "text-right")}>Acciones</th>
           </tr>

@@ -17,9 +17,12 @@ import type {
   ProspectStage,
   ProspectActivity,
   ProspectActivityOutcome,
+  ProspectNextActionType,
+  ProspectTask,
 } from "../types";
 import { getOrganizationId, getOrganizationBasePath } from "../lib/organization";
 import { normalizePhoneForMatch } from "../lib/utils";
+import { deriveNextActionMirror, earliestPendingTask, synthesizeLegacyTasks } from "../lib/tasks";
 
 function getProspectsCollection() {
   return `${getOrganizationBasePath()}/prospects`;
@@ -28,6 +31,34 @@ function getProspectsCollection() {
 /** Firestore rechaza `undefined`: dejamos solo las claves con valor. */
 function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
+/**
+ * Rellena `tasks[]` en registros legados (que solo tienen los escalares nextAction*)
+ * para que toda la UI vea siempre la lista de tareas. Solo en lectura; no persiste.
+ */
+function normalizeRecordTasks(p: Prospect): Prospect {
+  if (p.tasks && p.tasks.length > 0) return p;
+  const synth = synthesizeLegacyTasks(p);
+  return synth.length > 0 ? { ...p, tasks: synth } : p;
+}
+
+/** Da id real a las tareas legadas y limpia `undefined` de cada tarea antes de persistir. */
+function cleanTasksForWrite(tasks: ProspectTask[]): ProspectTask[] {
+  return tasks.map((t) => stripUndefined({ ...t, id: t.id === "legacy" ? crypto.randomUUID() : t.id }) as ProspectTask);
+}
+
+/** Persiste `tasks[]` + recalcula el espejo escalar (nextAction*) desde la tarea pendiente más próxima. */
+async function persistProspectTasks(id: string, tasks: ProspectTask[]): Promise<void> {
+  const finalTasks = cleanTasksForWrite(tasks);
+  const mirror = deriveNextActionMirror(finalTasks);
+  await updateDoc(doc(db, getProspectsCollection(), id), {
+    tasks: finalTasks,
+    nextActionDate: mirror.nextActionDate,
+    nextActionType: mirror.nextActionType,
+    nextActionMessage: mirror.nextActionMessage,
+    updatedAt: Timestamp.now(),
+  });
 }
 
 /** Para ordenar: lo más recientemente tocado primero. */
@@ -46,7 +77,6 @@ const OUTCOME_TO_STAGE: Partial<Record<ProspectActivityOutcome, ProspectStage>> 
   wrong_number: "ilocalizable",
   phone_off: "ilocalizable",
   callback: "seguimiento",
-  stalled: "seguimiento",
   appointment_set: "citado",
   docs_pending: "negociacion",
   won: "ganado",
@@ -57,7 +87,7 @@ const OUTCOME_TO_STAGE: Partial<Record<ProspectActivityOutcome, ProspectStage>> 
 
 export async function getProspects(): Promise<Prospect[]> {
   const snapshot = await getDocs(collection(db, getProspectsCollection()));
-  const rows = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Prospect[];
+  const rows = (snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Prospect[]).map(normalizeRecordTasks);
   rows.sort((a, b) => prospectRecencyMillis(b) - prospectRecencyMillis(a));
   return rows;
 }
@@ -87,7 +117,7 @@ export async function getProspectsForAgent(uid: string): Promise<Prospect[]> {
   for (const res of [assignedRes, createdRes]) {
     if (res.status !== "fulfilled") continue;
     for (const d of res.value.docs) {
-      byId.set(d.id, { id: d.id, ...d.data() } as Prospect);
+      byId.set(d.id, normalizeRecordTasks({ id: d.id, ...d.data() } as Prospect));
     }
   }
 
@@ -99,7 +129,7 @@ export async function getProspectsForAgent(uid: string): Promise<Prospect[]> {
 export async function getProspectById(id: string): Promise<Prospect | null> {
   const snapshot = await getDoc(doc(db, getProspectsCollection(), id));
   if (!snapshot.exists()) return null;
-  return { id: snapshot.id, ...snapshot.data() } as Prospect;
+  return normalizeRecordTasks({ id: snapshot.id, ...snapshot.data() } as Prospect);
 }
 
 export async function createProspect(
@@ -143,39 +173,132 @@ export async function updateProspectStage(id: string, stage: ProspectStage): Pro
  */
 export async function addProspectActivity(
   id: string,
-  activity: Omit<ProspectActivity, "id" | "at">
+  activity: Omit<ProspectActivity, "id" | "at">,
+  at?: Date
 ): Promise<void> {
   const prospect = await getProspectById(id);
   if (!prospect) throw new Error(`Prospect ${id} not found`);
 
+  // `at` = cuándo ocurrió el evento (por defecto ahora); `now` = momento de guardado (recencia).
+  const eventTs = at ? Timestamp.fromDate(at) : Timestamp.now();
   const now = Timestamp.now();
   const entry: ProspectActivity = stripUndefined({
     ...activity,
     id: crypto.randomUUID(),
-    at: now,
+    at: eventTs,
   }) as ProspectActivity;
 
   const nextStage = OUTCOME_TO_STAGE[activity.outcome];
   await updateDoc(doc(db, getProspectsCollection(), id), {
     activities: [...(prospect.activities || []), entry],
-    lastContactAt: now,
+    lastContactAt: eventTs,
     ...(nextStage ? { stage: nextStage } : {}),
     updatedAt: now,
   });
 }
 
-/** Fijar (o limpiar) la fecha/hora de próxima acción + el recordatorio (minutos antes). */
+/** Añadir una TAREA nueva (algo por hacer). Devuelve el id de la tarea creada. */
+export async function addProspectTask(
+  id: string,
+  task: {
+    dueAt: Date;
+    type: ProspectNextActionType;
+    message?: string | null;
+    note?: string | null;
+    createdByUid: string;
+    createdByName?: string;
+  }
+): Promise<string> {
+  const prospect = await getProspectById(id);
+  if (!prospect) throw new Error(`Prospect ${id} not found`);
+  const base = synthesizeLegacyTasks(prospect);
+  const newTask: ProspectTask = stripUndefined({
+    id: crypto.randomUUID(),
+    dueAt: Timestamp.fromDate(task.dueAt),
+    type: task.type,
+    message: task.message?.trim() || null,
+    note: task.note?.trim() || null,
+    done: false,
+    createdByUid: task.createdByUid,
+    createdByName: task.createdByName,
+  }) as ProspectTask;
+  await persistProspectTasks(id, [...base, newTask]);
+  return newTask.id;
+}
+
+/** Marcar una tarea como hecha (queda en el historial, deja de ser pendiente). */
+export async function completeProspectTask(id: string, taskId: string): Promise<void> {
+  const prospect = await getProspectById(id);
+  if (!prospect) throw new Error(`Prospect ${id} not found`);
+  const base = synthesizeLegacyTasks(prospect);
+  const now = Timestamp.now();
+  const next = base.map((t) => (t.id === taskId ? { ...t, done: true, completedAt: now } : t));
+  await persistProspectTasks(id, next);
+}
+
+/** Editar una tarea pendiente (fecha/tipo/mensaje/nota). */
+export async function updateProspectTask(
+  id: string,
+  taskId: string,
+  patch: { dueAt?: Date; type?: ProspectNextActionType; message?: string | null; note?: string | null }
+): Promise<void> {
+  const prospect = await getProspectById(id);
+  if (!prospect) throw new Error(`Prospect ${id} not found`);
+  const base = synthesizeLegacyTasks(prospect);
+  const next = base.map((t) => {
+    if (t.id !== taskId) return t;
+    return {
+      ...t,
+      ...(patch.dueAt !== undefined ? { dueAt: Timestamp.fromDate(patch.dueAt) } : {}),
+      ...(patch.type !== undefined ? { type: patch.type } : {}),
+      ...(patch.message !== undefined ? { message: patch.message?.trim() || null } : {}),
+      ...(patch.note !== undefined ? { note: patch.note?.trim() || null } : {}),
+    };
+  });
+  await persistProspectTasks(id, next);
+}
+
+/**
+ * Fijar (o limpiar) la tarea ACTIVA (la pendiente más próxima). Wrapper retro-compatible
+ * usado por las fichas completas: edita la tarea activa en sitio, la crea si no hay, o la
+ * elimina si `date` es null. Para crear varias tareas, usar `addProspectTask`.
+ */
 export async function setProspectNextAction(
   id: string,
   date: Date | null,
-  reminderMinutes: number | null = null
+  nextActionType: ProspectNextActionType | null = null,
+  nextActionMessage: string | null = null
 ): Promise<void> {
-  await updateDoc(doc(db, getProspectsCollection(), id), {
-    nextActionDate: date ? Timestamp.fromDate(date) : null,
-    reminderMinutesBefore: date && reminderMinutes != null ? reminderMinutes : null,
-    reminderSentAt: null, // cambiar la próxima acción reactiva el recordatorio
-    updatedAt: Timestamp.now(),
-  });
+  const prospect = await getProspectById(id);
+  if (!prospect) throw new Error(`Prospect ${id} not found`);
+  const base = synthesizeLegacyTasks(prospect);
+  const active = earliestPendingTask(base);
+  const message = nextActionMessage?.trim() || null;
+
+  let next: ProspectTask[];
+  if (date == null) {
+    // "Sin fecha": quitar la tarea activa, si existe.
+    next = active ? base.filter((t) => t.id !== active.id) : base;
+  } else if (active) {
+    next = base.map((t) =>
+      t.id === active.id
+        ? { ...t, dueAt: Timestamp.fromDate(date), type: nextActionType ?? t.type, message }
+        : t
+    );
+  } else {
+    next = [
+      ...base,
+      stripUndefined({
+        id: crypto.randomUUID(),
+        dueAt: Timestamp.fromDate(date),
+        type: nextActionType ?? "call",
+        message,
+        done: false,
+        createdByUid: "",
+      }) as ProspectTask,
+    ];
+  }
+  await persistProspectTasks(id, next);
 }
 
 export async function deleteProspect(id: string): Promise<void> {

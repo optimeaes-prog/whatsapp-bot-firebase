@@ -1,6 +1,7 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { useCollab } from "../contexts/CollabContext";
 import { useCookieConsent } from "../contexts/CookieConsentContext";
 import {
   Target,
@@ -36,6 +37,8 @@ type NavItem = {
   icon: ReactNode;
   /** If set, the link is only rendered for users whose effectiveRole is in this list. */
   roles?: string[];
+  /** Sub-items rendered indented under this item (e.g. Conversaciones under Leads). */
+  children?: NavItem[];
 };
 
 const mainNavItems: NavItem[] = [
@@ -43,9 +46,23 @@ const mainNavItems: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={20} /> },
   { href: "/anuncios", label: "Anuncios", icon: <Megaphone size={20} /> },
   { href: "/captaciones", label: "Captaciones", icon: <Target size={20} /> },
-  { href: "/leads", label: "Leads", icon: <Users size={20} /> },
-  { href: "/seguimiento", label: "Tareas", icon: <ListTodo size={20} /> },
-  { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
+  {
+    href: "/leads",
+    label: "Leads",
+    icon: <Users size={20} />,
+    children: [
+      { href: "/conversaciones", label: "Conversaciones", icon: <MessageSquare size={20} /> },
+    ],
+  },
+  {
+    href: "/seguimiento",
+    label: "Seguimiento",
+    icon: <ListTodo size={20} />,
+    children: [
+      { href: "/seguimiento/tareas", label: "Tareas", icon: <ListTodo size={20} /> },
+    ],
+  },
+  { href: "/notificaciones", label: "Notificaciones", icon: <Bell size={20} /> },
 
   { href: "/suscripcion", label: "Suscripción", icon: <CreditCard size={20} /> },
   { href: "/uso", label: "Uso", icon: <BarChart3 size={20} />, roles: ["owner", "admin", "super_admin"] },
@@ -76,6 +93,7 @@ export function Layout({ children }: { children: ReactNode }) {
     clearImpersonation,
   } = useAuth();
   const { openPreferences: openCookiePreferences } = useCookieConsent();
+  const { unreadCount } = useCollab();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -239,21 +257,56 @@ export function Layout({ children }: { children: ReactNode }) {
               );
             }
 
+            const showUnreadBadge = item.href === "/notificaciones" && unreadCount > 0;
+
             return (
-              <Link
-                key={item.href}
-                to={item.href}
-                onClick={() => setSidebarOpen(false)}
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2 rounded-btn transition-colors",
-                  isTarget
-                    ? "bg-primary-50 text-primary-700"
-                    : "text-gray-600 hover:bg-gray-100"
+              <div key={item.href}>
+                <Link
+                  to={item.href}
+                  onClick={() => setSidebarOpen(false)}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2 rounded-btn transition-colors",
+                    isTarget
+                      ? "bg-primary-50 text-primary-700"
+                      : "text-gray-600 hover:bg-gray-100"
+                  )}
+                >
+                  {item.icon}
+                  <span className="font-medium font-heading">{item.label}</span>
+                  {showUnreadBadge && (
+                    <span className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-bold">
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </span>
+                  )}
+                </Link>
+
+                {item.children && item.children.length > 0 && (
+                  <div className="mt-1 ml-5 space-y-1 border-l-2 border-gray-100 pl-2">
+                    {item.children.map((child) => {
+                      if (child.roles && !child.roles.includes(effectiveRole)) {
+                        return null;
+                      }
+                      const isChildTarget = location.pathname === child.href;
+                      return (
+                        <Link
+                          key={child.href}
+                          to={child.href}
+                          onClick={() => setSidebarOpen(false)}
+                          className={cn(
+                            "flex items-center gap-3 px-3 py-2 rounded-btn transition-colors",
+                            isChildTarget
+                              ? "bg-primary-50 text-primary-700"
+                              : "text-gray-600 hover:bg-gray-100"
+                          )}
+                        >
+                          {child.icon}
+                          <span className="font-medium font-heading text-sm">{child.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
                 )}
-              >
-                {item.icon}
-                <span className="font-medium font-heading">{item.label}</span>
-              </Link>
+              </div>
             );
           })}
 

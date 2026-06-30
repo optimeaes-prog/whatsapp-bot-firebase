@@ -40,7 +40,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Free",
     priceMonthly: 0,
     conversationsMonthly: 40,
-    listingsIdeal: "1 anuncio activo/mes",
+    listingsIdeal: "1 anuncio activo",
     benefits: [
       "Acceso: 1 agente",
       "Asistencia a leads provenientes de llamadas",
@@ -55,7 +55,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Plus",
     priceMonthly: 39,
     conversationsMonthly: 80,
-    listingsIdeal: "2-4 anuncios activos/mes",
+    listingsIdeal: "Hasta 3 anuncios activos",
     inheritsFromName: "Free",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
@@ -69,7 +69,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Pro",
     priceMonthly: 69,
     conversationsMonthly: 80,
-    listingsIdeal: "3–6 anuncios activos/mes",
+    listingsIdeal: "4–12 anuncios activos",
     inheritsFromName: "Plus",
     benefits: [
       "Acceso multi-agente",
@@ -82,7 +82,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Pro+",
     priceMonthly: 99,
     conversationsMonthly: 80,
-    listingsIdeal: "6–12 anuncios activos/mes",
+    listingsIdeal: "13–25 anuncios activos",
     inheritsFromName: "Pro",
     benefits: [
       "Gestión automática de agendado de visitas y recordatorios",
@@ -96,7 +96,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Enterprise",
     priceMonthly: null as number | null,
     conversationsMonthly: 0,
-    listingsIdeal: "A medida",
+    listingsIdeal: "Más de 25 (a medida)",
     inheritsFromName: "Pro+",
     benefits: [
       "Soporte personalizado",

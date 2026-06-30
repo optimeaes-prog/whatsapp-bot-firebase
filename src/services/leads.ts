@@ -11,12 +11,13 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
-import type { Lead, LeadFormData, Activity, LeadFollowUpStatus } from "../types";
+import type { Lead, LeadFormData, Activity, LeadFollowUpStatus, LeadTask, ProspectNextActionType } from "../types";
 import { deleteConversationByChatId } from "./conversations";
 import { updateConversation } from "./conversations";
 import { auth } from "../lib/firebase";
 
 import { getOrganizationBasePath } from "../lib/organization";
+import { deriveNextActionMirror, earliestPendingTask, synthesizeLegacyTasks } from "../lib/tasks";
 
 function getLeadsCollection() {
   return `${getOrganizationBasePath()}/leads`;
@@ -49,10 +50,10 @@ export async function getLeads(): Promise<Lead[]> {
   // Do not orderBy("createdAt") only: pipeline leads are upserted via updateLeadChatInfo and historically
   // omitted createdAt; Firestore excludes those docs from orderBy(createdAt) queries.
   const snapshot = await getDocs(collection(db, getLeadsCollection()));
-  const rows = snapshot.docs.map((doc) => ({
+  const rows = (snapshot.docs.map((doc) => ({
     id: doc.id,
     ...doc.data(),
-  })) as Lead[];
+  })) as Lead[]).map(normalizeRecordTasks);
   rows.sort((a, b) => leadRecencyMillis(b) - leadRecencyMillis(a));
   return rows;
 }
@@ -62,7 +63,7 @@ export async function getLeadsForAgent(agentUid: string): Promise<Lead[]> {
   if (!uid) return [];
   const q = query(collection(db, getLeadsCollection()), where("assignedAgentUid", "==", uid));
   const snapshot = await getDocs(q);
-  const rows = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Lead[];
+  const rows = (snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as Lead[]).map(normalizeRecordTasks);
   rows.sort((a, b) => leadRecencyMillis(b) - leadRecencyMillis(a));
   return rows;
 }
@@ -73,7 +74,7 @@ export async function getLeadById(id: string): Promise<Lead | null> {
   if (!snapshot.exists()) {
     return null;
   }
-  return { id: snapshot.id, ...snapshot.data() } as Lead;
+  return normalizeRecordTasks({ id: snapshot.id, ...snapshot.data() } as Lead);
 }
 
 export async function getLeadByChatId(chatId: string): Promise<Lead | null> {
@@ -83,7 +84,7 @@ export async function getLeadByChatId(chatId: string): Promise<Lead | null> {
     return null;
   }
   const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() } as Lead;
+  return normalizeRecordTasks({ id: doc.id, ...doc.data() } as Lead);
 }
 
 export async function getLeadByChatIdForAgent(chatId: string, agentUid: string): Promise<Lead | null> {
@@ -99,7 +100,7 @@ export async function getLeadByChatIdForAgent(chatId: string, agentUid: string):
     return null;
   }
   const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() } as Lead;
+  return normalizeRecordTasks({ id: doc.id, ...doc.data() } as Lead);
 }
 
 export async function createLead(data: LeadFormData): Promise<string> {
@@ -158,7 +159,7 @@ export async function updateLeadQualificationStatus(
 
 export async function updateLead(
   id: string,
-  data: Partial<Pick<Lead, "notes" | "email" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus" | "consent" | "pets" | "income" | "paymentMethod" | "nextActionDate" | "lastContactAt" | "activities" | "followUpStatus" | "assignedAgentUid">>
+  data: Partial<Pick<Lead, "notes" | "email" | "tags" | "name" | "listingCode" | "operationType" | "qualificationStatus" | "consent" | "pets" | "income" | "paymentMethod" | "nextActionDate" | "lastContactAt" | "activities" | "tasks" | "followUpStatus" | "assignedAgentUid">>
 ): Promise<void> {
   const docRef = doc(db, getLeadsCollection(), id);
   const normalized = data.tags ? { ...data, tags: normalizeLeadTags(data.tags) } : data;
@@ -174,39 +175,158 @@ function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * Rellena `tasks[]` en leads legados (que solo tienen los escalares nextAction*)
+ * para que toda la UI vea siempre la lista de tareas. Solo en lectura; no persiste.
+ */
+function normalizeRecordTasks(l: Lead): Lead {
+  if (l.tasks && l.tasks.length > 0) return l;
+  const synth = synthesizeLegacyTasks(l);
+  return synth.length > 0 ? { ...l, tasks: synth } : l;
+}
+
+/** Da id real a las tareas legadas y limpia `undefined` de cada tarea antes de persistir. */
+function cleanTasksForWrite(tasks: LeadTask[]): LeadTask[] {
+  return tasks.map((t) => stripUndefined({ ...t, id: t.id === "legacy" ? crypto.randomUUID() : t.id }) as LeadTask);
+}
+
+/** Persiste `tasks[]` + recalcula el espejo escalar (nextAction*) desde la tarea pendiente más próxima. */
+async function persistLeadTasks(id: string, tasks: LeadTask[]): Promise<void> {
+  const finalTasks = cleanTasksForWrite(tasks);
+  const mirror = deriveNextActionMirror(finalTasks);
+  await updateDoc(doc(db, getLeadsCollection(), id), {
+    tasks: finalTasks,
+    nextActionDate: mirror.nextActionDate,
+    nextActionType: mirror.nextActionType,
+    nextActionMessage: mirror.nextActionMessage,
+  });
+}
+
+/**
  * Registrar un contacto de seguimiento sobre un lead COMPRADOR (llamada, WhatsApp…).
  * Añade la actividad al historial y fija lastContactAt. A diferencia de los propietarios,
  * NO auto-avanza ninguna etapa: el estado del comprador (followUpStatus) se gestiona aparte.
  */
 export async function addLeadActivity(
   id: string,
-  activity: Omit<Activity, "id" | "at">
+  activity: Omit<Activity, "id" | "at">,
+  at?: Date
 ): Promise<void> {
   const lead = await getLeadById(id);
   if (!lead) throw new Error(`Lead ${id} not found`);
-  const now = Timestamp.now();
+  // `at` = cuándo ocurrió el evento (por defecto ahora).
+  const eventTs = at ? Timestamp.fromDate(at) : Timestamp.now();
   const entry = stripUndefined({
     ...activity,
     id: crypto.randomUUID(),
-    at: now,
+    at: eventTs,
   }) as Activity;
   await updateDoc(doc(db, getLeadsCollection(), id), {
     activities: [...(lead.activities || []), entry],
-    lastContactAt: now,
+    lastContactAt: eventTs,
   });
 }
 
-/** Fijar (o limpiar) la próxima acción de un lead comprador + el recordatorio (minutos antes). */
+/** Añadir una TAREA nueva a un lead comprador. Devuelve el id de la tarea creada. */
+export async function addLeadTask(
+  id: string,
+  task: {
+    dueAt: Date;
+    type: ProspectNextActionType;
+    message?: string | null;
+    note?: string | null;
+    createdByUid: string;
+    createdByName?: string;
+  }
+): Promise<string> {
+  const lead = await getLeadById(id);
+  if (!lead) throw new Error(`Lead ${id} not found`);
+  const base = synthesizeLegacyTasks(lead);
+  const newTask: LeadTask = stripUndefined({
+    id: crypto.randomUUID(),
+    dueAt: Timestamp.fromDate(task.dueAt),
+    type: task.type,
+    message: task.message?.trim() || null,
+    note: task.note?.trim() || null,
+    done: false,
+    createdByUid: task.createdByUid,
+    createdByName: task.createdByName,
+  }) as LeadTask;
+  await persistLeadTasks(id, [...base, newTask]);
+  return newTask.id;
+}
+
+/** Marcar una tarea del lead como hecha (queda en el historial, deja de ser pendiente). */
+export async function completeLeadTask(id: string, taskId: string): Promise<void> {
+  const lead = await getLeadById(id);
+  if (!lead) throw new Error(`Lead ${id} not found`);
+  const base = synthesizeLegacyTasks(lead);
+  const now = Timestamp.now();
+  const next = base.map((t) => (t.id === taskId ? { ...t, done: true, completedAt: now } : t));
+  await persistLeadTasks(id, next);
+}
+
+/** Editar una tarea pendiente del lead (fecha/tipo/mensaje/nota). */
+export async function updateLeadTask(
+  id: string,
+  taskId: string,
+  patch: { dueAt?: Date; type?: ProspectNextActionType; message?: string | null; note?: string | null }
+): Promise<void> {
+  const lead = await getLeadById(id);
+  if (!lead) throw new Error(`Lead ${id} not found`);
+  const base = synthesizeLegacyTasks(lead);
+  const next = base.map((t) => {
+    if (t.id !== taskId) return t;
+    return {
+      ...t,
+      ...(patch.dueAt !== undefined ? { dueAt: Timestamp.fromDate(patch.dueAt) } : {}),
+      ...(patch.type !== undefined ? { type: patch.type } : {}),
+      ...(patch.message !== undefined ? { message: patch.message?.trim() || null } : {}),
+      ...(patch.note !== undefined ? { note: patch.note?.trim() || null } : {}),
+    };
+  });
+  await persistLeadTasks(id, next);
+}
+
+/**
+ * Fijar (o limpiar) la tarea ACTIVA (la pendiente más próxima) de un lead comprador.
+ * Wrapper retro-compatible usado por la ficha del lead: edita la tarea activa, la crea
+ * si no hay, o la elimina si `date` es null. Para crear varias tareas, usar `addLeadTask`.
+ */
 export async function setLeadNextAction(
   id: string,
   date: Date | null,
-  reminderMinutes: number | null = null
+  nextActionType: ProspectNextActionType | null = null,
+  nextActionMessage: string | null = null
 ): Promise<void> {
-  await updateDoc(doc(db, getLeadsCollection(), id), {
-    nextActionDate: date ? Timestamp.fromDate(date) : null,
-    reminderMinutesBefore: date && reminderMinutes != null ? reminderMinutes : null,
-    reminderSentAt: null, // cambiar la próxima acción reactiva el recordatorio
-  });
+  const lead = await getLeadById(id);
+  if (!lead) throw new Error(`Lead ${id} not found`);
+  const base = synthesizeLegacyTasks(lead);
+  const active = earliestPendingTask(base);
+  const message = nextActionMessage?.trim() || null;
+
+  let next: LeadTask[];
+  if (date == null) {
+    next = active ? base.filter((t) => t.id !== active.id) : base;
+  } else if (active) {
+    next = base.map((t) =>
+      t.id === active.id
+        ? { ...t, dueAt: Timestamp.fromDate(date), type: nextActionType ?? t.type, message }
+        : t
+    );
+  } else {
+    next = [
+      ...base,
+      stripUndefined({
+        id: crypto.randomUUID(),
+        dueAt: Timestamp.fromDate(date),
+        type: nextActionType ?? "call",
+        message,
+        done: false,
+        createdByUid: "",
+      }) as LeadTask,
+    ];
+  }
+  await persistLeadTasks(id, next);
 }
 
 /** ¿El lead tiene una próxima acción vencida o para hoy y sigue activo (no cerrado)? */

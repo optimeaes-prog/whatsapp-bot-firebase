@@ -366,6 +366,38 @@ export async function triggerAssistantResponse(chatId: string): Promise<void> {
   }
 }
 
+export interface FollowUpDraftRequest {
+  channel: "message" | "email";
+  name?: string;
+  operationType?: string;
+  property?: string;
+  note?: string;
+  recentNotes?: string[];
+  todayLabel?: string;
+}
+
+/** Pide al backend un borrador de mensaje de seguimiento generado con IA. Devuelve solo el texto. */
+export async function generateFollowUpMessage(params: FollowUpDraftRequest): Promise<string> {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) {
+    throw new Error("Unauthorized");
+  }
+  const response = await fetch(`${FUNCTIONS_BASE_URL}/generateFollowUpMessage`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
+    body: JSON.stringify(params),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || "Error generando el mensaje");
+  }
+  const data = await response.json();
+  return (data.message as string) || "";
+}
+
 export async function retryMissingLeads(token: string, chatIds?: string[]): Promise<any> {
   const response = await fetch(`${FUNCTIONS_BASE_URL}/retryMissingLeads`, {
     method: "POST",

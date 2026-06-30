@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Timestamp } from "firebase/firestore";
-import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink, ChevronDown, CheckSquare, Square, Mail, ListTodo, History } from "lucide-react";
+import { X, Save, User, Tag, StickyNote, Hash, ListFilter, MessageSquare, ExternalLink, ChevronDown, CheckSquare, Square, Mail, ListTodo, History, Users } from "lucide-react";
 import type { Lead, QualificationStatus, OperationType, Activity, LeadFollowUpStatus } from "../types";
 import { LEAD_FOLLOWUP_STATUSES, LEAD_FOLLOWUP_STATUS_LABELS } from "../types";
-import { updateLead, addLeadActivity, setLeadNextAction } from "../services/leads";
+import { updateLead, getLeadById } from "../services/leads";
 import { updateConversation } from "../services/conversations";
 import { formatPhone, formatDate, cn } from "../lib/utils";
-import { LEAD_ACTIVITY_OUTCOMES, PROSPECT_CHANNEL_LABELS, PROSPECT_OUTCOME_LABELS, toDateTimeInputValue } from "../lib/prospectMeta";
+import { LEAD_ACTIVITY_OUTCOMES, PROSPECT_CHANNEL_LABELS, PROSPECT_OUTCOME_LABELS } from "../lib/prospectMeta";
 import { useAuth } from "../contexts/AuthContext";
-import { ContactLogForm } from "./ContactLogForm";
+import { EventTaskPicker } from "./EventTaskPicker";
+import { CollabThread } from "./CollabThread";
 import { Button } from "./ui";
 
 interface LeadEditModalProps {
@@ -18,9 +18,11 @@ interface LeadEditModalProps {
     onClose: () => void;
     onUpdate: () => void;
     onViewConversation: (lead: Lead) => void;
+    /** Abre la sección Colaboración expandida (al llegar desde una notificación). */
+    openCollab?: boolean;
 }
 
-export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onViewConversation }: LeadEditModalProps) {
+export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onViewConversation, openCollab = false }: LeadEditModalProps) {
     const [name, setName] = useState(lead.name || "");
     const [listingCode, setListingCode] = useState(lead.listingCode || "");
     const [operationType, setOperationType] = useState<OperationType>(lead.operationType || "Venta");
@@ -38,7 +40,10 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
     const { effectiveUid, user } = useAuth();
     const [followUpStatus, setFollowUpStatus] = useState<LeadFollowUpStatus | "">(lead.followUpStatus || "");
     const [activities, setActivities] = useState<Activity[]>(lead.activities || []);
-    const [logging, setLogging] = useState(false);
+    // Historial de eventos: por defecto solo los 2 más recientes, ampliable a todos.
+    const [showAllEvents, setShowAllEvents] = useState(false);
+    // Colaboración: colapsado salvo que se llegue desde una notificación.
+    const [showCollab, setShowCollab] = useState(openCollab);
 
     const [isOperationTypeDropdownOpen, setIsOperationTypeDropdownOpen] = useState(false);
     const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
@@ -125,31 +130,14 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
         }
     };
 
-    const handleLogContact = async (
-        entry: { channel: Activity["channel"]; outcome: Activity["outcome"]; note?: string },
-        nextDate: Date | null,
-        reminderMinutes: number | null
-    ) => {
-        if (readOnly) {
-            toast.message("Solo lectura en modo vista como usuario");
-            return;
-        }
-        setLogging(true);
+    /** Tras crear un evento/tarea (EventTaskPicker guarda al instante): refresca historial + página. */
+    const handleLogged = async () => {
+        onUpdate();
         try {
-            const createdByName = user?.displayName || user?.email || undefined;
-            await addLeadActivity(lead.id, { ...entry, createdByUid: effectiveUid, createdByName });
-            await setLeadNextAction(lead.id, nextDate, reminderMinutes);
-            setActivities((prev) => [
-                { ...entry, id: crypto.randomUUID(), at: Timestamp.now(), createdByUid: effectiveUid, createdByName },
-                ...prev,
-            ]);
-            toast.success("Contacto registrado");
-            onUpdate();
+            const fresh = await getLeadById(lead.id);
+            if (fresh) setActivities(fresh.activities || []);
         } catch (error) {
-            console.error("Error logging lead contact:", error);
-            toast.error("Error al registrar el contacto");
-        } finally {
-            setLogging(false);
+            console.warn("No se pudo refrescar el historial del lead:", error);
         }
     };
 
@@ -523,35 +511,71 @@ export function LeadEditModal({ lead, readOnly = false, onClose, onUpdate, onVie
                             </select>
                         </div>
                         <p className="text-xs text-gray-500">
-                            Registra una llamada o fija cuándo volver a contactar (p. ej. “llamar el jueves”). Aparecerá en Tareas.
+                            Crea un evento (lo que ya ha pasado) o una tarea (cuándo volver a contactar). Las tareas aparecen en Tareas.
                         </p>
-                        <ContactLogForm
-                            disabled={readOnly}
-                            loading={logging}
+                        <EventTaskPicker
+                            kind="lead"
+                            id={lead.id}
+                            readOnly={readOnly}
+                            currentUid={effectiveUid}
+                            currentName={user?.displayName || user?.email || undefined}
                             outcomes={LEAD_ACTIVITY_OUTCOMES}
-                            initialNextDate={lead.nextActionDate ? toDateTimeInputValue(lead.nextActionDate.toMillis()) : ""}
-                            initialReminderMinutes={lead.reminderMinutesBefore ?? null}
-                            onSubmit={handleLogContact}
+                            onLogged={handleLogged}
                         />
                         {activities.length > 0 && (
                             <div className="pt-1">
                                 <p className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                                    <History size={14} /> Historial
+                                    <History size={14} /> Historial de eventos
                                 </p>
                                 <ul className="space-y-2">
-                                    {[...activities].sort((a, b) => b.at.toMillis() - a.at.toMillis()).map((a) => (
-                                        <li key={a.id} className="text-sm border-l-2 border-gray-200 pl-3 py-0.5">
-                                            <p className="font-semibold text-gray-800">
-                                                {PROSPECT_OUTCOME_LABELS[a.outcome]} · <span className="font-normal text-gray-500">{PROSPECT_CHANNEL_LABELS[a.channel]}</span>
-                                            </p>
-                                            {a.note && <p className="text-gray-600 break-words">{a.note}</p>}
-                                            <p className="text-[11px] text-gray-400">
-                                                {formatDate(a.at.toMillis())}{a.createdByName ? ` · ${a.createdByName}` : ""}
-                                            </p>
-                                        </li>
-                                    ))}
+                                    {(() => {
+                                        const sorted = [...activities].sort((a, b) => b.at.toMillis() - a.at.toMillis());
+                                        return (showAllEvents ? sorted : sorted.slice(0, 2)).map((a) => (
+                                            <li key={a.id} className="text-sm border-l-2 border-gray-200 pl-3 py-0.5">
+                                                <p className="font-semibold text-gray-800">
+                                                    {PROSPECT_OUTCOME_LABELS[a.outcome] || "Otro"} · <span className="font-normal text-gray-500">{PROSPECT_CHANNEL_LABELS[a.channel]}</span>
+                                                </p>
+                                                {a.note && <p className="text-gray-600 break-words">{a.note}</p>}
+                                                <p className="text-[11px] text-gray-400">
+                                                    {formatDate(a.at.toMillis())}{a.createdByName ? ` · ${a.createdByName}` : ""}
+                                                </p>
+                                            </li>
+                                        ));
+                                    })()}
                                 </ul>
+                                {activities.length > 2 && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAllEvents((v) => !v)}
+                                        className="mt-2 text-[11px] font-semibold text-primary-600 hover:text-primary-700"
+                                    >
+                                        {showAllEvents ? "Ver menos" : `Ver todos (${activities.length})`}
+                                    </button>
+                                )}
                             </div>
+                        )}
+                    </div>
+
+                    {/* Colaboración: etiquetar a un compañero y dejarle un mensaje */}
+                    <div className="space-y-2 border-t border-gray-100 pt-6">
+                        <button
+                            type="button"
+                            onClick={() => setShowCollab((v) => !v)}
+                            aria-expanded={showCollab}
+                            className="flex items-center gap-2 w-full text-sm font-bold text-gray-900"
+                        >
+                            <Users size={16} className="text-primary-600" /> Colaboración
+                            <ChevronDown size={16} className={cn("ml-auto text-gray-400 transition-transform", showCollab && "rotate-180")} />
+                        </button>
+                        {showCollab && (
+                            <CollabThread
+                                targetType="lead"
+                                targetId={lead.id}
+                                targetName={lead.name || formatPhone(lead.phone)}
+                                targetSubtitle={lead.listingCode || lead.phone}
+                                targetStage={lead.followUpStatus}
+                                readOnly={readOnly}
+                            />
                         )}
                     </div>
                 </div>
