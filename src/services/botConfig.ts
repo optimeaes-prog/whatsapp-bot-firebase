@@ -1,6 +1,10 @@
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { db } from "../lib/firebase";
+import { auth, db } from "../lib/firebase";
 import type { BotConfig, BotStyle, MessagingProvider } from "../types";
+
+const FUNCTIONS_BASE_URL =
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL ||
+  "https://europe-west1-real-estate-idealista-bot.cloudfunctions.net";
 
 import { getOrganizationBasePath, getOrganizationId } from "../lib/organization";
 
@@ -110,6 +114,38 @@ export async function updateOrgName(orgName: string): Promise<void> {
 export async function updateNotificationNumbers(numbers: string): Promise<void> {
   const docRef = getBotConfigDoc();
   await setDoc(docRef, { notificationNumbers: numbers }, { merge: true });
+}
+
+/**
+ * Set (or clear) the org's dedicated inbound-voice number. Goes through the
+ * `setOrgVoiceNumber` Cloud Function (not a direct setDoc) because it also maintains the
+ * root `voiceNumberIndex` reverse-lookup, which Firestore rules only allow the server to write.
+ */
+export async function updateVoiceNumber(voiceNumber: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No autenticado");
+  const token = await user.getIdToken();
+  const res = await fetch(`${FUNCTIONS_BASE_URL}/setOrgVoiceNumber`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ voiceNumber }),
+  });
+  if (!res.ok) {
+    let message = `Error ${res.status}`;
+    try {
+      const data = (await res.json()) as { error?: string };
+      if (data?.error) message = data.error;
+    } catch {
+      /* ignore non-JSON error bodies */
+    }
+    throw new Error(message);
+  }
+}
+
+/** Toggle the per-org (no-handoff) inbound-voice flow for this org. */
+export async function updateInboundVoicePerOrgEnabled(enabled: boolean): Promise<void> {
+  const docRef = getBotConfigDoc();
+  await setDoc(docRef, { inboundVoicePerOrgEnabled: enabled }, { merge: true });
 }
 
 export async function getActiveStyle(): Promise<BotStyle> {

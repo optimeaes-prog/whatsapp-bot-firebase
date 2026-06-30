@@ -37,7 +37,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Free",
     priceMonthly: 0,
     assistancesMonthly: 40,
-    listingsIdeal: "1 anuncio activo/mes",
+    listingsIdeal: "1 anuncio activo",
     benefits: [
       "Respuesta de soporte maximo 72h",
       "Acceso: 1 agente",
@@ -49,7 +49,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Plus",
     priceMonthly: 39,
     assistancesMonthly: 80,
-    listingsIdeal: "2-4 anuncios activos/mes",
+    listingsIdeal: "Hasta 3 anuncios activos",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
       "Respuesta de soporte maximo 24h",
@@ -62,7 +62,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Pro",
     priceMonthly: 69,
     assistancesMonthly: 80,
-    listingsIdeal: "3–6 anuncios activos/mes",
+    listingsIdeal: "4–12 anuncios activos",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
       "Respuesta de soporte maximo 12h",
@@ -76,7 +76,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Pro+",
     priceMonthly: 99,
     assistancesMonthly: 80,
-    listingsIdeal: "6–12 anuncios activos/mes",
+    listingsIdeal: "13–25 anuncios activos",
     benefits: [
       "Compra 40 conversaciones por 10€ cuando quieras",
       "Soporte dedicado 1 a 1",
@@ -91,7 +91,7 @@ const SUBSCRIPTION_PLANS = [
     name: "Enterprise",
     priceMonthly: null as number | null,
     assistancesMonthly: 0,
-    listingsIdeal: "A medida",
+    listingsIdeal: "Más de 25 (a medida)",
     benefits: [
       "Soporte personalizado",
       "Acceso ilimitado",

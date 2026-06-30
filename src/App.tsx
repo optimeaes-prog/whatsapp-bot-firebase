@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from "react-r
 import { Toaster } from "sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./contexts/AuthContext";
+import { CollabProvider } from "./contexts/CollabContext";
 import { CookieConsentProvider } from "./contexts/CookieConsentContext";
 import { CookieBanner } from "./components/CookieBanner";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -16,7 +17,9 @@ import { Listings } from "./pages/Listings";
 import { Captaciones } from "./pages/Captaciones";
 import { Leads } from "./pages/Leads";
 import { Seguimiento } from "./pages/Seguimiento";
+import { SeguimientoTareas } from "./pages/SeguimientoTareas";
 import { Conversations } from "./pages/Conversations";
+import { Notificaciones } from "./pages/Notificaciones";
 
 import { Alerts } from "./pages/Alerts";
 import { Configuracion } from "./pages/Configuracion";
@@ -113,6 +116,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <CookieConsentProvider>
       <AuthProvider>
+        <CollabProvider>
         <BrowserRouter>
           <PageTracker />
           <CookieBanner />
@@ -225,11 +229,31 @@ function App() {
               }
             />
             <Route
+              path="/seguimiento/tareas"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <SeguimientoTareas />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/conversaciones"
               element={
                 <ProtectedRoute>
                   <Layout>
                     <Conversations />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/notificaciones"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Notificaciones />
                   </Layout>
                 </ProtectedRoute>
               }
@@ -360,6 +384,7 @@ function App() {
           </Routes>
         </BrowserRouter>
         <Toaster position="top-right" richColors closeButton />
+        </CollabProvider>
       </AuthProvider>
       </CookieConsentProvider>
     </QueryClientProvider>

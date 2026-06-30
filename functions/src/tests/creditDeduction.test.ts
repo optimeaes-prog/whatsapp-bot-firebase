@@ -146,18 +146,17 @@ test("executeCrossOrgCallHandoff: both provider branches invoke chargeDestinatio
   assert.ok(cloudApiCall, "Cloud API branch must call chargeDestinationOrgForHandoff");
 });
 
-test("index.ts: intake-org voice flows do NOT charge at send time (billing is deferred to handoff)", () => {
-  // voiceGatherCallback runs in PROPLEAD_INTAKE_ORG_ID — charging at send time would
-  // self-bill Proplead. The intake credit is collected later, at handoff, from the
-  // destination org via the `intakeOutboundCreditsDeducted` idempotency key.
-  const voiceIdx = indexSource.indexOf("voiceGatherCallback async error");
-  assert.ok(voiceIdx > 0, "voiceGatherCallback handler must exist");
-  const voiceStart = indexSource.lastIndexOf("setImmediate", voiceIdx);
-  const voiceBody = indexSource.slice(voiceStart, voiceIdx);
-  assert.doesNotMatch(
-    voiceBody,
-    /deductOrgConversation/,
-    "voiceGatherCallback (intake org) must not deduct credits at send time"
+test("index.ts: legacy intake voice flow does NOT charge at send time; per-org charges exactly once", () => {
+  // The LEGACY voiceGatherCallback runs in PROPLEAD_INTAKE_ORG_ID — charging there would
+  // self-bill Proplead, so the intake credit is collected later at handoff from the destination
+  // org (`intakeOutboundCreditsDeducted`). The NEW per-org flow has no handoff, so it charges the
+  // destination org ONCE at send time, guarded by `isPerOrgGather`.
+  const perOrg = indexSource.match(/"Inbound voice opt-in \(per-org\)"/g) || [];
+  assert.equal(perOrg.length, 1, "per-org voice opt-in should charge in exactly one place");
+  assert.match(
+    indexSource,
+    /isPerOrgGather[\s\S]*?deductOrgConversationOnce\([\s\S]*?"initialOutboundCreditsDeducted",[\s\S]*?"Inbound voice opt-in \(per-org\)"/,
+    "the per-org voice deduction must be guarded by isPerOrgGather (never the legacy intake path)"
   );
 
   const handoffMsgIdx = indexSource.indexOf("export const sendCallHandoffMessage");

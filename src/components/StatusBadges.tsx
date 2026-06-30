@@ -38,6 +38,22 @@ export function QualificationBadge({
   );
 }
 
+/** "Sigue publicado" de una captación (¿el anuncio sigue activo?). No se muestra si está sin especificar. */
+export function StillListedBadge({ value, className }: { value?: boolean; className?: string }) {
+  if (value === undefined) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap",
+        value ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-gray-500",
+        className
+      )}
+    >
+      {value ? "Publicado" : "No publicado"}
+    </span>
+  );
+}
+
 export function OperationTypeBadge({
   type,
   className,

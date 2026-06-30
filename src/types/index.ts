@@ -102,9 +102,11 @@ export type Lead = {
   tags?: string[];
   // Seguimiento del lead COMPRADOR (agenda + historial). Reutiliza la maquinaria de Prospect
   // pero con estados propios de comprador (no las etapas de propietario).
+  // DERIVADO: espejo de la tarea pendiente más próxima (recalculado al cambiar `tasks`). No editar a mano.
   nextActionDate?: Timestamp;
-  reminderMinutesBefore?: number | null;
-  reminderSentAt?: Timestamp | null;
+  nextActionType?: ProspectNextActionType | null;
+  nextActionMessage?: string | null;
+  tasks?: LeadTask[];                  // TAREAS por hacer (fuente de verdad de la agenda)
   lastContactAt?: Timestamp;
   activities?: Activity[];
   followUpStatus?: LeadFollowUpStatus;
@@ -194,13 +196,15 @@ export type ProspectActivityOutcome =
   | "wrong_number"     // NÚMERO NO EXISTE
   | "phone_off"        // APAGADO
   | "callback"         // LLAMAR MAÑANA
-  | "stalled"          // ME HA DADO LARGAS
   | "appointment_set"  // CITADO
   | "docs_pending"     // ME MANDA LA DOCU / PENDIENTE
   | "won"              // HACER ENCARGO (firmado)
   | "not_interested"   // NO INTERESANTE
   | "has_tenant"       // TIENE INQUILINO
   | "other";
+
+/** Qué hará el agente en la próxima acción programada (vale para propietarios y compradores). */
+export type ProspectNextActionType = "call" | "message" | "email" | "visit";
 
 /** Un intento de contacto. Sustituye al ESTADO de texto libre del Excel por un historial estructurado. */
 export type ProspectActivity = {
@@ -211,6 +215,54 @@ export type ProspectActivity = {
   note?: string;
   createdByUid: string;
   createdByName?: string;      // denormalizado solo para mostrar
+};
+
+/**
+ * Una TAREA programada: algo POR HACER en el futuro (a diferencia de la actividad/evento,
+ * que es algo que YA pasó). Un contacto puede tener varias tareas pendientes a la vez.
+ * Al completarla queda en el historial (done + completedAt), no se borra.
+ */
+export type ProspectTask = {
+  id: string;
+  dueAt: Timestamp;                       // fecha + hora de la tarea
+  type: ProspectNextActionType;           // qué hacer: llamar/mensaje/email/visita
+  message?: string | null;                // borrador del mensaje (solo message/email)
+  note?: string | null;                   // título / nota libre opcional
+  done: boolean;
+  completedAt?: Timestamp;
+  createdByUid: string;
+  createdByName?: string;                 // denormalizado solo para mostrar
+};
+
+/** Alias de dominio comprador (misma forma que la tarea de propietario). */
+export type LeadTask = ProspectTask;
+
+/** A qué tipo de registro se adjunta un mensaje de colaboración. */
+export type CollabTargetType = "prospect" | "lead";
+
+/**
+ * Un mensaje de COLABORACIÓN entre miembros del equipo, adjunto a una captación
+ * (`prospect`) o un lead comprador (`lead`). Viven en una colección plana
+ * `organizations/{orgId}/collabMessages` (no embebidos), para poder consultar los
+ * avisos de un usuario a través de TODAS las captaciones/leads (inbox + badge).
+ * Un "hilo" = todos los mensajes que comparten `targetType` + `targetId`.
+ */
+export type CollabMessage = {
+  id: string;
+  orgId: string;
+  targetType: CollabTargetType;
+  targetId: string;
+  targetName: string;        // denormalizado: prospect.ownerName / lead.name
+  targetSubtitle?: string;   // municipio (prospect) o listingCode/teléfono (lead)
+  targetStage?: string;      // prospect.stage / lead.followUpStatus
+  participants: string[];    // [authorUid, recipientUid] → consulta del inbox (array-contains)
+  recipientUid: string;      // a quién se etiqueta
+  recipientName?: string;    // denormalizado solo para mostrar
+  authorUid: string;         // quién escribe
+  authorName?: string;       // denormalizado solo para mostrar
+  body: string;
+  readAt?: Timestamp | null; // null/ausente = no leído; lo fija el destinatario al abrir
+  createdAt: Timestamp;
 };
 
 export type Prospect = {
@@ -243,11 +295,13 @@ export type Prospect = {
   referencia?: string;                        // referencia interna / CRM
   photos?: string[];                          // URLs de fotos en Storage (captacion-photos)
   stillListed?: boolean;                      // A LA VENTA / PUBLICADO SI/NO
-  nextActionDate?: Timestamp;                 // FECHA SEGUIMIENTO (próxima acción, con hora)
-  reminderMinutesBefore?: number | null;      // recordatorio: minutos antes de nextActionDate (null = sin recordatorio)
-  reminderSentAt?: Timestamp | null;          // cuándo se envió el email de recordatorio (lo escribe Cloud Functions)
+  // DERIVADO: espejo de la tarea pendiente más próxima (recalculado al cambiar `tasks`). No editar a mano.
+  nextActionDate?: Timestamp;                 // FECHA SEGUIMIENTO (con hora) de la tarea pendiente más próxima
+  nextActionType?: ProspectNextActionType | null;  // tipo de esa tarea (llamar/mensaje/email/visita)
+  nextActionMessage?: string | null;          // borrador del mensaje (WhatsApp/email) de esa tarea
+  tasks?: ProspectTask[];                      // TAREAS por hacer (fuente de verdad de la agenda)
   lastContactAt?: Timestamp;                  // ÚLTIMO CONTACTO (derivado de la última actividad)
-  activities: ProspectActivity[];             // historial de contactos
+  activities: ProspectActivity[];             // historial de contactos (eventos que ya pasaron)
   learnings?: string;                         // APRENDIZAJES
   createdByUid?: string;
   assignedAgentUid?: string;
@@ -356,7 +410,11 @@ export type BotConfig = {
     whatsappNumber?: string;
     smsSenderId?: string;
     authTokenSecretName?: string;
+    /** Dedicated inbound-voice number (digits-only E.164), separate from whatsappNumber. */
+    voiceNumber?: string;
   };
+  /** When true, inbound calls to voiceNumber run the in-place (no-handoff) voice flow. */
+  inboundVoicePerOrgEnabled?: boolean;
   templateEligibility?: {
     outboundTemplatesBlocked?: boolean;
     missingRequiredKeys?: string[];

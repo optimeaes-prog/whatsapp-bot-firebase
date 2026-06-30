@@ -2,6 +2,7 @@ import type {
   ProspectStage,
   ProspectActivityChannel,
   ProspectActivityOutcome,
+  ProspectNextActionType,
   ProspectPropertyType,
   ProspectSource,
   ProspectOperationType,
@@ -35,7 +36,6 @@ export const PROSPECT_OUTCOME_LABELS: Record<ProspectActivityOutcome, string> = 
   wrong_number: "Número no existe",
   phone_off: "Apagado",
   callback: "Llamar de nuevo",
-  stalled: "Da largas",
   appointment_set: "Cita agendada",
   docs_pending: "Pendiente de documentación",
   won: "Encargo firmado",
@@ -49,7 +49,6 @@ export const PROSPECT_OUTCOMES: ProspectActivityOutcome[] = [
   "wrong_number",
   "phone_off",
   "callback",
-  "stalled",
   "appointment_set",
   "docs_pending",
   "won",
@@ -62,7 +61,6 @@ export const PROSPECT_OUTCOMES: ProspectActivityOutcome[] = [
 export const LEAD_ACTIVITY_OUTCOMES: ProspectActivityOutcome[] = [
   "no_answer",
   "callback",
-  "stalled",
   "appointment_set",
   "not_interested",
   "other",
@@ -102,6 +100,16 @@ export const PROSPECT_CHANNELS: ProspectActivityChannel[] = [
   "visit",
   "note",
 ];
+
+/** Tipos de "próxima acción" que el agente programa al registrar un evento. */
+export const NEXT_ACTION_TYPE_LABELS: Record<ProspectNextActionType, string> = {
+  call: "Llamar",
+  message: "Enviar WhatsApp",
+  email: "Enviar email",
+  visit: "Visita / otro",
+};
+
+export const NEXT_ACTION_TYPES: ProspectNextActionType[] = ["call", "message", "email", "visit"];
 
 export const PROSPECT_PROPERTY_TYPES: ProspectPropertyType[] = [
   "Piso",
@@ -163,12 +171,3 @@ export function formatShortDateTime(ms: number): string {
   });
 }
 
-/** Antelación del recordatorio (minutos antes de la próxima acción). */
-export const REMINDER_OPTIONS: { value: number; label: string }[] = [
-  { value: 0, label: "A la hora" },
-  { value: 15, label: "15 minutos antes" },
-  { value: 30, label: "30 minutos antes" },
-  { value: 60, label: "1 hora antes" },
-  { value: 120, label: "2 horas antes" },
-  { value: 1440, label: "1 día antes" },
-];
