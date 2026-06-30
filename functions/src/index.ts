@@ -184,6 +184,7 @@ import {
   normalizeToCanonicalChatId,
 } from "./utils";
 import { normalizeForSearch } from "./utils/addressNormalize";
+import { getGcpProjectId } from "./utils/gcpProject";
 import { getActiveOrgId, requestContext } from "./services/requestContext";
 import { sendInvitationNotification, sendNewSignupAlert, sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
 import { generateSpeechMp3 } from "./services/elevenLabsClient";
@@ -263,17 +264,6 @@ function requireTemplate(value: string | undefined, message: string): string {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) throw new Error(message);
   return normalized;
-}
-
-function getGcpProjectId(): string {
-  const envProject =
-    process.env.GCLOUD_PROJECT ||
-    process.env.GCP_PROJECT ||
-    process.env.GOOGLE_CLOUD_PROJECT;
-  if (envProject) return envProject;
-  const appProjectId = admin.app().options.projectId;
-  if (appProjectId) return appProjectId;
-  throw new Error("Could not determine GCP project ID");
 }
 
 async function getAgentNotificationTemplateSid(orgId: string): Promise<string | undefined> {

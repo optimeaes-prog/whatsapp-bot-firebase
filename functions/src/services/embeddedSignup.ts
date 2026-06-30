@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import crypto from "crypto";
+import { getGcpProjectId } from "../utils/gcpProject";
 
 const DATABASE_ID = "realestate-whatsapp-bot";
 const GRAPH_API_VERSION = "v23.0";
@@ -11,15 +12,6 @@ let secretManagerClient: SecretManagerServiceClient | null = null;
 function getSecretManagerClient(): SecretManagerServiceClient {
   if (!secretManagerClient) secretManagerClient = new SecretManagerServiceClient();
   return secretManagerClient;
-}
-
-function getGcpProjectId(): string {
-  const fromEnv =
-    process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || process.env.GOOGLE_CLOUD_PROJECT;
-  if (fromEnv) return fromEnv;
-  const appProjectId = admin.app().options.projectId;
-  if (appProjectId) return appProjectId;
-  throw new Error("Could not determine GCP project ID for Secret Manager access");
 }
 
 /**

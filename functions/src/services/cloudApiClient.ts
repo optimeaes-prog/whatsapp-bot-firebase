@@ -5,6 +5,7 @@ import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import crypto from "crypto";
 import { getActiveOrgId } from "./requestContext";
 import type { CloudApiConfig, CloudApiTemplateNames } from "../types";
+import { getGcpProjectId } from "../utils/gcpProject";
 
 /**
  * WhatsApp Cloud API client (Meta Graph API).
@@ -43,17 +44,6 @@ function getSecretManagerClient(): SecretManagerServiceClient {
     secretManagerClient = new SecretManagerServiceClient();
   }
   return secretManagerClient;
-}
-
-function getGcpProjectId(): string {
-  const fromEnv =
-    process.env.GCLOUD_PROJECT ||
-    process.env.GCP_PROJECT ||
-    process.env.GOOGLE_CLOUD_PROJECT;
-  if (fromEnv) return fromEnv;
-  const appProjectId = admin.app().options.projectId;
-  if (appProjectId) return appProjectId;
-  throw new Error("Could not determine GCP project ID for Secret Manager access");
 }
 
 async function accessSecretVersion(secretName: string): Promise<string> {

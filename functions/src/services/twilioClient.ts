@@ -4,6 +4,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import { getActiveOrgId } from "./requestContext";
 import type { BotConfig } from "../types";
+import { getGcpProjectId } from "../utils/gcpProject";
 
 // #region agent log
 const AGENT_DEBUG_SESSION = "64cedb";
@@ -158,17 +159,6 @@ export function normalizeWhatsappContentVariableStrings(variables: Record<string
 function getSecretManagerClient(): SecretManagerServiceClient {
   if (!secretManagerClient) secretManagerClient = new SecretManagerServiceClient();
   return secretManagerClient;
-}
-
-function getGcpProjectId(): string {
-  const envProject =
-    process.env.GCLOUD_PROJECT ||
-    process.env.GCP_PROJECT ||
-    process.env.GOOGLE_CLOUD_PROJECT;
-  if (envProject) return envProject;
-  const appProjectId = admin.app().options.projectId;
-  if (appProjectId) return appProjectId;
-  throw new Error("Could not determine GCP project ID for Secret Manager access");
 }
 
 async function accessSecretVersion(secretName: string): Promise<string> {
