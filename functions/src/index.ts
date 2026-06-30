@@ -185,6 +185,7 @@ import {
 } from "./utils";
 import { normalizeForSearch } from "./utils/addressNormalize";
 import { getGcpProjectId } from "./utils/gcpProject";
+import { buildTwiml, twimlEscape } from "./utils/twiml";
 import { getActiveOrgId, requestContext } from "./services/requestContext";
 import { sendInvitationNotification, sendNewSignupAlert, sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
 import { generateSpeechMp3 } from "./services/elevenLabsClient";
@@ -332,10 +333,6 @@ async function getVoiceOptInTemplateSid(orgId: string): Promise<string> {
     sid,
     "Twilio voice opt-in template missing for intake org (voiceOptInConsent)"
   );
-}
-
-function buildTwiml(xmlBody: string): string {
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n${xmlBody}\n</Response>`;
 }
 
 // Allowlist of browser origins that may call our authenticated HTTP functions.
@@ -499,15 +496,6 @@ const ALLOWED_CONSENT_SOURCES = new Set([
 
 function normalizeConsentLanguage(value: unknown): "es" | "en" {
   return value === "en" ? "en" : "es";
-}
-
-function twimlEscape(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 const MADRID_TIMEZONE = "Europe/Madrid";
