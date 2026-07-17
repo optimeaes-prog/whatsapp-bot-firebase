@@ -189,6 +189,7 @@ import { buildTwiml, twimlEscape } from "./utils/twiml";
 import { reconstructRequestUrl, verifyTwilioSignature, twilioSignedUrlCandidates, verifyTwilioSignatureAnyUrl, normalizeE164FromTwilio } from "./utils/twilioSignature";
 import { resolveOrgIdFromToken, resolveUserContextFromToken, resolveAuthIdentityFromToken } from "./utils/authResolvers";
 import { getMadridTimeParts, alignToMadridBusinessSlot, nextBusinessDaySameTimeFromReference } from "./utils/madridTime";
+import { asRecord, extractStripeId } from "./utils/stripeHelpers";
 import { getActiveOrgId, requestContext } from "./services/requestContext";
 import { sendInvitationNotification, sendNewSignupAlert, sendPaymentFailedNotification, sendWelcomeNotification } from "./services/emailService";
 import { generateSpeechMp3 } from "./services/elevenLabsClient";
@@ -798,16 +799,6 @@ function buildListingNotFoundFallback(agentName: string | undefined, language: I
   }
   const who = agentName ? ` a ${agentName}` : "";
   return `Vale, parece que no lo encuentro en mi sistema, pero no te preocupes. Le enviaré tu contacto${who} para que te llame lo antes posible.`;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function extractStripeId(value: unknown): string {
-  if (typeof value === "string") return value;
-  const rec = asRecord(value);
-  return typeof rec.id === "string" ? rec.id : "";
 }
 
 const BULLET_SYMBOL = "•";
