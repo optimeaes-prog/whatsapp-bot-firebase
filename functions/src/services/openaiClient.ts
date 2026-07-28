@@ -427,6 +427,70 @@ export async function generateAssistantResponse(
   return output.trim();
 }
 
+export interface FollowUpDraftParams {
+  /** Canal del mensaje: WhatsApp ("message") o correo ("email"). */
+  channel: "message" | "email";
+  name?: string;
+  operationType?: string;       // Venta / Alquiler / Traspaso
+  property?: string;            // resumen del inmueble (zona, precio, m2…)
+  note?: string;                // nota recién registrada — el contexto más importante
+  recentNotes?: string[];       // notas de actividades previas del historial
+  todayLabel?: string;          // fecha de hoy en texto (p. ej. "20 de junio de 2026")
+}
+
+/**
+ * Genera un borrador de mensaje de seguimiento (WhatsApp o email) natural y editable a partir
+ * del contexto que el agente acaba de registrar. NO envía nada: solo redacta el texto para que
+ * el agente lo revise/edite. Reutiliza el mismo cliente y modelo de OpenAI que el bot.
+ */
+export async function generateFollowUpDraft(params: FollowUpDraftParams): Promise<string> {
+  const isEmail = params.channel === "email";
+  const model = resolveModel();
+
+  const ctx: string[] = [];
+  if (params.name) ctx.push(`Nombre del contacto: ${params.name}`);
+  if (params.operationType) ctx.push(`Tipo de operación: ${params.operationType}`);
+  if (params.property) ctx.push(`Inmueble: ${params.property}`);
+  if (params.todayLabel) ctx.push(`Fecha de hoy: ${params.todayLabel}`);
+  if (params.note) ctx.push(`Lo último que se habló (contexto principal): ${params.note}`);
+  if (params.recentNotes && params.recentNotes.length) {
+    ctx.push(`Notas anteriores del historial:\n${params.recentNotes.map((n) => `- ${n}`).join("\n")}`);
+  }
+  const contextBlock = ctx.join("\n") || "Sin contexto adicional; redacta un seguimiento breve y cordial.";
+
+  const formatRule = isEmail
+    ? "- Es un CORREO: un párrafo corto (3-5 frases); puedes cerrar con una despedida breve."
+    : "- Es un WhatsApp: muy breve (2-4 frases), sin asunto ni despedidas formales.";
+
+  const instructions = [
+    `Eres un agente inmobiliario en España. Redacta UN ${isEmail ? "correo electrónico" : "mensaje de WhatsApp"} de seguimiento para retomar el contacto con un cliente.`,
+    "",
+    "Reglas:",
+    "- Español, tuteando, tono cercano y natural, como una persona real (NO suenes a plantilla ni a robot).",
+    '- Si tienes el nombre, empieza saludando (p. ej. "Hola Miguel,").',
+    "- Retoma con naturalidad lo último que se habló usando el contexto, y propón un siguiente paso o una pregunta abierta.",
+    "- NO inventes datos, fechas, precios ni compromisos que no aparezcan en el contexto.",
+    formatRule,
+    "- No uses markdown, asteriscos ni comillas alrededor del mensaje.",
+    "- Devuelve SOLO el texto del mensaje, sin explicaciones.",
+  ].join("\n");
+
+  const response = await getClient().responses.create({
+    model,
+    instructions,
+    input: contextBlock,
+    store: false,
+    text: { format: { type: "text" } },
+    max_output_tokens: 400,
+  });
+
+  const output = response.output_text;
+  if (!output) {
+    throw new Error("OpenAI response did not include output_text");
+  }
+  return output.trim();
+}
+
 function looksSpanish(text: string): boolean {
   const lowered = text.toLowerCase();
   if (!/[a-záéíóúñü]/i.test(lowered)) return false;

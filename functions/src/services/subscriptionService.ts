@@ -40,6 +40,31 @@ export function getMaxListingNotificationNumbers(
     return 1;
 }
 
+/** Free tier: máximo de anuncios activos. Mirror: `src/utils/planLimits.ts`. */
+export const FREE_MAX_ACTIVE_LISTINGS = 1;
+
+/**
+ * Máximo de anuncios ACTIVOS que puede tener una org según su plan.
+ * Free: 1 · Plus: 3 · Pro: 12 · Pro+: 25 · Enterprise: ilimitado (25+).
+ *
+ * Mirror en `src/utils/planLimits.ts` — `getMaxActiveListings`. La UI usa el
+ * espejo del frontend para bloquear e invitar a subir de plan; esta versión
+ * backend es la autoridad que aplica el trigger `onListingWritten` al revertir
+ * activaciones por encima del tope.
+ *
+ * El tipo backend `SubscriptionPlanId` aún no incluye "enterprise"; comparamos
+ * por el literal igual que `getMaxListingNotificationNumbers`.
+ */
+export function getMaxActiveListings(
+    planId: SubscriptionPlanId | undefined | null
+): number {
+    if ((planId as string) === "enterprise") return Number.POSITIVE_INFINITY;
+    if (planId === "pro_plus") return 25;
+    if (planId === "pro") return 12;
+    if (planId === "plus") return 3;
+    return FREE_MAX_ACTIVE_LISTINGS;
+}
+
 /**
  * Get the current subscription for an org.
  * Returns null if no subscription record exists (org is on Free plan).

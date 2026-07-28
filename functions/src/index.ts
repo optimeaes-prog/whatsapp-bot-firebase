@@ -5,7 +5,7 @@ import JSZip from "jszip";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import { SendMessageSchema, SendMassMessageSchema, NewLeadSchema } from "./schemas";
 import { sendEmailToUser } from "./services/emailService";
-import { runDueReminders } from "./services/reminderService";
+import { runDailyFollowUpDigest } from "./services/followUpDigestService";
 import { getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
@@ -85,6 +85,7 @@ import {
   invalidateProviderCache,
 } from "./services/messagingProvider";
 import { createContentTemplate, createVoiceCall, fetchContentTemplate, getOrgTwilioAuthToken, renderTwilioTemplateBody } from "./services/twilioClient";
+import { resolveOrgIdByVoiceNumber, composeListingFoundMessage, normalizeVoiceE164 } from "./services/inboundVoicePerOrg";
 import {
   checkCloudApiHealth,
   createMessageTemplate as createCloudApiMessageTemplate,
@@ -97,6 +98,7 @@ import {
   classifyConfirmDeny,
   resolveListingWithAgent,
   generateAssistantResponse,
+  generateFollowUpDraft,
   summarizeLeadDetails,
   extractClientName,
   translateTextToBritishEnglish,
@@ -174,6 +176,7 @@ import {
   PLAN_BASE_CONVERSATIONS,
   calculateProratedConversations,
   getMaxListingNotificationNumbers,
+  getMaxActiveListings,
 } from "./services/subscriptionService";
 import type { SubscriptionPlanId } from "./types";
 import {
@@ -223,6 +226,9 @@ const VOICE_AUDIO_1_URL = defineString("VOICE_AUDIO_1_URL");
 // sending a marketing template).
 // Public URL for the second voice prompt (DTMF 1 opt-in). Served from Firebase Hosting.
 const VOICE_AUDIO_2_OPTIN_URL = defineString("VOICE_AUDIO_2_OPTIN_URL");
+// Public URL for the post-DTMF confirmation locución ("Gracias…"). Generated with the same
+// approved ElevenLabs voice as the greeting/opt-in prompts so the whole inbound call is one voice.
+const VOICE_AUDIO_3_URL = defineString("VOICE_AUDIO_3_URL");
 const PROPLEAD_INTAKE_ORG_ID = defineString("PROPLEAD_INTAKE_ORG_ID");
 const VOICE_CONSENT_SCRIPT_VERSION = defineString("VOICE_CONSENT_SCRIPT_VERSION");
 const OUTBOUND_CALLER_NUMBER = defineString("OUTBOUND_CALLER_NUMBER");
@@ -1431,6 +1437,10 @@ export async function ensureConversationState(
       language: initialLanguage,
       botDisabled: false,
       name: lead.name,
+      // Safety net: this rebuild branch only runs when the conversation doc is absent
+      // (normally createPendingCallLead writes it). Carry the per-org marker from the
+      // lead so the call gate still routes through the in-place flow.
+      callFlowMode: lead.callFlowMode,
     };
     setCachedConversationState(chatId, pendingState);
     if (pendingState.chatId !== chatId) setCachedConversationState(pendingState.chatId, pendingState);
@@ -1989,7 +1999,11 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
   const applyListingToStateAndPersist = async (listing: ListingRow, targetOrgId: string): Promise<void> => {
     const sourceOrgId = getActiveOrgId();
-    const isCrossOrgCallHandoff = targetOrgId !== sourceOrgId || (state.tags || []).includes("call");
+    // Per-org calls are handled IN PLACE in the org that received the call — never a handoff,
+    // even though they carry the "call" tag. (Without this guard the `|| includes("call")`
+    // term below would force every call down the legacy name-collect + handoff path.)
+    const isPerOrgCall = state.callFlowMode === "per_org";
+    const isCrossOrgCallHandoff = !isPerOrgCall && (targetOrgId !== sourceOrgId || (state.tags || []).includes("call"));
     const correlationId = `handoff_${state.chatId}_${Date.now()}`;
     const initialLanguage = state.language || resolveInitialLanguage(state.phone);
     const featuresText = await getFeaturesForLanguage(listing.features, initialLanguage);
@@ -2063,7 +2077,17 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         listing.agentName ||
         config.orgName ||
         (initialLanguage === "en" ? "our team" : "nuestro equipo");
-      const introMessage = initialLanguage === "en"
+      // Per-org call: the opt-in template already greeted the lead, so we skip the
+      // "Hola, soy X..." intro and send the lighter "ya lo he encontrado" continuation
+      // straight into the normal qualification flow (which asks the name in PASO 1).
+      const introMessage = isPerOrgCall
+        ? composeListingFoundMessage({
+          language: initialLanguage === "en" ? "en" : "es",
+          link: listing.link || state.link || "",
+          features: formatFeaturesList(featuresText || "", initialLanguage),
+          leadName: state.name,
+        })
+        : initialLanguage === "en"
         ? compactMessage([
           `Hello${state.name ? ` ${state.name}` : ""}.`,
           `I'm ${avatarName}, the virtual assistant for ${agentName}. It's a pleasure to help you.`,
@@ -2508,11 +2532,14 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
       // Default (collect): always attempt to resolve listing from buffered text.
       if (sortedMessages.length > 0) {
+        // Per-org call: the org is already known (resolved from the dialed number), so search
+        // ONLY this org's listings. Legacy call flow searches across all orgs for the handoff.
+        const isPerOrgCall = state.callFlowMode === "per_org";
         const res = await resolveListingFromBufferedText({
           operationType: state.operationType,
           text: combinedText,
           orgId: getActiveOrgId(),
-          includeAllOrgs: (state.tags || []).includes("call"),
+          includeAllOrgs: (state.tags || []).includes("call") && !isPerOrgCall,
         });
 
         if (res.kind === "match") {
@@ -3292,7 +3319,21 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
     const signature = req.header("x-twilio-signature") || "";
     const fullUrl = reconstructRequestUrl(req);
     const body = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : {};
-    if (!verifyTwilioSignature(TWILIO_AUTH_TOKEN.value(), signature, fullUrl, body)) {
+
+    // Resolve the destination org from the dialed (To) number. Dedicated voice numbers
+    // may live on per-org Twilio SUBACCOUNTS, which sign webhooks with the subaccount
+    // auth token — the master TWILIO_AUTH_TOKEN can never match those. Verify with the
+    // master token first (cheap), then fall back to the resolved org's subaccount token.
+    // (Mirrors the WhatsApp webhook dual-token pattern at ~3040.)
+    const voiceOrgId = await resolveOrgIdByVoiceNumber(body.To);
+    let signatureValid = verifyTwilioSignature(TWILIO_AUTH_TOKEN.value(), signature, fullUrl, body);
+    if (!signatureValid && signature && voiceOrgId) {
+      const orgAuthToken = await getOrgTwilioAuthToken(voiceOrgId);
+      if (orgAuthToken) {
+        signatureValid = verifyTwilioSignature(orgAuthToken, signature, fullUrl, body);
+      }
+    }
+    if (!signatureValid) {
       console.warn("voiceWebhook: invalid or missing X-Twilio-Signature");
       res.status(401).send("Unauthorized");
       return;
@@ -3317,9 +3358,30 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
     }
 
     const chatId = normalizeToCanonicalChatId(fromPhone);
-    const gatherUrl =
+
+    // Per-org flow gate: only when the dialed number maps to an org AND that org has
+    // inboundVoicePerOrgEnabled. Otherwise fall back to the legacy global-intake flow.
+    let perOrgEnabled = false;
+    if (voiceOrgId) {
+      try {
+        const cfgDb = getFirestore(admin.app(), "realestate-whatsapp-bot");
+        const cfgSnap = await cfgDb.doc(`organizations/${voiceOrgId}/botConfig/config`).get();
+        perOrgEnabled = cfgSnap.exists && (cfgSnap.data() as Partial<BotConfig> | undefined)?.inboundVoicePerOrgEnabled === true;
+      } catch (error) {
+        console.warn("voiceWebhook: failed reading per-org voice flag; using legacy flow", error);
+      }
+    }
+    const useNewFlow = !!voiceOrgId && perOrgEnabled;
+    if (voiceOrgId && !perOrgEnabled) {
+      console.warn(`voiceWebhook: dialed number maps to org ${voiceOrgId} but inboundVoicePerOrgEnabled is off; using legacy intake flow`);
+    }
+
+    let gatherUrl =
       `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceGatherCallback` +
       `?phone=${encodeURIComponent(fromPhone)}&chatId=${encodeURIComponent(chatId)}&callSid=${encodeURIComponent(callSid)}`;
+    if (useNewFlow && voiceOrgId) {
+      gatherUrl += `&orgId=${encodeURIComponent(voiceOrgId)}&callFlowMode=per_org`;
+    }
 
     // Initialize the pending call lead BEFORE responding. On Cloud Functions Gen 2 (Cloud Run),
     // setImmediate background work is CPU-throttled and runs late — late enough that it can race
@@ -3327,19 +3389,31 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
     // for repeat callers. Twilio allows up to 15s for a TwiML response, plenty of time for these
     // tiny Firestore writes.
     try {
-      const intakeOrgId = PROPLEAD_INTAKE_ORG_ID.value();
-      if (!intakeOrgId) {
-        console.error("voiceWebhook: PROPLEAD_INTAKE_ORG_ID is not configured");
-      } else {
-        await requestContext.run({ orgId: intakeOrgId }, async () => {
+      if (useNewFlow && voiceOrgId) {
+        // NEW per-org flow: create the pending lead/conversation directly in the destination
+        // org (resolved from the dialed number). No global intake, no later handoff.
+        await requestContext.run({ orgId: voiceOrgId }, async () => {
           if (callSid) {
-            await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
+            await upsertCallIntent({ callSid, fromPhone, capturedName: undefined, callFlowMode: "per_org" });
           }
-          await createPendingCallLead({ phone: fromPhone, chatId });
+          await createPendingCallLead({ phone: fromPhone, chatId, callFlowMode: "per_org" });
         });
+      } else {
+        // LEGACY flow: pin to the global intake org; resolution + handoff happen later.
+        const intakeOrgId = PROPLEAD_INTAKE_ORG_ID.value();
+        if (!intakeOrgId) {
+          console.error("voiceWebhook: PROPLEAD_INTAKE_ORG_ID is not configured");
+        } else {
+          await requestContext.run({ orgId: intakeOrgId }, async () => {
+            if (callSid) {
+              await upsertCallIntent({ callSid, fromPhone, capturedName: undefined });
+            }
+            await createPendingCallLead({ phone: fromPhone, chatId });
+          });
+        }
       }
     } catch (error) {
-      console.error("voiceWebhook failed initializing pending intake lead", error);
+      console.error("voiceWebhook failed initializing pending call lead", error);
       // Fall through and still respond so the caller hears something.
     }
 
@@ -3382,7 +3456,20 @@ export const voiceGatherCallback = onRequest(
       const queryString = queryIdx >= 0 ? (req.originalUrl || "").substring(queryIdx) : "";
       const signedUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceGatherCallback${queryString}`;
       const body = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : {};
-      if (!verifyTwilioSignature(TWILIO_AUTH_TOKEN.value(), signature, signedUrl, body)) {
+
+      // Per-org flow passes orgId + callFlowMode in the (signed) gather URL. The org's
+      // dedicated voice number may live on a subaccount, so verify with the master token
+      // first, then the resolved org's subaccount token (same dual-token pattern as voiceWebhook).
+      const queryOrgId = typeof req.query.orgId === "string" ? req.query.orgId : "";
+      const isPerOrgGather = req.query.callFlowMode === "per_org" && !!queryOrgId;
+      let signatureValid = verifyTwilioSignature(TWILIO_AUTH_TOKEN.value(), signature, signedUrl, body);
+      if (!signatureValid && signature && queryOrgId) {
+        const orgAuthToken = await getOrgTwilioAuthToken(queryOrgId);
+        if (orgAuthToken) {
+          signatureValid = verifyTwilioSignature(orgAuthToken, signature, signedUrl, body);
+        }
+      }
+      if (!signatureValid) {
         console.warn("voiceGatherCallback: invalid or missing X-Twilio-Signature");
         res.status(401).send("Unauthorized");
         return;
@@ -3411,19 +3498,16 @@ export const voiceGatherCallback = onRequest(
       // not guaranteed to complete before the container shuts down. Twilio allows up to
       // 15s for a TwiML response — plenty for one Firestore write + one Twilio API call.
       try {
-        const orgId = PROPLEAD_INTAKE_ORG_ID.value();
+        // Per-org flow runs in the destination org (resolved from the dialed number) and
+        // charges it ONE credit — there's no handoff to defer billing to. Legacy flow runs
+        // in the global intake org and defers billing to the cross-org handoff.
+        const orgId = isPerOrgGather ? queryOrgId : PROPLEAD_INTAKE_ORG_ID.value();
         if (!orgId) {
-          console.warn("voiceGatherCallback: PROPLEAD_INTAKE_ORG_ID is not configured");
+          console.warn("voiceGatherCallback: no org resolved (PROPLEAD_INTAKE_ORG_ID not configured)");
         } else {
           await requestContext.run({ orgId }, async () => {
             await recordVoiceConsent({ phone, chatId, callSid });
             const templateSid = await getVoiceOptInTemplateSid(orgId);
-            // No credit deduction here: this send runs in the Proplead intake org,
-            // before we know which destination org will own the lead. Billing for
-            // this intake message is DEFERRED — executeCrossOrgCallHandoff charges
-            // the destination org 2 credits (1 for this intake send, idempotency key
-            // `intakeOutboundCreditsDeducted`; 1 for the org's own first template,
-            // idempotency key `initialOutboundCreditsDeducted`).
             const sendResult = await sendInitialTemplateMessage({
               to: phone,
               chatId,
@@ -3431,9 +3515,29 @@ export const voiceGatherCallback = onRequest(
               variables: {},
               templateSid,
             });
+
+            if (isPerOrgGather) {
+              // Per-org: charge the destination org once for the opt-in send. Idempotent on
+              // (orgId, chatId) via the `initialOutboundCreditsDeducted` flag, so Twilio retries
+              // never double-charge. Wrapped so a billing failure can't break the TwiML response.
+              try {
+                await deductOrgConversationOnce(
+                  orgId,
+                  chatId,
+                  "initialOutboundCreditsDeducted",
+                  "Inbound voice opt-in (per-org)"
+                );
+              } catch (billingErr) {
+                console.error("[credits] per-org voice opt-in deduction failed", { orgId, chatId, billingErr });
+              }
+            }
+            // Legacy: no credit deduction here. Billing is DEFERRED — executeCrossOrgCallHandoff
+            // charges the destination org 2 credits (idempotency keys `intakeOutboundCreditsDeducted`
+            // and `initialOutboundCreditsDeducted`).
+
             // Persist the ACTUAL message Twilio rendered/sent (not a hardcoded
             // placeholder) into the conversation history so it shows up in the
-            // UI and the exported transcript. Runs in the intake org context.
+            // UI and the exported transcript. Runs in the resolved org context.
             const deliveredText = sendResult.deliveredText?.trim();
             if (deliveredText) {
               const existing = await getConversationByChatId(chatId);
@@ -3448,9 +3552,15 @@ export const voiceGatherCallback = onRequest(
         // Fall through and still respond so the call ends gracefully.
       }
 
+      // Confirmation locución (#3). Played with the same approved ElevenLabs voice as the
+      // greeting/opt-in prompts so all three locuciones sound identical. Falls back to the old
+      // Twilio Polly voice only if VOICE_AUDIO_3_URL is not configured.
+      const audio3 = VOICE_AUDIO_3_URL.value();
       res.status(200).send(
         buildTwiml(
-          `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
+          audio3
+            ? `<Play>${twimlEscape(audio3)}</Play><Hangup/>`
+            : `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
         )
       );
     } catch (error) {
@@ -5990,6 +6100,7 @@ async function evaluateCallHandoffReadiness(targetOrgId: string): Promise<{
   add("PROPLEAD_INTAKE_ORG_ID", PROPLEAD_INTAKE_ORG_ID.value(), "Global intake org for call entry.");
   add("VOICE_AUDIO_1_URL", VOICE_AUDIO_1_URL.value(), "First voice prompt.");
   add("VOICE_AUDIO_2_OPTIN_URL", VOICE_AUDIO_2_OPTIN_URL.value(), "DTMF opt-in prompt.");
+  add("VOICE_AUDIO_3_URL", VOICE_AUDIO_3_URL.value(), "Post-DTMF confirmation locución.");
   add("VOICE_CONSENT_SCRIPT_VERSION", VOICE_CONSENT_SCRIPT_VERSION.value(), "Consent script version for audits.");
 
   if (provider === "cloud_api") {
@@ -7547,6 +7658,74 @@ export const deleteMyOrganization = onRequest(
 );
 
 /**
+ * Set (or clear) this org's dedicated inbound-voice number for the per-org voice flow.
+ *
+ * Writes `twilioConfig.voiceNumber` on the org's botConfig AND maintains the root
+ * `voiceNumberIndex/{e164}` reverse-lookup doc. The index is Admin-SDK only — Firestore
+ * rules deny client writes to root index collections (same as phoneNumberIndex/wabaIndex),
+ * which is why this must go through a Cloud Function. Cleans up the stale index doc when the
+ * number changes and refuses to claim a number already owned by a different org.
+ */
+export const setOrgVoiceNumber = onRequest(
+  { cors: true, region: REGION },
+  async (req, res) => {
+    try {
+      if (req.method !== "POST") {
+        res.status(405).json({ error: "Method not allowed" });
+        return;
+      }
+      const orgId = await resolveOrgIdFromToken(req.headers.authorization);
+      const rawVoiceNumber = (req.body && typeof req.body === "object")
+        ? (req.body as Record<string, unknown>).voiceNumber
+        : undefined;
+      const isClearing = typeof rawVoiceNumber === "string" && rawVoiceNumber.trim() === "";
+      const newKey = normalizeVoiceE164(rawVoiceNumber);
+      if (!newKey && !isClearing) {
+        res.status(400).json({ error: "Invalid voiceNumber" });
+        return;
+      }
+
+      const DATABASE_ID = "realestate-whatsapp-bot";
+      const db = getFirestore(admin.app(), DATABASE_ID);
+      const cfgRef = db.doc(`organizations/${orgId}/botConfig/config`);
+      const cfgSnap = await cfgRef.get();
+      const cfg = cfgSnap.exists ? (cfgSnap.data() as Partial<BotConfig> | undefined) : undefined;
+      const oldKey = normalizeVoiceE164(cfg?.twilioConfig?.voiceNumber);
+
+      // Collision guard: refuse to claim a number another org already owns.
+      if (newKey) {
+        const idxSnap = await db.doc(`voiceNumberIndex/${newKey}`).get();
+        const indexedOrgId = idxSnap.exists ? (idxSnap.data()?.orgId as string | undefined) : undefined;
+        if (indexedOrgId && indexedOrgId !== orgId) {
+          res.status(409).json({ error: "voiceNumber already assigned to another organization" });
+          return;
+        }
+      }
+
+      // Persist on botConfig (merge so other twilioConfig fields are untouched).
+      await cfgRef.set({ twilioConfig: { voiceNumber: newKey || "" } }, { merge: true });
+
+      // Maintain the reverse index: drop the stale mapping, write the new one.
+      if (oldKey && oldKey !== newKey) {
+        await db.doc(`voiceNumberIndex/${oldKey}`).delete().catch(() => undefined);
+      }
+      if (newKey) {
+        await db.doc(`voiceNumberIndex/${newKey}`).set({ orgId, updatedAt: new Date() }, { merge: true });
+      }
+
+      res.status(200).json({ ok: true, voiceNumber: newKey || null });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Unauthorized") {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      console.error("setOrgVoiceNumber error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+/**
  * A5 — Customer-facing data export (GDPR Art. 20 / DSAR).
  *
  * Gathers the org's Firestore footprint, writes a ZIP snapshot to the default
@@ -7831,6 +8010,46 @@ export const triggerBot = onRequest({ cors: true, region: REGION, secrets: [OPEN
 });
 
 
+/**
+ * Genera un borrador de mensaje de seguimiento (WhatsApp o email) con IA a partir del contexto
+ * que el agente acaba de registrar (nombre, nota, inmueble, historial). NO envía nada: devuelve
+ * el texto para que el agente lo revise/edite antes de guardarlo con la próxima acción.
+ */
+export const generateFollowUpMessage = onRequest(
+  { cors: true, region: REGION, secrets: [OPENAI_API_KEY] },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+    try {
+      // Solo exige una sesión válida (evita abusar de la clave de OpenAI); el contexto va en el body.
+      await resolveOrgIdFromToken(req.headers.authorization);
+
+      const body = req.body || {};
+      const channel = body.channel === "email" ? "email" : "message";
+      const recentNotes = Array.isArray(body.recentNotes)
+        ? body.recentNotes.filter((n: unknown) => typeof n === "string" && n.trim()).slice(0, 8)
+        : undefined;
+
+      const message = await generateFollowUpDraft({
+        channel,
+        name: typeof body.name === "string" ? body.name : undefined,
+        operationType: typeof body.operationType === "string" ? body.operationType : undefined,
+        property: typeof body.property === "string" ? body.property : undefined,
+        note: typeof body.note === "string" ? body.note : undefined,
+        recentNotes,
+        todayLabel: typeof body.todayLabel === "string" ? body.todayLabel : undefined,
+      });
+
+      res.status(200).json({ message });
+    } catch (error) {
+      console.error("Error in generateFollowUpMessage:", error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+);
+
 export const healthz = onRequest({ cors: true, region: REGION }, async (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
@@ -7913,20 +8132,23 @@ export const checkFollowUps = onSchedule({
 });
 
 /**
- * Envía por email los recordatorios de "próxima acción" del Seguimiento (propietarios y
- * compradores) cuyo recordatorio está vencido y no se ha enviado. Cada 15 minutos.
+ * Correo diario (07:00 Madrid) con las tareas de seguimiento de cada agente: sus próximas
+ * acciones agrupadas en Vencidas, Hoy y Próximos 7 días. Las de WhatsApp incluyen el mensaje
+ * configurado y un botón wa.me con el texto precargado. Sustituye a los recordatorios puntuales.
  */
-export const sendDueReminders = onSchedule({
-  schedule: "*/15 * * * *",
+export const sendDailyFollowUpDigest = onSchedule({
+  schedule: "0 7 * * *",
   region: REGION,
   timeZone: "Europe/Madrid",
   secrets: [TWILIO_API_KEY, TWILIO_API_SECRET],
+  timeoutSeconds: 540,
+  memory: "512MiB",
 }, async () => {
   try {
-    const res = await runDueReminders(Date.now());
-    console.log(`[sendDueReminders] sent=${res.sent} scanned=${res.scanned}`);
+    const res = await runDailyFollowUpDigest(Date.now());
+    console.log(`[dailyFollowUpDigest] agents=${res.agentsEmailed} tasks=${res.tasksIncluded}`);
   } catch (error) {
-    console.error("[sendDueReminders] fatal error:", error);
+    console.error("[dailyFollowUpDigest] fatal error:", error);
   }
 });
 
@@ -8444,6 +8666,32 @@ export const getSubscription = onRequest({ cors: WEB_CLIENT_CORS, region: REGION
     await requestContext.run({ orgId }, async () => {
       const sub = await getOrgSubscription(orgId);
 
+      // Cuenta los anuncios activos de la org (a nivel de organización, con
+      // privilegios admin) para que la UI pueda aplicar el tope por plan también
+      // a usuarios con rol agente, que desde el cliente solo ven los suyos.
+      const countActiveListings = async (): Promise<number> => {
+        const DATABASE_ID = "realestate-whatsapp-bot";
+        const db = getFirestore(admin.app(), DATABASE_ID);
+        const countSnap = await db
+          .collection(`organizations/${orgId}/listings`)
+          .where("isActive", "==", true)
+          .count()
+          .get();
+        return countSnap.data().count;
+      };
+
+      // Empaqueta los campos de tope de anuncios activos. Infinity (Enterprise)
+      // no se serializa en JSON, así que va como null + flag explícito.
+      const listingLimitFields = (planId: SubscriptionPlanId, activeListingsCount: number) => {
+        const max = getMaxActiveListings(planId);
+        const activeListingsUnlimited = !Number.isFinite(max);
+        return {
+          activeListingsCount,
+          maxActiveListings: activeListingsUnlimited ? null : max,
+          activeListingsUnlimited,
+        };
+      };
+
       if (!sub) {
         // No Stripe subscription. Only treat as Free if the org explicitly activated it.
         const DATABASE_ID = "realestate-whatsapp-bot";
@@ -8451,11 +8699,13 @@ export const getSubscription = onRequest({ cors: WEB_CLIENT_CORS, region: REGION
         const orgSnap = await db.collection("organizations").doc(orgId).get();
         const plan = orgSnap.exists ? orgSnap.data()?.plan : undefined;
         if (plan === "free") {
+          const activeListingsCount = await countActiveListings();
           res.status(200).json({
             planId: "free",
             status: "active",
             currentPeriodEnd: null,
             contractedConversations: PLAN_BASE_CONVERSATIONS["free"],
+            ...listingLimitFields("free", activeListingsCount),
           });
           return;
         }
@@ -8465,6 +8715,7 @@ export const getSubscription = onRequest({ cors: WEB_CLIENT_CORS, region: REGION
 
       const baseConversations = PLAN_BASE_CONVERSATIONS[sub.planId] ?? 0;
       const contractedConversations = baseConversations + (sub.extraBlocks ?? 0) * 40;
+      const activeListingsCount = await countActiveListings();
 
       res.status(200).json({
         planId: sub.planId,
@@ -8474,6 +8725,7 @@ export const getSubscription = onRequest({ cors: WEB_CLIENT_CORS, region: REGION
         billingInterval: sub.billingInterval || "month",
         stripeSubscriptionId: sub.stripeSubscriptionId,
         extraBlocks: sub.extraBlocks || 0,
+        ...listingLimitFields(sub.planId, activeListingsCount),
       });
     });
   } catch (error) {
@@ -10199,6 +10451,45 @@ export const onListingWritten = onDocumentWritten({
         console.error(
           `[onListingWritten] plan-limit enforcement failed for listing=${event.params.listingId}`,
           limitErr
+        );
+      }
+
+      // Active-listings cap enforcement (red de seguridad anti-tamper).
+      // Si el anuncio pasa a activo (creado activo, o reactivado: before inactivo
+      // → after activo) y la org supera el máximo de su plan, lo revierte a
+      // inactivo. La UI ya bloquea esto e invita a subir de plan; esto cubre un
+      // cliente manipulado. Solo actúa en la TRANSICIÓN a activo, así que las
+      // cuentas que ya superaban el tope (grandfathering) no se ven afectadas al
+      // editar anuncios que ya estaban activos.
+      try {
+        const wasActive = before ? (before as { isActive?: unknown }).isActive === true : false;
+        const isNowActive = (after as { isActive?: unknown }).isActive === true;
+        const becameActive = isNowActive && !wasActive;
+        if (becameActive) {
+          const sub = await getOrgSubscription(event.params.orgId);
+          const max = getMaxActiveListings(sub?.planId);
+          if (Number.isFinite(max)) {
+            const countSnap = await event
+              .data!.after.ref.parent.where("isActive", "==", true)
+              .count()
+              .get();
+            const activeCount = countSnap.data().count; // incluye este doc (post-write)
+            if (activeCount > max) {
+              console.warn(
+                `[onListingWritten] Active-listings cap exceeded for listing=${event.params.listingId} ` +
+                  `plan=${sub?.planId || "free"} max=${max} active=${activeCount} — reverting to inactive`
+              );
+              await event.data!.after.ref.set(
+                { isActive: false, updatedAt: new Date() },
+                { merge: true }
+              );
+            }
+          }
+        }
+      } catch (capErr) {
+        console.error(
+          `[onListingWritten] active-listings cap enforcement failed for listing=${event.params.listingId}`,
+          capErr
         );
       }
     }

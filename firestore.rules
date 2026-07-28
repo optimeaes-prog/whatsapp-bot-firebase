@@ -309,6 +309,22 @@ service cloud.firestore {
         allow delete: if canManageOrg(orgId);
       }
 
+      // Colaboración entre miembros del equipo: mensajes etiquetando a un
+      // compañero sobre una captación (prospect) o lead. La colaboración es
+      // visible para TODO el equipo de la org (como comentarios sobre un
+      // registro) — NO se scopea por agente asignado, porque se etiqueta
+      // precisamente a quien no está asignado. Solo el destinatario puede
+      // marcar leído (readAt); el resto es inmutable.
+      match /collabMessages/{messageId} {
+        allow read: if canAccessOrg(orgId);
+        allow create: if canAccessOrg(orgId) &&
+          request.resource.data.authorUid == request.auth.uid;
+        allow update: if canAccessOrg(orgId) &&
+          resource.data.recipientUid == request.auth.uid &&
+          onlyChanged(["readAt"]);
+        allow delete: if canManageOrg(orgId);
+      }
+
       match /calls/{callId} {
         allow read: if canAccessOrg(orgId);
         allow write: if canManageOrg(orgId);
@@ -408,6 +424,10 @@ service cloud.firestore {
     }
     match /{path=**}/prospects/{prospect} {
       // Prevent bypassing org/role scoping via collectionGroup queries.
+      allow read: if false;
+    }
+    match /{path=**}/collabMessages/{message} {
+      // Prevent bypassing org scoping via collectionGroup queries.
       allow read: if false;
     }
   }

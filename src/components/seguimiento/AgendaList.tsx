@@ -6,6 +6,7 @@ import {
 import { formatShortDate, formatShortDateTime } from "../../lib/prospectMeta";
 import { cn } from "../../lib/utils";
 import { OperationTypeBadge } from "../StatusBadges";
+import { WhatsAppIconLink } from "../WhatsAppIconLink";
 import { KindBadge } from "./KindBadge";
 
 /**
@@ -73,13 +74,16 @@ export function AgendaList({
                   </span>
                   <OperationTypeBadge type={item.operationType} />
                   {item.phone && (
-                    <a
-                      href={`tel:${item.phone}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="hidden sm:inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700 whitespace-nowrap"
-                    >
-                      <Phone size={13} /> {item.phone}
-                    </a>
+                    <span className="hidden sm:inline-flex items-center gap-2">
+                      <a
+                        href={`tel:${item.phone}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700 whitespace-nowrap"
+                      >
+                        <Phone size={13} /> {item.phone}
+                      </a>
+                      <WhatsAppIconLink phone={item.phone} />
+                    </span>
                   )}
                   <span className="text-sm whitespace-nowrap">
                     {item.nextActionMillis != null ? (

@@ -46,6 +46,12 @@ export type ConversationState = {
     | "call_name_collect"
     | "qualification"
     | "closed";
+  /**
+   * Marks how an inbound-call conversation should be processed.
+   * "per_org" = in-place no-handoff flow (org resolved from the dialed voice number);
+   * absent / "global_intake" = legacy global-intake + cross-org handoff.
+   */
+  callFlowMode?: "per_org" | "global_intake";
   pendingListingCandidate?: { listingCode: string; orgId?: string; link?: string; description?: string; address?: string; price?: number | string; confidence?: number };
   pendingListingCandidates?: Array<{ listingCode: string; orgId?: string; link?: string; description?: string; address?: string; price?: number | string; confidence?: number }>;
   pendingListingQueue?: Array<{ listingCode: string; orgId?: string; link?: string; description?: string; address?: string; price?: number | string; confidence: number }>;
@@ -298,6 +304,13 @@ export type TwilioTransportConfig = {
   phoneNumberId?: string;
   /** Display number in digits-only E.164 form (e.g. "34669354177"). */
   displayPhoneNumber?: string;
+  /**
+   * Dedicated inbound-voice number in digits-only E.164 form (e.g. "34911223344"),
+   * SEPARATE from whatsappNumber. When set (and inboundVoicePerOrgEnabled is true),
+   * inbound calls to this number resolve directly to this org and run the in-place
+   * (no-handoff) voice flow.
+   */
+  voiceNumber?: string;
   /** Optional assistant persona metadata selected during onboarding. */
   assistantAvatarId?: string;
   assistantAvatarName?: string;
@@ -353,6 +366,12 @@ export type BotConfig = {
   twilioTemplates?: TwilioTemplateNames;
   /** Twilio transport credentials owned by this org. */
   twilioConfig?: TwilioTransportConfig;
+  /**
+   * When true, inbound voice calls to this org's dedicated voiceNumber resolve the
+   * org directly and run the in-place (no-handoff) flow. Default off = legacy global
+   * intake (PROPLEAD_INTAKE_ORG_ID) + cross-org handoff.
+   */
+  inboundVoicePerOrgEnabled?: boolean;
   templateEligibility?: {
     outboundTemplatesBlocked?: boolean;
     missingRequiredKeys?: string[];

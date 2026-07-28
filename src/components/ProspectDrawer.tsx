@@ -3,18 +3,19 @@ import { toast } from "sonner";
 import {
   X, Save, Phone, MessageSquare, Mail, MapPin, StickyNote, ExternalLink,
   Lightbulb, History, Trash2, PhoneCall, ImagePlus, Megaphone, Loader2,
+  User, Home, ChevronDown, Users,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { deleteObject, ref } from "firebase/storage";
 import type {
   Prospect, ProspectStage, ProspectOperationType, ProspectPropertyType,
-  ProspectSource, ProspectActivityChannel, ProspectActivityOutcome,
+  ProspectSource, ProspectActivityChannel,
 } from "../types";
 import { PROSPECT_STAGES, PROSPECT_STAGE_LABELS } from "../types";
 import {
-  updateProspect, updateProspectStage, addProspectActivity,
-  setProspectNextAction, getProspectById, deleteProspect,
+  updateProspect, updateProspectStage, getProspectById, deleteProspect,
 } from "../services/prospects";
+import { generateFollowUpMessage } from "../services/conversations";
 import type { SystemUser } from "../services/users";
 import { uploadCaptacionPhoto } from "../services/storage";
 import { storage } from "../lib/firebase";
@@ -23,14 +24,16 @@ import { formatDate, cn } from "../lib/utils";
 import {
   PROSPECT_STAGE_CLASSES, PROSPECT_OUTCOME_LABELS, PROSPECT_PROPERTY_TYPES,
   PROSPECT_OPERATION_TYPES, PROSPECT_SOURCES, PROSPECT_SOURCE_LABELS,
-  formatShortDate, toDateTimeInputValue,
+  formatShortDate,
 } from "../lib/prospectMeta";
 import { Button } from "./ui";
-import { ContactLogForm } from "./ContactLogForm";
+import { EventTaskPicker } from "./EventTaskPicker";
+import { CollabThread } from "./CollabThread";
 
 const inputClass =
   "w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all";
 const labelClass = "block text-xs font-semibold text-gray-600 mb-1 font-heading uppercase tracking-wider";
+const groupHeadingClass = "flex items-center gap-2 text-sm font-bold text-gray-900 font-heading pb-2 border-b border-gray-100";
 
 const channelIcon: Record<ProspectActivityChannel, React.ReactNode> = {
   call: <Phone size={14} />,
@@ -52,13 +55,26 @@ interface Props {
   onChanged: () => void;
   /** Tras eliminar, cierra y refresca. */
   onDeleted: () => void;
+  /**
+   * Contexto de uso. En "seguimiento" (página Tareas) el modal prioriza los datos del propietario
+   * arriba del todo, colapsa los detalles del inmueble + ubicación y oculta la sección Publicación.
+   * En "captaciones" (por defecto) se mantiene el layout completo.
+   */
+  context?: "captaciones" | "seguimiento";
+  /** Abre la sección Colaboración expandida (al llegar desde una notificación). */
+  openCollab?: boolean;
 }
 
 export function ProspectDrawer({
   prospect, readOnly = false, isManager, currentUid, currentName, members, onClose, onChanged, onDeleted,
+  context = "captaciones", openCollab = false,
 }: Props) {
   const [current, setCurrent] = useState<Prospect>(prospect);
   const { organizationId } = useAuth();
+  const isSeguimiento = context === "seguimiento";
+  // En Tareas el inmueble arranca colapsado (allí se trabaja sobre el propietario y el evento).
+  const [showInmueble, setShowInmueble] = useState(false);
+  const [showOwner, setShowOwner] = useState(false);
 
   // Detalles editables
   const [ownerName, setOwnerName] = useState("");
@@ -81,15 +97,19 @@ export function ProspectDrawer({
   const [country, setCountry] = useState("");
   const [idealistaDescription, setIdealistaDescription] = useState("");
   const [referencia, setReferencia] = useState("");
-  const [savingDetails, setSavingDetails] = useState(false);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
 
-  // Registrar contacto (el formulario vive en ContactLogForm)
-  const [logging, setLogging] = useState(false);
+  // Guardado de datos + aprendizajes desde el footer. Los eventos/tareas se guardan aparte (EventTaskPicker).
+  const [saving, setSaving] = useState(false);
+  // Historial de eventos: por defecto solo los 2 más recientes, ampliable a todos.
+  const [showAllEvents, setShowAllEvents] = useState(false);
+  // Aprendizajes: colapsado por defecto.
+  const [showLearnings, setShowLearnings] = useState(false);
+  // Colaboración: colapsado salvo que se llegue desde una notificación.
+  const [showCollab, setShowCollab] = useState(openCollab);
 
   // Aprendizajes
   const [learnings, setLearnings] = useState("");
-  const [savingLearnings, setSavingLearnings] = useState(false);
 
   // Inicializa los campos cada vez que se abre otro prospecto.
   useEffect(() => {
@@ -169,9 +189,10 @@ export function ProspectDrawer({
     }
   }
 
-  async function handleSaveDetails() {
+  /** Guardado del modal: datos del propietario/inmueble + aprendizajes en una escritura. */
+  async function handleSaveAll() {
     if (!guard()) return;
-    setSavingDetails(true);
+    setSaving(true);
     try {
       await updateProspect(current.id, {
         ownerName: ownerName.trim(),
@@ -194,54 +215,46 @@ export function ProspectDrawer({
         idealistaDescription: idealistaDescription.trim(),
         referencia: referencia.trim(),
         listingUrl: listingUrl.trim(),
+        learnings: learnings.trim(),
       });
-      toast.success("Datos guardados");
+
+      toast.success("Cambios guardados");
       await refresh();
     } catch (e) {
       console.error(e);
-      toast.error("Error al guardar los datos");
+      toast.error("Error al guardar los cambios");
     } finally {
-      setSavingDetails(false);
+      setSaving(false);
     }
   }
 
-  async function handleLogContact(
-    entry: { channel: ProspectActivityChannel; outcome: ProspectActivityOutcome; note?: string },
-    nextDate: Date | null,
-    reminderMinutes: number | null
-  ) {
-    if (!guard()) return;
-    setLogging(true);
+  /** Pide a la IA un borrador de mensaje de seguimiento con el contexto de esta captación. */
+  async function handleGenerateMessage(channel: "message" | "email", note: string): Promise<string> {
     try {
-      await addProspectActivity(current.id, {
-        ...entry,
-        createdByUid: currentUid,
-        createdByName: currentName,
+      const property = [
+        current.propertyType,
+        current.address || [current.zone, current.municipality].filter(Boolean).join(" "),
+        current.price,
+        current.m2 ? `${current.m2} m²` : undefined,
+        current.rooms ? `${current.rooms} hab.` : undefined,
+      ].filter(Boolean).join(", ");
+      const recentNotes = (current.activities || [])
+        .map((a) => a.note?.trim())
+        .filter((n): n is string => !!n)
+        .slice(-8);
+      return await generateFollowUpMessage({
+        channel,
+        name: current.ownerName,
+        operationType: current.operationType,
+        property: property || undefined,
+        note: note.trim() || undefined,
+        recentNotes,
+        todayLabel: new Date().toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" }),
       });
-      // La próxima acción y el recordatorio se guardan aparte (pueden limpiarse).
-      await setProspectNextAction(current.id, nextDate, reminderMinutes);
-      toast.success("Evento registrado");
-      await refresh();
     } catch (e) {
-      console.error(e);
-      toast.error("Error al registrar el contacto");
-    } finally {
-      setLogging(false);
-    }
-  }
-
-  async function handleSaveLearnings() {
-    if (!guard()) return;
-    setSavingLearnings(true);
-    try {
-      await updateProspect(current.id, { learnings: learnings.trim() });
-      toast.success("Aprendizajes guardados");
-      await refresh();
-    } catch (e) {
-      console.error(e);
-      toast.error("Error al guardar");
-    } finally {
-      setSavingLearnings(false);
+      console.error("[ProspectDrawer] generar mensaje", e);
+      toast.error("No se pudo generar el mensaje");
+      throw e;
     }
   }
 
@@ -299,6 +312,204 @@ export function ProspectDrawer({
   const activities = [...(current.activities || [])].sort((a, b) => b.at.toMillis() - a.at.toMillis());
   const waLink = current.phone ? `https://wa.me/${current.phone.replace(/[^\d]/g, "")}` : null;
 
+  // ¿Hay algún cambio sin guardar en los campos que persiste "Guardar cambios"?
+  // (etapa, publicado, asignación, fotos y eventos/tareas se guardan al instante aparte.)
+  const norm = (s?: string) => (s ?? "").trim();
+  const isDirty =
+    norm(ownerName) !== norm(current.ownerName) ||
+    norm(phone) !== norm(current.phone) ||
+    norm(email) !== norm(current.email) ||
+    operationType !== (current.operationType || "Venta") ||
+    (propertyType || "") !== (current.propertyType || "") ||
+    (source || "") !== (current.source || "") ||
+    norm(municipality) !== norm(current.municipality) ||
+    norm(zone) !== norm(current.zone) ||
+    norm(address) !== norm(current.address) ||
+    norm(price) !== norm(current.price) ||
+    norm(m2) !== norm(current.m2) ||
+    norm(rooms) !== norm(current.rooms) ||
+    norm(street) !== norm(current.street) ||
+    norm(city) !== norm(current.city) ||
+    norm(province) !== norm(current.province) ||
+    norm(postalCode) !== norm(current.postalCode) ||
+    norm(country) !== norm(current.country) ||
+    norm(idealistaDescription) !== norm(current.idealistaDescription) ||
+    norm(referencia) !== norm(current.referencia) ||
+    norm(listingUrl) !== norm(current.listingUrl) ||
+    norm(learnings) !== norm(current.learnings);
+
+  // --- Bloques de datos reutilizables (se ordenan distinto según el contexto) ---
+
+  const ownerGrid = (
+    <div className="grid grid-cols-2 gap-3">
+      <div className="col-span-2">
+        <label className={labelClass}>Nombre</label>
+        <input className={inputClass} value={ownerName} onChange={(e) => setOwnerName(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>Teléfono</label>
+        <input className={inputClass} value={phone} onChange={(e) => setPhone(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>Email</label>
+        <input className={inputClass} type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+      </div>
+    </div>
+  );
+
+  const ownerDataSection = (
+    <div className="space-y-3">
+      <h3 className={groupHeadingClass}>
+        <User size={15} className="text-primary-600" /> Datos del propietario
+      </h3>
+      {ownerGrid}
+    </div>
+  );
+
+  const inmuebleInner = (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={labelClass}>Operación</label>
+          <select className={inputClass} value={operationType} onChange={(e) => setOperationType(e.target.value as ProspectOperationType)}>
+            {PROSPECT_OPERATION_TYPES.map((op) => <option key={op} value={op}>{op}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Tipo</label>
+          <select className={inputClass} value={propertyType} onChange={(e) => setPropertyType(e.target.value as ProspectPropertyType | "")}>
+            <option value="">—</option>
+            {PROSPECT_PROPERTY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={labelClass}>Precio</label>
+          <input className={inputClass} value={price} onChange={(e) => setPrice(e.target.value)} />
+        </div>
+        <div>
+          <label className={labelClass}>m²</label>
+          <input className={inputClass} inputMode="numeric" value={m2} onChange={(e) => setM2(e.target.value.replace(/[^\d]/g, ""))} />
+        </div>
+        <div>
+          <label className={labelClass}>Habitaciones</label>
+          <input className={inputClass} inputMode="numeric" value={rooms} onChange={(e) => setRooms(e.target.value.replace(/[^\d]/g, ""))} />
+        </div>
+      </div>
+      {current.features && (
+        <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 whitespace-pre-wrap">{current.features}</p>
+      )}
+      <div>
+        <label className={labelClass}>Descripción comercial</label>
+        <textarea
+          className={cn(inputClass, "min-h-[80px] resize-none")}
+          value={idealistaDescription}
+          onChange={(e) => setIdealistaDescription(e.target.value)}
+          placeholder="Texto del anuncio (se podrá copiar al crear el Anuncio)"
+        />
+      </div>
+
+      {/* Fotos del inmueble */}
+      <div>
+        <label className={labelClass}>Fotos</label>
+        <div className="grid grid-cols-3 gap-2">
+          {(current.photos || []).map((url) => (
+            <div key={url} className="relative group aspect-square rounded-lg overflow-hidden border border-gray-200">
+              <img src={url} alt="" className="w-full h-full object-cover" />
+              {!readOnly && (
+                <button
+                  onClick={() => handleRemovePhoto(url)}
+                  className="absolute top-1 right-1 bg-black/50 hover:bg-black/70 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Quitar foto"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </div>
+          ))}
+          {!readOnly && (
+            <label className={cn(
+              "aspect-square rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 cursor-pointer hover:border-primary-400 hover:text-primary-500 transition-colors",
+              uploadingPhotos && "opacity-50 pointer-events-none"
+            )}>
+              {uploadingPhotos ? <Loader2 size={20} className="animate-spin" /> : <ImagePlus size={20} />}
+              <span className="text-[10px] mt-1">{uploadingPhotos ? "Subiendo..." : "Añadir"}</span>
+              <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleAddPhotos(e.target.files); e.target.value = ""; }} />
+            </label>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
+  const ubicacionGrid = (
+    <div className="grid grid-cols-2 gap-3">
+      <div>
+        <label className={labelClass}>Municipio</label>
+        <input className={inputClass} value={municipality} onChange={(e) => setMunicipality(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>Zona</label>
+        <input className={inputClass} value={zone} onChange={(e) => setZone(e.target.value)} />
+      </div>
+      <div className="col-span-2">
+        <label className={labelClass}>Dirección</label>
+        <input className={inputClass} value={address} onChange={(e) => setAddress(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>Vía y número</label>
+        <input className={inputClass} value={street} onChange={(e) => setStreet(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>Ciudad</label>
+        <input className={inputClass} value={city} onChange={(e) => setCity(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>Provincia</label>
+        <input className={inputClass} value={province} onChange={(e) => setProvince(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>Código postal</label>
+        <input className={inputClass} value={postalCode} onChange={(e) => setPostalCode(e.target.value)} />
+      </div>
+      <div>
+        <label className={labelClass}>País</label>
+        <input className={inputClass} value={country} onChange={(e) => setCountry(e.target.value)} />
+      </div>
+    </div>
+  );
+
+  const publicacionSection = (
+    <div className="space-y-3">
+      <h3 className={groupHeadingClass}>
+        <Megaphone size={15} className="text-primary-600" /> Publicación
+      </h3>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={labelClass}>Referencia interna</label>
+          <input className={inputClass} value={referencia} onChange={(e) => setReferencia(e.target.value)} />
+        </div>
+        <div>
+          <label className={labelClass}>Origen</label>
+          <select className={inputClass} value={source} onChange={(e) => setSource(e.target.value as ProspectSource | "")}>
+            <option value="">—</option>
+            {PROSPECT_SOURCES.map((s) => <option key={s} value={s}>{PROSPECT_SOURCE_LABELS[s]}</option>)}
+          </select>
+        </div>
+        <div className="col-span-2">
+          <label className={labelClass}>Enlace al anuncio</label>
+          <input className={inputClass} value={listingUrl} onChange={(e) => setListingUrl(e.target.value)} placeholder="https://..." />
+        </div>
+        {listingUrl && (
+          <div className="col-span-2">
+            <a href={listingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-primary-600 hover:text-primary-700 font-medium">
+              <ExternalLink size={14} /> Ver anuncio
+            </a>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div
@@ -321,15 +532,22 @@ export function ProspectDrawer({
             </Button>
           </div>
 
-          {/* Quick actions: llamar / WhatsApp */}
-          {current.phone && (
-            <div className="flex gap-2 mt-3">
-              <a href={`tel:${current.phone}`} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-primary-500 hover:bg-primary-600 text-white text-xs font-bold transition-colors">
-                <PhoneCall size={14} /> Llamar
-              </a>
+          {/* Quick actions: llamar / WhatsApp / anuncio */}
+          {(current.phone || current.listingUrl) && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {current.phone && (
+                <a href={`tel:${current.phone}`} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-primary-500 hover:bg-primary-600 text-white text-xs font-bold transition-colors">
+                  <PhoneCall size={14} /> Llamar
+                </a>
+              )}
               {waLink && (
                 <a href={waLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-xs font-bold transition-colors">
                   <MessageSquare size={14} /> WhatsApp
+                </a>
+              )}
+              {current.listingUrl && (
+                <a href={current.listingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-blue-100 hover:bg-blue-200 text-blue-800 text-xs font-bold transition-colors">
+                  <ExternalLink size={14} /> Anuncio
                 </a>
               )}
             </div>
@@ -375,7 +593,7 @@ export function ProspectDrawer({
             </div>
           </div>
 
-          {isManager && (
+          {isManager && !isSeguimiento && (
             <div>
               <label className={labelClass}>Agente asignado</label>
               <select className={inputClass} value={current.assignedAgentUid || ""} onChange={(e) => handleAssign(e.target.value)}>
@@ -387,25 +605,27 @@ export function ProspectDrawer({
             </div>
           )}
 
-          {/* Registrar contacto */}
+          {/* Añadir evento o tarea (se guarda al instante, aparte de «Guardar cambios») */}
           <section>
             <h3 className="flex items-center gap-2 text-sm font-bold text-gray-900 font-heading mb-3">
-              <PhoneCall size={16} className="text-primary-600" /> Registrar evento
+              <PhoneCall size={16} className="text-primary-600" /> Añadir evento o tarea
             </h3>
-            <ContactLogForm
+            <EventTaskPicker
               key={current.id}
-              disabled={readOnly}
-              loading={logging}
-              initialNextDate={current.nextActionDate ? toDateTimeInputValue(current.nextActionDate.toMillis()) : ""}
-              initialReminderMinutes={current.reminderMinutesBefore ?? null}
-              onSubmit={handleLogContact}
+              kind="prospect"
+              id={current.id}
+              readOnly={readOnly}
+              currentUid={currentUid}
+              currentName={currentName}
+              onGenerateMessage={handleGenerateMessage}
+              onLogged={() => { refresh(); }}
             />
           </section>
 
           {/* Historial */}
           <section>
             <h3 className="flex items-center gap-2 text-sm font-bold text-gray-900 font-heading mb-3">
-              <History size={16} className="text-gray-500" /> Historial
+              <History size={16} className="text-gray-500" /> Historial de eventos
               {current.lastContactAt && (
                 <span className="text-xs font-normal text-gray-400">
                   · último: {formatShortDate(current.lastContactAt.toMillis())}
@@ -413,196 +633,166 @@ export function ProspectDrawer({
               )}
             </h3>
             {activities.length === 0 ? (
-              <p className="text-sm text-gray-400 italic">Sin contactos registrados todavía.</p>
+              <p className="text-sm text-gray-400 italic">Sin eventos registrados todavía.</p>
             ) : (
-              <ul className="space-y-2">
-                {activities.map((a) => (
-                  <li key={a.id} className="flex gap-3 text-sm border-l-2 border-gray-200 pl-3 py-0.5">
-                    <span className="mt-0.5 text-gray-400 shrink-0">{channelIcon[a.channel]}</span>
-                    <div className="min-w-0">
-                      <p className="font-semibold text-gray-800">{PROSPECT_OUTCOME_LABELS[a.outcome]}</p>
-                      {a.note && <p className="text-gray-600 break-words">{a.note}</p>}
-                      <p className="text-[11px] text-gray-400">
-                        {formatDate(a.at.toMillis())}{a.createdByName ? ` · ${a.createdByName}` : ""}
-                      </p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {/* Fotos */}
-          <section>
-            <h3 className="flex items-center gap-2 text-sm font-bold text-gray-900 font-heading mb-3">
-              <ImagePlus size={16} className="text-primary-600" /> Fotos
-            </h3>
-            <div className="grid grid-cols-3 gap-2">
-              {(current.photos || []).map((url) => (
-                <div key={url} className="relative group aspect-square rounded-lg overflow-hidden border border-gray-200">
-                  <img src={url} alt="" className="w-full h-full object-cover" />
-                  {!readOnly && (
-                    <button
-                      onClick={() => handleRemovePhoto(url)}
-                      className="absolute top-1 right-1 bg-black/50 hover:bg-black/70 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="Quitar foto"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  )}
-                </div>
-              ))}
-              {!readOnly && (
-                <label className={cn(
-                  "aspect-square rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 cursor-pointer hover:border-primary-400 hover:text-primary-500 transition-colors",
-                  uploadingPhotos && "opacity-50 pointer-events-none"
-                )}>
-                  {uploadingPhotos ? <Loader2 size={20} className="animate-spin" /> : <ImagePlus size={20} />}
-                  <span className="text-[10px] mt-1">{uploadingPhotos ? "Subiendo..." : "Añadir"}</span>
-                  <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleAddPhotos(e.target.files); e.target.value = ""; }} />
-                </label>
-              )}
-            </div>
-          </section>
-
-          {/* Datos del inmueble */}
-          <section className="space-y-3">
-            <h3 className="text-sm font-bold text-gray-900 font-heading">Datos del propietario e inmueble</h3>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2">
-                <label className={labelClass}>Nombre</label>
-                <input className={inputClass} value={ownerName} onChange={(e) => setOwnerName(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Teléfono</label>
-                <input className={inputClass} value={phone} onChange={(e) => setPhone(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Email</label>
-                <input className={inputClass} type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Precio</label>
-                <input className={inputClass} value={price} onChange={(e) => setPrice(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>m²</label>
-                <input className={inputClass} inputMode="numeric" value={m2} onChange={(e) => setM2(e.target.value.replace(/[^\d]/g, ""))} />
-              </div>
-              <div>
-                <label className={labelClass}>Habitaciones</label>
-                <input className={inputClass} inputMode="numeric" value={rooms} onChange={(e) => setRooms(e.target.value.replace(/[^\d]/g, ""))} />
-              </div>
-              <div>
-                <label className={labelClass}>Operación</label>
-                <select className={inputClass} value={operationType} onChange={(e) => setOperationType(e.target.value as ProspectOperationType)}>
-                  {PROSPECT_OPERATION_TYPES.map((op) => <option key={op} value={op}>{op}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>Tipo</label>
-                <select className={inputClass} value={propertyType} onChange={(e) => setPropertyType(e.target.value as ProspectPropertyType | "")}>
-                  <option value="">—</option>
-                  {PROSPECT_PROPERTY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>Municipio</label>
-                <input className={inputClass} value={municipality} onChange={(e) => setMunicipality(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Zona</label>
-                <input className={inputClass} value={zone} onChange={(e) => setZone(e.target.value)} />
-              </div>
-              <div className="col-span-2">
-                <label className={labelClass}>Dirección</label>
-                <input className={inputClass} value={address} onChange={(e) => setAddress(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Vía y número</label>
-                <input className={inputClass} value={street} onChange={(e) => setStreet(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Ciudad</label>
-                <input className={inputClass} value={city} onChange={(e) => setCity(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Provincia</label>
-                <input className={inputClass} value={province} onChange={(e) => setProvince(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Código postal</label>
-                <input className={inputClass} value={postalCode} onChange={(e) => setPostalCode(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>País</label>
-                <input className={inputClass} value={country} onChange={(e) => setCountry(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Referencia interna</label>
-                <input className={inputClass} value={referencia} onChange={(e) => setReferencia(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Origen</label>
-                <select className={inputClass} value={source} onChange={(e) => setSource(e.target.value as ProspectSource | "")}>
-                  <option value="">—</option>
-                  {PROSPECT_SOURCES.map((s) => <option key={s} value={s}>{PROSPECT_SOURCE_LABELS[s]}</option>)}
-                </select>
-              </div>
-              <div className="flex items-end">
-                {listingUrl && (
-                  <a href={listingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-primary-600 hover:text-primary-700 font-medium pb-2">
-                    <ExternalLink size={14} /> Ver anuncio
-                  </a>
+              <>
+                <ul className="space-y-2">
+                  {(showAllEvents ? activities : activities.slice(0, 2)).map((a) => (
+                    <li key={a.id} className="flex gap-3 text-sm border-l-2 border-gray-200 pl-3 py-0.5">
+                      <span className="mt-0.5 text-gray-400 shrink-0">{channelIcon[a.channel]}</span>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-gray-800">{PROSPECT_OUTCOME_LABELS[a.outcome] || "Otro"}</p>
+                        {a.note && <p className="text-gray-600 break-words">{a.note}</p>}
+                        <p className="text-[11px] text-gray-400">
+                          {formatDate(a.at.toMillis())}{a.createdByName ? ` · ${a.createdByName}` : ""}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                {activities.length > 2 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllEvents((v) => !v)}
+                    className="mt-2 text-[11px] font-semibold text-primary-600 hover:text-primary-700"
+                  >
+                    {showAllEvents
+                      ? "Ver menos"
+                      : `Ver todos (${activities.length})`}
+                  </button>
                 )}
-              </div>
-              <div className="col-span-2">
-                <label className={labelClass}>Enlace al anuncio</label>
-                <input className={inputClass} value={listingUrl} onChange={(e) => setListingUrl(e.target.value)} placeholder="https://..." />
-              </div>
-            </div>
-            {current.features && (
-              <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 whitespace-pre-wrap">{current.features}</p>
+              </>
             )}
-            <div>
-              <label className={labelClass}>Descripción comercial</label>
+          </section>
+
+          {/* Datos del prospecto — solo en Captaciones (en Tareas van arriba/colapsados y sin Publicación) */}
+          {!isSeguimiento && (
+            <section className="space-y-6">
+              {ownerDataSection}
+
+              {/* Datos del inmueble */}
+              <div className="space-y-3">
+                <h3 className={groupHeadingClass}>
+                  <Home size={15} className="text-primary-600" /> Datos del inmueble
+                </h3>
+                {inmuebleInner}
+              </div>
+
+              {/* Ubicación */}
+              <div className="space-y-3">
+                <h3 className={groupHeadingClass}>
+                  <MapPin size={15} className="text-primary-600" /> Ubicación
+                </h3>
+                {ubicacionGrid}
+              </div>
+
+              {/* Publicación */}
+              {publicacionSection}
+            </section>
+          )}
+
+          {/* Aprendizajes (colapsado por defecto) */}
+          <section className="space-y-2">
+            <button
+              type="button"
+              onClick={() => setShowLearnings((v) => !v)}
+              aria-expanded={showLearnings}
+              className="flex items-center gap-2 w-full text-sm font-bold text-gray-900 font-heading"
+            >
+              <Lightbulb size={16} className="text-amber-500" /> Aprendizajes
+              <ChevronDown size={16} className={cn("ml-auto text-gray-400 transition-transform", showLearnings && "rotate-180")} />
+            </button>
+            {showLearnings && (
               <textarea
                 className={cn(inputClass, "min-h-[80px] resize-none")}
-                value={idealistaDescription}
-                onChange={(e) => setIdealistaDescription(e.target.value)}
-                placeholder="Texto del anuncio (se podrá copiar al crear el Anuncio)"
+                value={learnings}
+                onChange={(e) => setLearnings(e.target.value)}
+                placeholder="¿Qué ha funcionado o fallado? Lecciones para la próxima captación..."
               />
-            </div>
-            <Button onClick={handleSaveDetails} loading={savingDetails} disabled={readOnly} variant="outline" className="w-full">
-              <Save size={16} /> Guardar datos
-            </Button>
+            )}
           </section>
 
-          {/* Aprendizajes */}
-          <section>
-            <h3 className="flex items-center gap-2 text-sm font-bold text-gray-900 font-heading mb-2">
-              <Lightbulb size={16} className="text-amber-500" /> Aprendizajes
-            </h3>
-            <textarea
-              className={cn(inputClass, "min-h-[80px] resize-none")}
-              value={learnings}
-              onChange={(e) => setLearnings(e.target.value)}
-              placeholder="¿Qué ha funcionado o fallado? Lecciones para la próxima captación..."
-            />
-            <Button onClick={handleSaveLearnings} loading={savingLearnings} disabled={readOnly} variant="ghost" className="mt-2">
-              Guardar aprendizajes
-            </Button>
+          {/* Colaboración: etiquetar a un compañero y dejarle un mensaje */}
+          <section className="space-y-2">
+            <button
+              type="button"
+              onClick={() => setShowCollab((v) => !v)}
+              aria-expanded={showCollab}
+              className="flex items-center gap-2 w-full text-sm font-bold text-gray-900 font-heading"
+            >
+              <Users size={16} className="text-primary-600" /> Colaboración
+              <ChevronDown size={16} className={cn("ml-auto text-gray-400 transition-transform", showCollab && "rotate-180")} />
+            </button>
+            {showCollab && (
+              <CollabThread
+                targetType="prospect"
+                targetId={current.id}
+                targetName={current.ownerName || "Captación"}
+                targetSubtitle={current.municipality}
+                targetStage={current.stage}
+                readOnly={readOnly}
+              />
+            )}
           </section>
+
+          {/* En Tareas: datos del propietario y del inmueble, colapsables, al final del todo */}
+          {isSeguimiento && (
+            <>
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setShowOwner((v) => !v)}
+                  aria-expanded={showOwner}
+                  className={cn(groupHeadingClass, "w-full justify-between")}
+                >
+                  <span className="flex items-center gap-2">
+                    <User size={15} className="text-primary-600" /> Datos del propietario
+                  </span>
+                  <ChevronDown size={16} className={cn("text-gray-400 transition-transform", showOwner && "rotate-180")} />
+                </button>
+                {showOwner && ownerGrid}
+              </div>
+
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setShowInmueble((v) => !v)}
+                  aria-expanded={showInmueble}
+                  className={cn(groupHeadingClass, "w-full justify-between")}
+                >
+                  <span className="flex items-center gap-2">
+                    <Home size={15} className="text-primary-600" /> Detalles del inmueble
+                  </span>
+                  <ChevronDown size={16} className={cn("text-gray-400 transition-transform", showInmueble && "rotate-180")} />
+                </button>
+                {showInmueble && (
+                  <div className="space-y-3">
+                    {inmuebleInner}
+                    {/* Ubicación como sub-bloque (igual que "Fotos"), no como sección propia */}
+                    <div>
+                      <label className={labelClass}>Ubicación</label>
+                      {ubicacionGrid}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
-        {/* Footer */}
-        {isManager && (
-          <div className="px-5 py-3 border-t border-gray-100 bg-gray-50">
+        {/* Footer: guardado unificado + eliminar */}
+        <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between gap-3 sticky bottom-0 z-10">
+          {isManager ? (
             <button onClick={handleDelete} disabled={readOnly} className="inline-flex items-center gap-2 text-sm font-semibold text-rose-600 hover:text-rose-700 disabled:opacity-40">
               <Trash2 size={16} /> Eliminar prospecto
             </button>
-          </div>
-        )}
+          ) : (
+            <span />
+          )}
+          <Button onClick={handleSaveAll} loading={saving} disabled={readOnly || !isDirty}>
+            <Save size={16} /> Guardar cambios
+          </Button>
+        </div>
       </div>
     </div>
   );

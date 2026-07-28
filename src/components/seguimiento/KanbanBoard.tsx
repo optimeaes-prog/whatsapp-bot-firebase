@@ -9,7 +9,8 @@ import { isLeadDueToday } from "../../services/leads";
 import { cn } from "../../lib/utils";
 import { PROSPECT_STAGE_ACCENT, LEAD_FOLLOWUP_STATUS_ACCENT } from "../../lib/prospectMeta";
 import { sortProspectsByNextAction, sortLeadsByNextAction, type LeadStatusKey } from "../../lib/followUp";
-import { OperationTypeBadge } from "../StatusBadges";
+import { OperationTypeBadge, StillListedBadge } from "../StatusBadges";
+import { WhatsAppIconLink } from "../WhatsAppIconLink";
 
 /** Casilla de selección para acciones en grupo (no abre el detalle). */
 function SelectBox({ checked, onToggle }: { checked: boolean; onToggle: () => void }) {
@@ -107,7 +108,7 @@ function ProspectCard({
       onClick={() => onOpen(prospect)}
       className={cn(
         "card !p-3 cursor-pointer hover:border-primary-300 hover:shadow-md transition-all",
-        selected && "!border-primary-500 ring-2 ring-primary-500 shadow-md"
+        selected && "!border-primary-500 ring-2 ring-inset ring-primary-500 shadow-md"
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -121,9 +122,12 @@ function ProspectCard({
         {[prospect.municipality, prospect.zone].filter(Boolean).join(" · ") || "Sin ubicación"}
       </p>
       <div className="flex items-center justify-between gap-2 mt-2">
-        {prospect.price ? <span className="text-xs font-semibold text-gray-700">{prospect.price}</span> : <span />}
+        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+          {prospect.price && <span className="text-xs font-semibold text-gray-700">{prospect.price}</span>}
+          <StillListedBadge value={prospect.stillListed} />
+        </div>
         {due && (
-          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded-full">
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded-full shrink-0">
             <CalendarClock size={10} /> Hoy
           </span>
         )}
@@ -225,7 +229,7 @@ function LeadCard({
       onClick={() => onOpen(lead)}
       className={cn(
         "card !p-3 cursor-pointer hover:border-primary-300 hover:shadow-md transition-all",
-        selected && "!border-primary-500 ring-2 ring-primary-500 shadow-md"
+        selected && "!border-primary-500 ring-2 ring-inset ring-primary-500 shadow-md"
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -235,7 +239,10 @@ function LeadCard({
         </div>
         {lead.operationType && <OperationTypeBadge type={lead.operationType} />}
       </div>
-      <p className="text-xs text-gray-500 truncate mt-0.5">{lead.phone || "Sin teléfono"}</p>
+      <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+        <p className="text-xs text-gray-500 truncate">{lead.phone || "Sin teléfono"}</p>
+        <WhatsAppIconLink phone={lead.phone} size={13} />
+      </div>
       <div className="flex items-center justify-end gap-2 mt-2">
         {due && (
           <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded-full">

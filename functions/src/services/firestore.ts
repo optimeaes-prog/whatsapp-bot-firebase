@@ -393,6 +393,7 @@ export async function findLeadByChatId(chatId: string): Promise<{
   lastMessageDate?: FirebaseFirestore.Timestamp;
   qualificationStatus?: QualificationStatus;
   hasResponse?: boolean;
+  callFlowMode?: "per_org" | "global_intake";
 } | null> {
   // Match across chatId variants (suffix + Argentine "9" forms) so a lead saved
   // under one number form is found when the inbound arrives under another.
@@ -412,6 +413,7 @@ export async function findLeadByChatId(chatId: string): Promise<{
     lastMessageDate: data.lastMessageDate,
     qualificationStatus: data.qualificationStatus as QualificationStatus | undefined,
     hasResponse: data.hasResponse || false,
+    callFlowMode: data.callFlowMode as ("per_org" | "global_intake" | undefined),
   };
 }
 
@@ -528,6 +530,7 @@ export async function findLeadByPhone(phone: string): Promise<{
   name?: string;
   qualificationStatus?: QualificationStatus;
   hasResponse?: boolean;
+  callFlowMode?: "per_org" | "global_intake";
 } | null> {
   // Get most recent lead for this phone
   const snapshot = await getOrgDb()
@@ -550,6 +553,7 @@ export async function findLeadByPhone(phone: string): Promise<{
     name: data.name,
     qualificationStatus: data.qualificationStatus as QualificationStatus | undefined,
     hasResponse: data.hasResponse || false,
+    callFlowMode: data.callFlowMode as ("per_org" | "global_intake" | undefined),
   };
 }
 
@@ -595,6 +599,11 @@ export async function createPendingCallLead(params: {
   phone: string;
   chatId: string;
   name?: string;
+  /**
+   * Marks the inbound-call processing mode. "per_org" routes the conversation through
+   * the in-place (no-handoff) flow; absent = legacy global-intake + handoff.
+   */
+  callFlowMode?: "per_org" | "global_intake";
 }): Promise<void> {
   const sentinelListingCode = "__pending__";
 
@@ -616,6 +625,7 @@ export async function createPendingCallLead(params: {
       {
         leadSource: "call",
         listingResolutionStatus: "pending",
+        ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
       },
       { merge: true }
     );
@@ -638,13 +648,17 @@ export async function createPendingCallLead(params: {
       botDisabled: false,
       type: "lead",
       tags: ["lead", "call", "pending-listing"],
+      ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
     } as Partial<ConversationState>);
   } else {
     // Doc exists — only refresh identity fields, leave transient state alone.
+    // callFlowMode is an identity field (it reflects which number was dialed this call),
+    // so refresh it too in case a repeat caller's prior conversation predates per-org mode.
     await upsertConversation(params.chatId, {
       phone: params.phone,
       chatId: params.chatId,
       type: "lead",
+      ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
     } as Partial<ConversationState>);
   }
 }
@@ -702,6 +716,7 @@ export async function upsertCallIntent(params: {
   fromPhone: string;
   capturedName?: string;
   createdAtMs?: number;
+  callFlowMode?: "per_org" | "global_intake";
 }): Promise<void> {
   // Moved to organizations/{orgId}/calls to align with multi-tenant structure
   const docRef = getOrgDb().collection("calls").doc(params.callSid);
@@ -712,6 +727,7 @@ export async function upsertCallIntent(params: {
       capturedName: params.capturedName,
       createdAtMs: params.createdAtMs ?? Date.now(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
     },
     { merge: true }
   );

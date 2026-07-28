@@ -11,6 +11,12 @@ export type OrgSubscriptionInfo = {
   contractedConversations?: number;
   stripeSubscriptionId?: string;
   extraBlocks?: number;
+  /** Anuncios activos actuales de la org (a nivel organización, calculado en backend) */
+  activeListingsCount?: number;
+  /** Máximo de anuncios activos del plan (null si ilimitado / Enterprise) */
+  maxActiveListings?: number | null;
+  /** true cuando el plan no tiene tope de anuncios activos (Enterprise) */
+  activeListingsUnlimited?: boolean;
 };
 
 export type AutoRechargeInfo = {
