@@ -1,0 +1,150 @@
+import { useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
+
+/**
+ * Página pública (sin login) con los leads de Venta, no cualificados y sin
+ * actividad en más de 48h de una organización. El acceso se valida con un token
+ * firmado que llega en la URL (?t=), no con sesión de usuario.
+ *
+ * Es informativa: no hay botones de envío ni acciones sobre los leads.
+ */
+
+type InactiveLeadRow = {
+  id: string;
+  name: string;
+  phone: string;
+  /** "Identificador Anuncio" en la tabla de Leads (descripción del anuncio). */
+  listingDescription: string;
+  lastMessageAtMs: number;
+};
+
+// Datos de ejemplo para montar la pantalla. Se sustituyen por la llamada real
+// al endpoint en la siguiente fase.
+const MOCK_ROWS: InactiveLeadRow[] = [
+  {
+    id: "1",
+    name: "María López",
+    phone: "+34 612 345 678",
+    listingDescription: "Piso Calle Mayor 12",
+    lastMessageAtMs: Date.now() - 51 * 60 * 60 * 1000,
+  },
+  {
+    id: "2",
+    name: "Javier Ruiz",
+    phone: "+34 699 112 233",
+    listingDescription: "Ático Avenida del Puerto",
+    lastMessageAtMs: Date.now() - 3.5 * 24 * 60 * 60 * 1000,
+  },
+  {
+    id: "3",
+    name: "",
+    phone: "+34 677 889 900",
+    listingDescription: "Chalet Las Rozas",
+    lastMessageAtMs: Date.now() - 9 * 24 * 60 * 60 * 1000,
+  },
+];
+
+/** "2 días 5 h" / "51 h" — tiempo transcurrido desde el último mensaje. */
+function formatTimeSince(fromMs: number, nowMs: number): string {
+  const totalHours = Math.floor((nowMs - fromMs) / (60 * 60 * 1000));
+  if (totalHours < 48) return `${totalHours} h`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours === 0 ? `${days} días` : `${days} días ${hours} h`;
+}
+
+export function LeadsInactivos() {
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get("t")?.trim() ?? "";
+
+  // Página privada por enlace: pedimos a los buscadores que no la indexen.
+  // La cabecera X-Robots-Tag del hosting es la defensa real; esta etiqueta
+  // cubre el caso de un crawler que ejecute JS sobre el HTML servido.
+  useEffect(() => {
+    const meta = document.createElement("meta");
+    meta.name = "robots";
+    meta.content = "noindex, nofollow, noarchive";
+    document.head.appendChild(meta);
+    return () => {
+      document.head.removeChild(meta);
+    };
+  }, []);
+
+  const nowMs = Date.now();
+  const rows = MOCK_ROWS;
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-body text-slate-800 py-12 px-4">
+      <div className="max-w-3xl mx-auto card p-8">
+        <h1 className="text-2xl font-heading font-bold text-[var(--TITLE,#402e32)] mb-2">
+          Leads sin respuesta
+        </h1>
+        <p className="text-sm text-slate-600 mb-6">
+          Leads de venta, no cualificados y sin actividad desde hace más de 48 horas.
+        </p>
+
+        {!token && (
+          <p className="text-sm text-red-600 mb-4" role="alert">
+            Falta el enlace de acceso (token).
+          </p>
+        )}
+
+        {rows.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            No hay leads sin respuesta ahora mismo.
+          </p>
+        ) : (
+          <>
+            <p className="text-sm text-slate-500 mb-3">
+              {rows.length} {rows.length === 1 ? "lead" : "leads"}
+            </p>
+            <div className="overflow-x-auto -mx-2">
+              <table className="min-w-full">
+                <thead>
+                  <tr className="border-b border-gray-200">
+                    <th className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
+                      Nombre
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
+                      Teléfono
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
+                      Anuncio
+                    </th>
+                    <th className="px-3 py-2 text-right text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
+                      Sin responder
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.id} className="border-b border-gray-100 last:border-0">
+                      <td className="px-3 py-3 text-sm text-gray-900 whitespace-nowrap">
+                        {row.name || "—"}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-gray-700 whitespace-nowrap">
+                        {row.phone || "—"}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-gray-700">
+                        {row.listingDescription || "—"}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-red-600 text-right whitespace-nowrap">
+                        {formatTimeSince(row.lastMessageAtMs, nowMs)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        <p className="text-xs text-slate-400 mt-6">
+          Esta lista se genera en el momento de abrir el enlace. El enlace caduca a los 7 días.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export default LeadsInactivos;

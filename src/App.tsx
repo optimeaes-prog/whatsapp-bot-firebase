@@ -40,6 +40,7 @@ import { WhatsAppLeadsAnimation } from "./pages/WhatsAppLeadsAnimation";
 import FontGallery from "./pages/FontGallery";
 import EmailGallery from "./pages/EmailGallery";
 import EmailPreferences from "./pages/EmailPreferences";
+import LeadsInactivos from "./pages/LeadsInactivos";
 import { Organizacion } from "./pages/Organizacion";
 import { BotTest } from "./pages/BotTest";
 import { Usage } from "./pages/Usage";
@@ -128,6 +129,7 @@ function App() {
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/email-preferences" element={<EmailPreferences />} />
+            <Route path="/leads-inactivos" element={<LeadsInactivos />} />
             <Route path="/fonts" element={<FontGallery />} />
             <Route path="/" element={<MarketingLandingV2 />} />
             <Route path="/landingv2" element={<MarketingLanding />} />
