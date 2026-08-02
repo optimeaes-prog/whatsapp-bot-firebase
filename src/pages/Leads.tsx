@@ -41,6 +41,7 @@ const COMPACT_STATUS_VISIBLE_COLUMNS: Record<string, boolean> = {
   consentStatus: true,
   qualifiedAt: true,
   lastMessageDate: false,
+  inactive48h: false,
   messageCount: true,
   pets: true,
   income: true,
@@ -51,6 +52,43 @@ const COMPACT_STATUS_VISIBLE_COLUMNS: Record<string, boolean> = {
   tags: true,
   actions: false,
 };
+
+const DEFAULT_VISIBLE_COLUMNS: Record<string, boolean> = {
+  name: true,
+  phone: true,
+  email: false,
+  listingCode: true,
+  listingDescription: true,
+  operationType: true,
+  qualificationStatus: true,
+  consentStatus: true,
+  qualifiedAt: false,
+  lastMessageDate: true,
+  inactive48h: true,
+  messageCount: true,
+  pets: false,
+  income: false,
+  paymentMethod: false,
+  conversationSummary: true,
+  notes: true,
+  chat: true,
+  tags: true,
+  actions: false,
+};
+
+const INACTIVITY_THRESHOLD_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * "Sí" cuando han pasado más de 48h desde el último mensaje del lead.
+ * Usa `lastMessageDate`, el mismo campo que alimenta la columna "Último Mensaje",
+ * para no tener dos fuentes distintas de "última actividad".
+ * Un lead sin `lastMessageDate` no se marca (no sabemos cuándo escribió).
+ */
+function isInactive48h(lead: Lead, nowMs: number): boolean {
+  const lastMs = lead.lastMessageDate?.toMillis?.();
+  if (!lastMs) return false;
+  return nowMs - lastMs > INACTIVITY_THRESHOLD_MS;
+}
 
 type SortField = "name" | "phone" | "listingCode" | "operationType" | "qualificationStatus" | "lastMessageDate" | "messageCount" | "income";
 type SortDirection = "asc" | "desc";
@@ -106,37 +144,23 @@ export function Leads() {
     const saved = localStorage.getItem("leads_visible_columns");
     if (saved) {
       try {
-        return JSON.parse(saved);
+        // Merge sobre los valores por defecto: así una columna nueva aparece
+        // también para quien ya tiene una preferencia guardada (que no la incluye).
+        return { ...DEFAULT_VISIBLE_COLUMNS, ...JSON.parse(saved) };
       } catch (e) {
         console.error("Error parsing visible columns", e);
       }
     }
-    return {
-      name: true,
-      phone: true,
-      email: false,
-      listingCode: true,
-      listingDescription: true,
-      operationType: true,
-      qualificationStatus: true,
-      consentStatus: true,
-      qualifiedAt: false,
-      lastMessageDate: true,
-      messageCount: true,
-      pets: false,
-      income: false,
-      paymentMethod: false,
-      conversationSummary: true,
-      notes: true,
-      chat: true,
-      tags: true,
-      actions: false
-    };
+    return { ...DEFAULT_VISIBLE_COLUMNS };
   });
 
   useEffect(() => {
     localStorage.setItem("leads_visible_columns", JSON.stringify(visibleColumns));
   }, [visibleColumns]);
+
+  // Referencia de "ahora" para la columna +48H. Se recalcula en cada render,
+  // que es suficiente para una columna informativa.
+  const nowMs = Date.now();
 
   useEffect(() => {
     if (adFromUrl) {
@@ -1408,6 +1432,7 @@ export function Leads() {
                       { id: "consentStatus", label: "Consentimiento" },
                       { id: "qualifiedAt", label: "Cualificacion" },
                       { id: "lastMessageDate", label: "Último Mensaje" },
+                      { id: "inactive48h", label: "+48H" },
                       { id: "messageCount", label: "Mensajes" },
                       { id: "pets", label: "Mascotas" },
                       { id: "income", label: "Ingresos mensuales" },
@@ -1692,6 +1717,11 @@ export function Leads() {
                           </div>
                         </th>
                       )}
+                      {visibleColumns.inactive48h && (
+                        <th className="px-3 py-2 text-center text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
+                          +48H
+                        </th>
+                      )}
                       {visibleColumns.messageCount && (
                         <th
                           className="px-3 py-2 text-center text-xs font-bold text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100 whitespace-nowrap font-heading"
@@ -1851,6 +1881,18 @@ export function Leads() {
                         {visibleColumns.lastMessageDate && (
                           <td className="px-3 py-3 whitespace-nowrap text-xs text-gray-500 cursor-pointer" onClick={() => openEditModal(lead)}>
                             {lead.lastMessageDate ? formatDate(lead.lastMessageDate.toDate()) : "—"}
+                          </td>
+                        )}
+                        {visibleColumns.inactive48h && (
+                          <td className="px-3 py-3 whitespace-nowrap text-center cursor-pointer" onClick={() => openEditModal(lead)}>
+                            <span
+                              className={cn(
+                                "text-xs font-medium",
+                                isInactive48h(lead, nowMs) ? "text-red-600" : "text-gray-400"
+                              )}
+                            >
+                              {isInactive48h(lead, nowMs) ? "Sí" : "No"}
+                            </span>
                           </td>
                         )}
                         {visibleColumns.messageCount && (
