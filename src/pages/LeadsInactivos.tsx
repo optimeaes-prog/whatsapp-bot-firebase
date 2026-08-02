@@ -1,5 +1,7 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+
+const API_PATH = "/api/leads-inactivos";
 
 /**
  * Página pública (sin login) con los leads de Venta, no cualificados y sin
@@ -18,31 +20,14 @@ type InactiveLeadRow = {
   lastMessageAtMs: number;
 };
 
-// Datos de ejemplo para montar la pantalla. Se sustituyen por la llamada real
-// al endpoint en la siguiente fase.
-const MOCK_ROWS: InactiveLeadRow[] = [
-  {
-    id: "1",
-    name: "María López",
-    phone: "+34 612 345 678",
-    listingDescription: "Piso Calle Mayor 12",
-    lastMessageAtMs: Date.now() - 51 * 60 * 60 * 1000,
-  },
-  {
-    id: "2",
-    name: "Javier Ruiz",
-    phone: "+34 699 112 233",
-    listingDescription: "Ático Avenida del Puerto",
-    lastMessageAtMs: Date.now() - 3.5 * 24 * 60 * 60 * 1000,
-  },
-  {
-    id: "3",
-    name: "",
-    phone: "+34 677 889 900",
-    listingDescription: "Chalet Las Rozas",
-    lastMessageAtMs: Date.now() - 9 * 24 * 60 * 60 * 1000,
-  },
-];
+/** Mensajes de error legibles para lo que puede devolver el endpoint. */
+const ERROR_MESSAGES: Record<string, string> = {
+  missing_token: "Falta el enlace de acceso (token).",
+  invalid_token: "El enlace ha caducado o no es válido. Pide uno nuevo.",
+  rate_limited: "Demasiadas peticiones. Vuelve a intentarlo en un minuto.",
+  not_configured: "El servicio no está disponible ahora mismo.",
+  query_failed: "No se pudo cargar la lista.",
+};
 
 /** "2 días 5 h" / "51 h" — tiempo transcurrido desde el último mensaje. */
 function formatTimeSince(fromMs: number, nowMs: number): string {
@@ -70,8 +55,52 @@ export function LeadsInactivos() {
     };
   }, []);
 
-  const nowMs = Date.now();
-  const rows = MOCK_ROWS;
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [rows, setRows] = useState<InactiveLeadRow[]>([]);
+  // Hora en la que el servidor generó la lista: los tiempos "sin responder" se
+  // calculan contra ella, no contra el reloj del navegador.
+  const [generatedAtMs, setGeneratedAtMs] = useState(() => Date.now());
+
+  const load = useCallback(async () => {
+    if (!token) {
+      setError(ERROR_MESSAGES.missing_token);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch(`${API_PATH}?token=${encodeURIComponent(token)}`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setError(ERROR_MESSAGES[j.error] || "No se pudo cargar la lista.");
+        setRows([]);
+        return;
+      }
+      if (!Array.isArray(j.leads)) {
+        // Respuesta 200 pero sin la lista: mejor avisar que enseñar un "no hay
+        // leads" que no es verdad.
+        setError("No se pudo cargar la lista.");
+        setRows([]);
+        return;
+      }
+      setRows(j.leads);
+      setGeneratedAtMs(typeof j.generatedAtMs === "number" ? j.generatedAtMs : Date.now());
+    } catch {
+      setError("Error de red al cargar la lista.");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   return (
     <div className="min-h-screen bg-slate-50 font-body text-slate-800 py-12 px-4">
@@ -83,13 +112,15 @@ export function LeadsInactivos() {
           Leads de venta, no cualificados y sin actividad desde hace más de 48 horas.
         </p>
 
-        {!token && (
+        {error && (
           <p className="text-sm text-red-600 mb-4" role="alert">
-            Falta el enlace de acceso (token).
+            {error}
           </p>
         )}
 
-        {rows.length === 0 ? (
+        {loading ? (
+          <p className="text-sm text-slate-500">Cargando…</p>
+        ) : error ? null : rows.length === 0 ? (
           <p className="text-sm text-slate-500">
             No hay leads sin respuesta ahora mismo.
           </p>
@@ -129,7 +160,7 @@ export function LeadsInactivos() {
                         {row.listingDescription || "—"}
                       </td>
                       <td className="px-3 py-3 text-sm text-red-600 text-right whitespace-nowrap">
-                        {formatTimeSince(row.lastMessageAtMs, nowMs)}
+                        {formatTimeSince(row.lastMessageAtMs, generatedAtMs)}
                       </td>
                     </tr>
                   ))}
