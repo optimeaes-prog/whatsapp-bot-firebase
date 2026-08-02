@@ -137,6 +137,8 @@ import {
 import { EMAIL_UNSUBSCRIBE_SECRET } from "./emailUnsubscribeParams";
 import { APP_BASE_URL } from "./appConfig";
 import { emailPreferencesApiHandler, emailUnsubscribeHandler } from "./emailPreferenceEndpoints";
+import { INACTIVE_LEADS_SECRET } from "./inactiveLeadsParams";
+import { inactiveLeadsApiHandler } from "./inactiveLeadsEndpoints";
 import {
   exchangeCodeForToken,
   storeAccessTokenInSecretManager,
@@ -8403,6 +8405,12 @@ export const emailPreferencesApi = onRequest(
 export const emailUnsubscribe = onRequest(
   { cors: true, region: REGION, secrets: [EMAIL_UNSUBSCRIBE_SECRET] },
   emailUnsubscribeHandler
+);
+
+/** JSON API behind the public "leads sin respuesta" page: GET ?token= */
+export const inactiveLeadsApi = onRequest(
+  { cors: true, region: REGION, secrets: [INACTIVE_LEADS_SECRET] },
+  inactiveLeadsApiHandler
 );
 
 /**

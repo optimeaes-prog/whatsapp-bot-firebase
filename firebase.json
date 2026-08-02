@@ -118,6 +118,13 @@
         }
       },
       {
+        "source": "/api/leads-inactivos",
+        "function": {
+          "functionId": "inactiveLeadsApi",
+          "region": "europe-west1"
+        }
+      },
+      {
         "source": "/api/auth/password-reset",
         "function": {
           "functionId": "passwordResetRequest",
