@@ -29,11 +29,12 @@ function timingSafeEqualStrings(a: string, b: string): boolean {
 }
 
 /**
- * 7 days. The link is re-minted on every daily reminder, so an agent always has
- * a fresh one; the TTL only limits how long an old message stays useful (and
- * how long a forwarded/leaked link keeps working).
+ * 48 hours. The link is the only credential (the page has no login), so anyone
+ * it gets forwarded to can read that org's list until it expires. A fresh link
+ * goes out with every daily reminder, so a short TTL costs the agent nothing
+ * and limits how long a leaked link keeps working.
  */
-export const INACTIVE_LEADS_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const INACTIVE_LEADS_TOKEN_TTL_MS = 48 * 60 * 60 * 1000;
 
 /**
  * Signed token: base64url(payloadJson).base64url(hmac)

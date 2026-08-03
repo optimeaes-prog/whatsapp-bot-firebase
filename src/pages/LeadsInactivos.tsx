@@ -171,7 +171,7 @@ export function LeadsInactivos() {
         )}
 
         <p className="text-xs text-slate-400 mt-6">
-          Esta lista se genera en el momento de abrir el enlace. El enlace caduca a los 7 días.
+          Esta lista se genera en el momento de abrir el enlace. El enlace caduca a las 48 horas.
         </p>
       </div>
     </div>
