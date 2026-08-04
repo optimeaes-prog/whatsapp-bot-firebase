@@ -158,7 +158,7 @@ export function Leads() {
     localStorage.setItem("leads_visible_columns", JSON.stringify(visibleColumns));
   }, [visibleColumns]);
 
-  // Referencia de "ahora" para la columna +48H. Se recalcula en cada render,
+  // Referencia de "ahora" para la columna "Inactivo". Se recalcula en cada render,
   // que es suficiente para una columna informativa.
   const nowMs = Date.now();
 
@@ -1432,7 +1432,7 @@ export function Leads() {
                       { id: "consentStatus", label: "Consentimiento" },
                       { id: "qualifiedAt", label: "Cualificacion" },
                       { id: "lastMessageDate", label: "Último Mensaje" },
-                      { id: "inactive48h", label: "+48H" },
+                      { id: "inactive48h", label: "Inactivo" },
                       { id: "messageCount", label: "Mensajes" },
                       { id: "pets", label: "Mascotas" },
                       { id: "income", label: "Ingresos mensuales" },
@@ -1719,7 +1719,7 @@ export function Leads() {
                       )}
                       {visibleColumns.inactive48h && (
                         <th className="px-3 py-2 text-center text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading">
-                          +48H
+                          Inactivo
                         </th>
                       )}
                       {visibleColumns.messageCount && (
