@@ -1,10 +1,19 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useCookieConsent } from "../contexts/CookieConsentContext";
 import { Button } from "./ui/Button";
 import { cn } from "../lib/utils";
 
+/**
+ * Páginas a las que se llega por un enlace firmado, sin sesión: se abren para
+ * mirar una cosa concreta y ya. No cargan analítica (el consentimiento arranca
+ * denegado en index.html y aquí nunca se concede), así que el banner solo
+ * estorbaría.
+ */
+const PATHS_WITHOUT_COOKIE_BANNER = ["/leads-inactivos"];
+
 export function CookieBanner() {
+  const { pathname } = useLocation();
   const {
     hasDecided,
     isPreferencesOpen,
@@ -21,6 +30,7 @@ export function CookieBanner() {
   // Capa 2 visible whenever user explicitly opens it (banner or footer link).
   const showLayer2 = isPreferencesOpen;
 
+  if (PATHS_WITHOUT_COOKIE_BANNER.includes(pathname)) return null;
   if (!showLayer1 && !showLayer2) return null;
 
   return (
