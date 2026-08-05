@@ -25,14 +25,15 @@ type InactiveLeadRow = {
 const PENDING_LISTING_CODE = "__pending__";
 
 /**
- * Qué enseñar en la columna "Anuncio". Preferimos la descripción; si no la hay
- * caemos al código, y si el lead entró por llamada sin inmueble asignado lo
- * decimos con palabras ("Pendiente") en lugar de dejar la celda vacía.
+ * Qué enseñar en la columna "Anuncio": la descripción del anuncio, igual que
+ * "Identificador Anuncio" en la tabla de Leads. Nunca el código interno, que al
+ * agente no le dice nada. Si el lead entró por llamada y todavía no tiene
+ * inmueble asignado, lo decimos con palabras.
  */
 function formatListing(row: InactiveLeadRow): string {
   if (row.listingDescription) return row.listingDescription;
   if (row.listingCode === PENDING_LISTING_CODE) return "Pendiente";
-  return row.listingCode || "—";
+  return "—";
 }
 
 /** Mensajes de error legibles para lo que puede devolver el endpoint. */
