@@ -25,6 +25,11 @@ export type InactiveLead = {
   phone: string;
   /** Listing description — shown as "Identificador Anuncio" in the Leads table. */
   listingDescription: string;
+  /**
+   * Código del anuncio. Puede ser "__pending__": leads que entran por llamada
+   * antes de asignarles un inmueble. La tabla de Leads los muestra como "Pend.".
+   */
+  listingCode: string;
   lastMessageAtMs: number;
   /** When we last told the agency about this lead, if ever. */
   inactivityNotifiedAtMs: number | null;
@@ -87,6 +92,7 @@ export async function listInactiveSalesLeads(orgId: string, nowMs: number): Prom
       name: typeof lead.name === "string" ? lead.name : "",
       phone: typeof lead.phone === "string" ? lead.phone : "",
       listingDescription: listing?.description || "",
+      listingCode,
       lastMessageAtMs,
       inactivityNotifiedAtMs: lead.inactivityNotifiedAt?.toMillis?.() ?? null,
     });

@@ -82,6 +82,7 @@ export async function inactiveLeadsApiHandler(req: Request, res: Response): Prom
         name: lead.name,
         phone: lead.phone,
         listingDescription: lead.listingDescription,
+        listingCode: lead.listingCode,
         lastMessageAtMs: lead.lastMessageAtMs,
       })),
     });

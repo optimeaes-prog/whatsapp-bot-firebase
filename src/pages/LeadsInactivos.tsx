@@ -17,8 +17,23 @@ type InactiveLeadRow = {
   phone: string;
   /** "Identificador Anuncio" en la tabla de Leads (descripción del anuncio). */
   listingDescription: string;
+  listingCode: string;
   lastMessageAtMs: number;
 };
+
+/** Código que lleva un lead que aún no tiene inmueble asignado. */
+const PENDING_LISTING_CODE = "__pending__";
+
+/**
+ * Qué enseñar en la columna "Anuncio". Preferimos la descripción; si no la hay
+ * caemos al código, y si el lead entró por llamada sin inmueble asignado lo
+ * decimos con palabras ("Pendiente") en lugar de dejar la celda vacía.
+ */
+function formatListing(row: InactiveLeadRow): string {
+  if (row.listingDescription) return row.listingDescription;
+  if (row.listingCode === PENDING_LISTING_CODE) return "Pendiente";
+  return row.listingCode || "—";
+}
 
 /** Mensajes de error legibles para lo que puede devolver el endpoint. */
 const ERROR_MESSAGES: Record<string, string> = {
@@ -157,7 +172,7 @@ export function LeadsInactivos() {
                         {row.phone || "—"}
                       </td>
                       <td className="px-3 py-3 text-sm text-gray-700">
-                        {row.listingDescription || "—"}
+                        {formatListing(row)}
                       </td>
                       <td className="px-3 py-3 text-sm text-red-600 text-right whitespace-nowrap">
                         {formatTimeSince(row.lastMessageAtMs, generatedAtMs)}
