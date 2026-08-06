@@ -137,8 +137,14 @@ import {
 import { EMAIL_UNSUBSCRIBE_SECRET } from "./emailUnsubscribeParams";
 import { APP_BASE_URL } from "./appConfig";
 import { emailPreferencesApiHandler, emailUnsubscribeHandler } from "./emailPreferenceEndpoints";
-import { INACTIVE_LEADS_SECRET } from "./inactiveLeadsParams";
+import {
+  INACTIVE_LEADS_SECRET,
+  INACTIVITY_ALERT_DRY_RUN,
+  INACTIVITY_ALERT_ONLY_ORG,
+  TWILIO_TEMPLATE_SID_INACTIVE_LEADS,
+} from "./inactiveLeadsParams";
 import { inactiveLeadsApiHandler } from "./inactiveLeadsEndpoints";
+import { runDailyInactiveLeadsAlert } from "./services/inactiveLeadsAlertService";
 import {
   exchangeCodeForToken,
   storeAccessTokenInSecretManager,
@@ -8412,6 +8418,44 @@ export const inactiveLeadsApi = onRequest(
   { cors: true, region: REGION, secrets: [INACTIVE_LEADS_SECRET] },
   inactiveLeadsApiHandler
 );
+
+/**
+ * Aviso diario de "leads sin respuesta" (09:00 Madrid): un WhatsApp por agencia
+ * que tenga leads fríos nuevos, con el enlace a su lista.
+ *
+ * Arranca en ensayo (INACTIVITY_ALERT_DRY_RUN=true): escribe en el log lo que
+ * enviaría y no envía nada. Para probar sin esperar a las 09:00 se puede forzar
+ * desde Cloud Scheduler ("Force run" sobre este job).
+ */
+export const sendDailyInactiveLeadsAlert = onSchedule({
+  schedule: "0 9 * * *",
+  region: REGION,
+  timeZone: "Europe/Madrid",
+  secrets: [TWILIO_AUTH_TOKEN, INACTIVE_LEADS_SECRET],
+  timeoutSeconds: 540,
+  memory: "512MiB",
+}, async () => {
+  try {
+    const dryRun = INACTIVITY_ALERT_DRY_RUN.value().trim().toLowerCase() !== "false";
+    const onlyOrgId = INACTIVITY_ALERT_ONLY_ORG.value().trim();
+    const summary = await runDailyInactiveLeadsAlert({
+      nowMs: Date.now(),
+      linkSecret: INACTIVE_LEADS_SECRET.value().trim(),
+      appBaseUrl: APP_BASE_URL.value(),
+      defaultTemplateSid: TWILIO_TEMPLATE_SID_INACTIVE_LEADS.value(),
+      envNotificationFallback: NOTIFICATION_NUMBER.value(),
+      dryRun,
+      onlyOrgId: onlyOrgId || undefined,
+    });
+    console.log(
+      `[inactiveLeadsAlert] dryRun=${summary.dryRun} onlyOrg=${onlyOrgId || "(todas)"} ` +
+        `orgs=${summary.orgsScanned} avisadas=${summary.orgsNotified} ` +
+        `mensajes=${summary.messagesSent} marcados=${summary.leadsMarked}`
+    );
+  } catch (error) {
+    console.error("[inactiveLeadsAlert] fatal error:", error);
+  }
+});
 
 /**
  * Periodic maintenance sync (every 30 minutes): retry failed messages and flag stale buffers.

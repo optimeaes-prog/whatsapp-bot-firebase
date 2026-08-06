@@ -285,6 +285,12 @@ export type TwilioTemplateNames = {
   voiceOptInConsent?: string;
   idealistaInitialEs?: string;
   idealistaInitialEn?: string;
+  /**
+   * Aviso diario de "leads sin respuesta" ({{1}} = cuántos, {{2}} = enlace a la
+   * página). Por org, porque cada cuenta de Twilio tiene sus propias plantillas;
+   * si falta se usa TWILIO_TEMPLATE_SID_INACTIVE_LEADS.
+   */
+  inactiveLeads?: string;
   /** Static template for returning-lead reconnect message (ES). Used as 24h-window fallback. */
   returningLeadEs?: string;
   /** Static template for returning-lead reconnect message (EN). Used as 24h-window fallback. */
