@@ -6,9 +6,9 @@ import { WhatsAppIconLink } from "../components/WhatsAppIconLink";
 const API_PATH = "/api/leads-inactivos";
 
 /**
- * Página pública (sin login) con los leads de Venta, no cualificados y sin
- * actividad en más de 48h de una organización. El acceso se valida con un token
- * firmado que llega en la URL (?t=), no con sesión de usuario.
+ * Página pública (sin login) con los leads de Venta y no cualificados de una
+ * organización que llevan entre 2 y 14 días sin responder. El acceso se valida
+ * con un token firmado que llega en la URL (?t=), no con sesión de usuario.
  *
  * Es informativa: no se envía nada desde aquí. Lo único que puede hacer el
  * agente es llamar o abrir el chat de WhatsApp del lead, porque casi siempre la
@@ -48,6 +48,12 @@ const ERROR_MESSAGES: Record<string, string> = {
   not_configured: "El servicio no está disponible ahora mismo.",
   query_failed: "No se pudo cargar la lista.",
 };
+
+/**
+ * Cuántos leads se ven de golpe. La lista se abre casi siempre desde el móvil,
+ * así que preferimos una pantalla corta y un botón a un scroll interminable.
+ */
+const PAGE_SIZE = 10;
 
 /** "2 días 5 h" / "51 h" — tiempo transcurrido desde el último mensaje. */
 function formatTimeSince(fromMs: number, nowMs: number): string {
@@ -169,6 +175,7 @@ export function LeadsInactivos() {
   // Hora en la que el servidor generó la lista: los tiempos "sin responder" se
   // calculan contra ella, no contra el reloj del navegador.
   const [generatedAtMs, setGeneratedAtMs] = useState(() => Date.now());
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const load = useCallback(async () => {
     if (!token) {
@@ -197,6 +204,7 @@ export function LeadsInactivos() {
         return;
       }
       setRows(j.leads);
+      setVisibleCount(PAGE_SIZE);
       setGeneratedAtMs(typeof j.generatedAtMs === "number" ? j.generatedAtMs : Date.now());
     } catch {
       setError("Error de red al cargar la lista.");
@@ -217,7 +225,7 @@ export function LeadsInactivos() {
           Leads sin respuesta
         </h1>
         <p className="text-sm text-slate-600 mb-6">
-          Leads de venta, no cualificados y sin actividad desde hace más de 48 horas.
+          Leads de venta no cualificados que llevan entre 2 y 14 días sin responder.
         </p>
 
         {error && (
@@ -231,21 +239,39 @@ export function LeadsInactivos() {
         ) : error ? null : rows.length === 0 ? (
           <p className="text-sm text-slate-500">No hay leads sin respuesta ahora mismo.</p>
         ) : (
-          <>
-            <p className="text-sm text-slate-500 mb-3">
-              {rows.length} {rows.length === 1 ? "lead" : "leads"}
-            </p>
+          (() => {
+            const visible = rows.slice(0, visibleCount);
+            const remaining = rows.length - visible.length;
+            return (
+              <>
+                <p className="text-sm text-slate-500 mb-3">
+                  {remaining > 0
+                    ? `Mostrando ${visible.length} de ${rows.length} leads`
+                    : `${rows.length} ${rows.length === 1 ? "lead" : "leads"}`}
+                </p>
 
-            {/* Móvil: tarjetas. Escritorio: tabla. */}
-            <div className="space-y-3 md:hidden">
-              {rows.map((row) => (
-                <LeadCard key={row.id} row={row} generatedAtMs={generatedAtMs} />
-              ))}
-            </div>
-            <div className="hidden md:block">
-              <LeadsTable rows={rows} generatedAtMs={generatedAtMs} />
-            </div>
-          </>
+                {/* Móvil: tarjetas. Escritorio: tabla. */}
+                <div className="space-y-3 md:hidden">
+                  {visible.map((row) => (
+                    <LeadCard key={row.id} row={row} generatedAtMs={generatedAtMs} />
+                  ))}
+                </div>
+                <div className="hidden md:block">
+                  <LeadsTable rows={visible} generatedAtMs={generatedAtMs} />
+                </div>
+
+                {remaining > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                    className="mt-4 w-full rounded-btn border border-gray-200 bg-white px-5 py-3 text-sm font-heading font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Ver más leads ({remaining} {remaining === 1 ? "restante" : "restantes"})
+                  </button>
+                )}
+              </>
+            );
+          })()
         )}
 
         <p className="text-xs text-slate-400 mt-6">

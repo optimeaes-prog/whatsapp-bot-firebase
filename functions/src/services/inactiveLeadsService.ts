@@ -13,8 +13,16 @@ function db() {
   return getFirestore(admin.app(), DB_NAME);
 }
 
-/** Same threshold the Leads table uses for its "+48H" column. */
-export const INACTIVITY_THRESHOLD_MS = 48 * 60 * 60 * 1000;
+/**
+ * Ventana de "lead frío": lleva más de 48h sin responder, pero menos de 14 días.
+ *
+ * El límite inferior es el mismo que usa la columna "Inactivo" de la tabla de
+ * Leads. El superior existe porque un lead que lleva dos meses callado ya no se
+ * recupera: sin él la lista solo crece y el recordatorio diario se vuelve ruido.
+ * Además hace que la lista se limpie sola, sin tener que archivar nada a mano.
+ */
+export const INACTIVITY_MIN_MS = 48 * 60 * 60 * 1000;
+export const INACTIVITY_MAX_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** Safety cap so one huge org can't blow up a request or the daily job. */
 const MAX_LEADS_SCANNED = 1000;
@@ -36,8 +44,8 @@ export type InactiveLead = {
 };
 
 /**
- * Leads of an org that are Venta + not qualified + silent for >48h, newest
- * first. Computed at call time — nothing is cached.
+ * Leads of an org that are Venta + not qualified + inside the inactivity window,
+ * newest first. Computed at call time — nothing is cached.
  *
  * Two rules worth spelling out because they mirror the Leads table:
  * - A lead with no `qualificationStatus` counts as "not qualified" (that's how
@@ -46,14 +54,16 @@ export type InactiveLead = {
  *   to the lead's own field, same as the frontend join.
  */
 export async function listInactiveSalesLeads(orgId: string, nowMs: number): Promise<InactiveLead[]> {
-  const cutoff = Timestamp.fromMillis(nowMs - INACTIVITY_THRESHOLD_MS);
+  const quietSince = Timestamp.fromMillis(nowMs - INACTIVITY_MIN_MS);
+  const tooOldBefore = Timestamp.fromMillis(nowMs - INACTIVITY_MAX_MS);
   const orgRef = db().collection("organizations").doc(orgId);
 
   // Leads without `lastMessageDate` are excluded by the query itself — we don't
   // know when they last wrote, so we can't call them cold.
   const leadsSnap = await orgRef
     .collection("leads")
-    .where("lastMessageDate", "<", cutoff)
+    .where("lastMessageDate", "<", quietSince)
+    .where("lastMessageDate", ">", tooOldBefore)
     .orderBy("lastMessageDate", "desc")
     .limit(MAX_LEADS_SCANNED)
     .get();
