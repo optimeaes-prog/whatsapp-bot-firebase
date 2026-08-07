@@ -8423,8 +8423,9 @@ export const inactiveLeadsApi = onRequest(
  * Aviso diario de "leads sin respuesta" (09:00 Madrid): un WhatsApp por agencia
  * que tenga leads fríos nuevos, con el enlace a su lista.
  *
- * Arranca en ensayo (INACTIVITY_ALERT_DRY_RUN=true): escribe en el log lo que
- * enviaría y no envía nada. Para probar sin esperar a las 09:00 se puede forzar
+ * Con INACTIVITY_ALERT_DRY_RUN="true" no envía nada y solo escribe en el log lo
+ * que enviaría; en producción va en "false". Para probar sin esperar a las 09:00
+ * se puede forzar
  * desde Cloud Scheduler ("Force run" sobre este job).
  */
 export const sendDailyInactiveLeadsAlert = onSchedule({
