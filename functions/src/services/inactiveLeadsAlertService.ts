@@ -44,6 +44,17 @@ export function isNewlyCold(lead: InactiveLead): boolean {
 }
 
 /**
+ * Solo marcamos leads cuando el aviso ha salido de verdad hacia la agencia.
+ *
+ * En ensayo no se envía nada, y con número de pruebas el mensaje va a nosotros,
+ * no a ellos: en los dos casos marcar dejaría al primer aviso real sin nada que
+ * contar, que parece una avería.
+ */
+export function shouldMarkLeads(opts: { dryRun: boolean; usingTestRecipient: boolean }): boolean {
+  return !opts.dryRun && !opts.usingTestRecipient;
+}
+
+/**
  * El texto tiene que decir lo mismo que la plantilla aprobada por Meta: cuando
  * la ventana de 24h está abierta se manda tal cual como mensaje libre, y cuando
  * está cerrada se manda la plantilla con estas variables. Por eso el enlace va
@@ -101,6 +112,11 @@ export async function runDailyInactiveLeadsAlert(params: {
   dryRun: boolean;
   /** Solo esta organización. Para probar sin tocar al resto de agencias. */
   onlyOrgId?: string;
+  /**
+   * ANDAMIO TEMPORAL — ver INACTIVITY_ALERT_TEST_NUMBER. Desvía el aviso a este
+   * número en lugar de a la agencia. Exige `onlyOrgId`.
+   */
+  testRecipient?: string;
 }): Promise<InactiveLeadsAlertSummary> {
   const summary: InactiveLeadsAlertSummary = {
     dryRun: params.dryRun,
@@ -113,6 +129,25 @@ export async function runDailyInactiveLeadsAlert(params: {
   if (!params.linkSecret) {
     console.error("[inactiveLeadsAlert] INACTIVE_LEADS_SECRET is empty; cannot mint links");
     return summary;
+  }
+
+  const testRecipient = (params.testRecipient || "").trim();
+  // Cerrojo: el desvío solo vale acotado a una organización. Si alguien pone el
+  // número y se olvida del orgId no seguimos, porque las dos lecturas posibles
+  // son malas: o mandar a todas las agencias algo que era una prueba, o
+  // secuestrar los avisos de todas hacia un móvil.
+  if (testRecipient && !params.onlyOrgId) {
+    console.error(
+      "[inactiveLeadsAlert] INACTIVITY_ALERT_TEST_NUMBER está puesto sin INACTIVITY_ALERT_ONLY_ORG; no se ejecuta nada"
+    );
+    return summary;
+  }
+  const usingTestRecipient = Boolean(testRecipient);
+  if (usingTestRecipient) {
+    console.warn(
+      `[inactiveLeadsAlert] ANDAMIO DE PRUEBAS ACTIVO: el aviso de ${params.onlyOrgId} se desvía a ` +
+        `${testRecipient} y la agencia no recibe nada. Quitar INACTIVITY_ALERT_TEST_NUMBER al terminar.`
+    );
   }
 
   const baseUrl = params.appBaseUrl.replace(/\/+$/, "");
@@ -148,6 +183,10 @@ export async function runDailyInactiveLeadsAlert(params: {
           return;
         }
 
+        // El desvío se aplica después de resolver los números de la agencia, para
+        // que el log siga enseñando a quién habría ido en un envío normal.
+        const targets = usingTestRecipient ? [testRecipient] : recipients;
+
         const templateSid = (botConfig.twilioTemplates?.inactiveLeads || params.defaultTemplateSid || "").trim();
         if (!templateSid) {
           console.warn(`[inactiveLeadsAlert] org=${orgId} has no template SID configured; skipping`);
@@ -163,7 +202,8 @@ export async function runDailyInactiveLeadsAlert(params: {
         if (params.dryRun) {
           console.log(
             `[inactiveLeadsAlert] DRY_RUN org=${orgId} leads=${leads.length} nuevos=${newly.length} ` +
-              `destinatarios=${recipients.join(", ")} template=${templateSid}`
+              `destinatarios=${targets.join(", ")} template=${templateSid}` +
+              (usingTestRecipient ? ` (desviado; la agencia sería ${recipients.join(", ")})` : "")
           );
           console.log(`[inactiveLeadsAlert] DRY_RUN mensaje:\n${body}`);
           summary.orgsNotified += 1;
@@ -171,7 +211,7 @@ export async function runDailyInactiveLeadsAlert(params: {
         }
 
         let sent = 0;
-        for (const to of recipients) {
+        for (const to of targets) {
           try {
             await sendAgentNotificationMessage({
               to,
@@ -194,6 +234,14 @@ export async function runDailyInactiveLeadsAlert(params: {
         }
 
         summary.orgsNotified += 1;
+
+        if (!shouldMarkLeads({ dryRun: params.dryRun, usingTestRecipient })) {
+          console.log(
+            `[inactiveLeadsAlert] org=${orgId} enviado a ${targets.join(", ")} sin marcar ` +
+              `(${leads.length} leads siguen pendientes para el primer aviso real)`
+          );
+          return;
+        }
         summary.leadsMarked += await markLeadsNotified(orgId, leads, params.nowMs);
       });
     } catch (e) {

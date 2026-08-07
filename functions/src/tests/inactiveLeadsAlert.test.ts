@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildInactiveLeadsMessage,
   isNewlyCold,
+  shouldMarkLeads,
 } from "../services/inactiveLeadsAlertService";
 import type { InactiveLead } from "../services/inactiveLeadsService";
 
@@ -52,6 +53,23 @@ test("message body matches the approved template and does not end on a variable"
   assert.ok(body.includes(`Consulta la lista aquí: ${url}`));
   assert.ok(body.trimEnd().endsWith("- Proplead"), "WhatsApp rejects a body ending in a variable");
   assert.deepEqual(variables, { "1": "3", "2": url });
+});
+
+test("a dry run never marks leads", () => {
+  assert.equal(shouldMarkLeads({ dryRun: true, usingTestRecipient: false }), false);
+});
+
+test("a send diverted to the test number never marks leads", () => {
+  // The agency did not receive it, so those leads must stay pending for the
+  // first genuine reminder.
+  assert.equal(shouldMarkLeads({ dryRun: false, usingTestRecipient: true }), false);
+  assert.equal(shouldMarkLeads({ dryRun: true, usingTestRecipient: true }), false);
+});
+
+test("a real send to the agency does mark leads", () => {
+  // The anti-repeat rule depends on this: without marking, the same reminder
+  // would go out every morning forever.
+  assert.equal(shouldMarkLeads({ dryRun: false, usingTestRecipient: false }), true);
 });
 
 test("the link travels in the body, not only in the template variables", () => {
