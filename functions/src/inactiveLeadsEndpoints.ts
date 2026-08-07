@@ -84,6 +84,8 @@ export async function inactiveLeadsApiHandler(req: Request, res: Response): Prom
         listingDescription: lead.listingDescription,
         listingCode: lead.listingCode,
         lastMessageAtMs: lead.lastMessageAtMs,
+        messageCount: lead.messageCount,
+        recentMessages: lead.recentMessages,
       })),
     });
   } catch (e) {

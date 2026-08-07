@@ -19,6 +19,9 @@ function lead(overrides: Partial<InactiveLead> = {}): InactiveLead {
     listingCode: "111993451",
     lastMessageAtMs: Date.now() - 3 * DAY,
     inactivityNotifiedAtMs: null,
+    chatId: "chat_34669643792",
+    messageCount: 3,
+    recentMessages: [],
     ...overrides,
   };
 }

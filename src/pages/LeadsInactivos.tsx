@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Phone, User } from "lucide-react";
+import { MessageSquare, Phone, User } from "lucide-react";
 import { WhatsAppIconLink } from "../components/WhatsAppIconLink";
 
 const API_PATH = "/api/leads-inactivos";
@@ -15,6 +15,13 @@ const API_PATH = "/api/leads-inactivos";
  * abrirá desde el móvil.
  */
 
+type RecentMessage = {
+  /** "user" es el lead; "assistant" somos nosotros. */
+  role: "user" | "assistant";
+  text: string;
+  atMs: number;
+};
+
 type InactiveLeadRow = {
   id: string;
   name: string;
@@ -23,6 +30,9 @@ type InactiveLeadRow = {
   listingDescription: string;
   listingCode: string;
   lastMessageAtMs: number;
+  /** Mensajes totales, como la columna "Mensajes" de la tabla de Leads. */
+  messageCount: number;
+  recentMessages: RecentMessage[];
 };
 
 /** Código que lleva un lead que aún no tiene inmueble asignado. */
@@ -88,8 +98,70 @@ function PhoneActions({ phone }: { phone: string }) {
   );
 }
 
+/**
+ * Botón para ver el final de la conversación, con el total de mensajes al lado.
+ * La idea es que el agente sepa por dónde se quedó la cosa antes de llamar.
+ */
+function ConversationToggle({
+  messageCount,
+  open,
+  onToggle,
+  disabled,
+}: {
+  messageCount: number;
+  open: boolean;
+  onToggle: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      title={disabled ? "Sin mensajes guardados" : open ? "Ocultar conversación" : "Ver conversación"}
+      className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 disabled:opacity-40 disabled:hover:text-slate-600"
+    >
+      <MessageSquare size={15} className="shrink-0" aria-hidden="true" />
+      <span>{messageCount}</span>
+    </button>
+  );
+}
+
+/** Los últimos mensajes, en burbujas: el lead a la izquierda, nosotros a la derecha. */
+function ConversationPreview({ messages }: { messages: RecentMessage[] }) {
+  return (
+    <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
+      {messages.map((message, i) => (
+        <div
+          key={`${message.atMs}-${i}`}
+          className={
+            message.role === "user"
+              ? "max-w-[85%] rounded-lg bg-slate-100 px-3 py-2"
+              : "ml-auto max-w-[85%] rounded-lg bg-emerald-50 px-3 py-2"
+          }
+        >
+          <p className="text-[11px] uppercase tracking-wide text-slate-400">
+            {message.role === "user" ? "Lead" : "Proplead"}
+          </p>
+          <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">{message.text}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Una tarjeta por lead. Es la vista de móvil, donde una tabla no cabe. */
-function LeadCard({ row, generatedAtMs }: { row: InactiveLeadRow; generatedAtMs: number }) {
+function LeadCard({
+  row,
+  generatedAtMs,
+  open,
+  onToggle,
+}: {
+  row: InactiveLeadRow;
+  generatedAtMs: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4">
       <div className="flex items-start gap-2">
@@ -105,12 +177,24 @@ function LeadCard({ row, generatedAtMs }: { row: InactiveLeadRow; generatedAtMs:
 
       <p className="mt-2 text-sm text-slate-600 break-words">{formatListing(row)}</p>
 
-      <div className="mt-3 flex items-center justify-between border-t border-gray-100 pt-2">
-        <span className="text-xs uppercase tracking-wide text-slate-400">Sin responder</span>
-        <span className="text-sm font-semibold text-red-600">
-          {formatTimeSince(row.lastMessageAtMs, generatedAtMs)}
-        </span>
+      <div className="mt-3 flex items-center justify-between gap-3 border-t border-gray-100 pt-2">
+        <ConversationToggle
+          messageCount={row.messageCount}
+          open={open}
+          onToggle={onToggle}
+          disabled={row.recentMessages.length === 0}
+        />
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="text-xs uppercase tracking-wide text-slate-400 whitespace-nowrap">
+            Sin responder
+          </span>
+          <span className="text-sm font-semibold text-red-600 whitespace-nowrap">
+            {formatTimeSince(row.lastMessageAtMs, generatedAtMs)}
+          </span>
+        </div>
       </div>
+
+      {open && row.recentMessages.length > 0 && <ConversationPreview messages={row.recentMessages} />}
     </div>
   );
 }
@@ -119,7 +203,17 @@ const TH_CLASS =
   "px-3 py-2 text-left text-xs font-bold text-gray-500 uppercase tracking-widest whitespace-nowrap font-heading";
 
 /** La misma lista en tabla, para pantallas anchas. */
-function LeadsTable({ rows, generatedAtMs }: { rows: InactiveLeadRow[]; generatedAtMs: number }) {
+function LeadsTable({
+  rows,
+  generatedAtMs,
+  openIds,
+  onToggle,
+}: {
+  rows: InactiveLeadRow[];
+  generatedAtMs: number;
+  openIds: Set<string>;
+  onToggle: (id: string) => void;
+}) {
   return (
     <div className="overflow-x-auto -mx-2">
       <table className="min-w-full">
@@ -128,24 +222,45 @@ function LeadsTable({ rows, generatedAtMs }: { rows: InactiveLeadRow[]; generate
             <th className={TH_CLASS}>Nombre</th>
             <th className={TH_CLASS}>Teléfono</th>
             <th className={TH_CLASS}>Anuncio</th>
+            <th className={TH_CLASS}>Mensajes</th>
             <th className={`${TH_CLASS} text-right`}>Sin responder</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.id} className="border-b border-gray-100 last:border-0">
-              <td className="px-3 py-3 text-sm text-gray-900 whitespace-nowrap">
-                {row.name || "Sin nombre"}
-              </td>
-              <td className="px-3 py-3 text-sm text-gray-700 whitespace-nowrap">
-                <PhoneActions phone={row.phone} />
-              </td>
-              <td className="px-3 py-3 text-sm text-gray-700">{formatListing(row)}</td>
-              <td className="px-3 py-3 text-sm text-red-600 text-right whitespace-nowrap">
-                {formatTimeSince(row.lastMessageAtMs, generatedAtMs)}
-              </td>
-            </tr>
-          ))}
+          {rows.map((row) => {
+            const open = openIds.has(row.id);
+            return (
+              <Fragment key={row.id}>
+                <tr className={open ? "border-b border-gray-100" : "border-b border-gray-100 last:border-0"}>
+                  <td className="px-3 py-3 text-sm text-gray-900 whitespace-nowrap">
+                    {row.name || "Sin nombre"}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-700 whitespace-nowrap">
+                    <PhoneActions phone={row.phone} />
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-700">{formatListing(row)}</td>
+                  <td className="px-3 py-3 text-sm text-gray-700 whitespace-nowrap">
+                    <ConversationToggle
+                      messageCount={row.messageCount}
+                      open={open}
+                      onToggle={() => onToggle(row.id)}
+                      disabled={row.recentMessages.length === 0}
+                    />
+                  </td>
+                  <td className="px-3 py-3 text-sm text-red-600 text-right whitespace-nowrap">
+                    {formatTimeSince(row.lastMessageAtMs, generatedAtMs)}
+                  </td>
+                </tr>
+                {open && row.recentMessages.length > 0 && (
+                  <tr className="border-b border-gray-100 last:border-0">
+                    <td colSpan={5} className="px-3 pb-4">
+                      <ConversationPreview messages={row.recentMessages} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -176,6 +291,18 @@ export function LeadsInactivos() {
   // calculan contra ella, no contra el reloj del navegador.
   const [generatedAtMs, setGeneratedAtMs] = useState(() => Date.now());
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  // Conversaciones desplegadas. Cerradas por defecto: la lista se lee de un
+  // vistazo y el hilo solo interesa justo antes de llamar a ese lead.
+  const [openConversations, setOpenConversations] = useState<Set<string>>(new Set());
+
+  const toggleConversation = useCallback((id: string) => {
+    setOpenConversations((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     if (!token) {
@@ -205,6 +332,7 @@ export function LeadsInactivos() {
       }
       setRows(j.leads);
       setVisibleCount(PAGE_SIZE);
+      setOpenConversations(new Set());
       setGeneratedAtMs(typeof j.generatedAtMs === "number" ? j.generatedAtMs : Date.now());
     } catch {
       setError("Error de red al cargar la lista.");
@@ -253,11 +381,22 @@ export function LeadsInactivos() {
                 {/* Móvil: tarjetas. Escritorio: tabla. */}
                 <div className="space-y-3 md:hidden">
                   {visible.map((row) => (
-                    <LeadCard key={row.id} row={row} generatedAtMs={generatedAtMs} />
+                    <LeadCard
+                      key={row.id}
+                      row={row}
+                      generatedAtMs={generatedAtMs}
+                      open={openConversations.has(row.id)}
+                      onToggle={() => toggleConversation(row.id)}
+                    />
                   ))}
                 </div>
                 <div className="hidden md:block">
-                  <LeadsTable rows={visible} generatedAtMs={generatedAtMs} />
+                  <LeadsTable
+                    rows={visible}
+                    generatedAtMs={generatedAtMs}
+                    openIds={openConversations}
+                    onToggle={toggleConversation}
+                  />
                 </div>
 
                 {remaining > 0 && (

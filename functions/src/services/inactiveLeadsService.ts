@@ -27,6 +27,23 @@ export const INACTIVITY_MAX_MS = 14 * 24 * 60 * 60 * 1000;
 /** Safety cap so one huge org can't blow up a request or the daily job. */
 const MAX_LEADS_SCANNED = 1000;
 
+/**
+ * Cuántos mensajes del final de la conversación se devuelven. Son para que el
+ * agente vea por dónde se quedó la cosa antes de llamar, no para leer el hilo
+ * entero: con los últimos cambios de turno basta y el payload no se dispara.
+ */
+const RECENT_MESSAGES = 6;
+
+/** Un mensaje muy largo se recorta: en la tarjeta no cabe igualmente. */
+const MAX_MESSAGE_CHARS = 400;
+
+export type RecentMessage = {
+  /** "user" es el lead; "assistant" somos nosotros. */
+  role: "user" | "assistant";
+  text: string;
+  atMs: number;
+};
+
 export type InactiveLead = {
   id: string;
   name: string;
@@ -41,6 +58,12 @@ export type InactiveLead = {
   lastMessageAtMs: number;
   /** When we last told the agency about this lead, if ever. */
   inactivityNotifiedAtMs: number | null;
+  /** Documento de conversación (el id del doc es el chatId). */
+  chatId: string;
+  /** Mensajes totales del hilo, como la columna "Mensajes" de la tabla de Leads. */
+  messageCount: number;
+  /** Los últimos mensajes, en orden cronológico. */
+  recentMessages: RecentMessage[];
 };
 
 /**
@@ -105,8 +128,57 @@ export async function listInactiveSalesLeads(orgId: string, nowMs: number): Prom
       listingCode,
       lastMessageAtMs,
       inactivityNotifiedAtMs: lead.inactivityNotifiedAt?.toMillis?.() ?? null,
+      chatId: typeof lead.chatId === "string" ? lead.chatId : "",
+      messageCount: 0,
+      recentMessages: [],
     });
   }
 
+  await attachConversations(orgRef, rows);
   return rows;
+}
+
+/**
+ * Añade el recuento de mensajes y el final de la conversación a cada lead.
+ *
+ * Pide solo los documentos que hacen falta (el id del doc de conversación es el
+ * chatId) en vez de leer la colección entera: una agencia puede tener miles de
+ * conversaciones y aquí como mucho hay unas decenas de leads.
+ */
+async function attachConversations(
+  orgRef: FirebaseFirestore.DocumentReference,
+  rows: InactiveLead[]
+): Promise<void> {
+  const byChatId = new Map<string, InactiveLead[]>();
+  for (const row of rows) {
+    if (!row.chatId) continue;
+    const list = byChatId.get(row.chatId);
+    if (list) list.push(row);
+    else byChatId.set(row.chatId, [row]);
+  }
+  if (byChatId.size === 0) return;
+
+  const refs = [...byChatId.keys()].map((chatId) => orgRef.collection("conversations").doc(chatId));
+  const snaps = await db().getAll(...refs);
+
+  for (const snap of snaps) {
+    if (!snap.exists) continue;
+    const data = snap.data() || {};
+    const history = Array.isArray(data.history) ? data.history : [];
+    const recent = history
+      .slice(-RECENT_MESSAGES)
+      .map((item: { role?: unknown; text?: unknown; timestamp?: unknown }): RecentMessage => ({
+        role: item.role === "assistant" ? "assistant" : "user",
+        text: typeof item.text === "string" ? item.text.slice(0, MAX_MESSAGE_CHARS) : "",
+        atMs: typeof item.timestamp === "number" ? item.timestamp : 0,
+      }))
+      .filter((m: RecentMessage) => m.text.length > 0);
+
+    const messageCount = typeof data.messageCount === "number" ? data.messageCount : history.length;
+
+    for (const row of byChatId.get(snap.id) || []) {
+      row.messageCount = messageCount;
+      row.recentMessages = recent;
+    }
+  }
 }
