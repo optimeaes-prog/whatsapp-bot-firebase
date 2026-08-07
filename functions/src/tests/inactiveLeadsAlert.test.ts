@@ -59,20 +59,15 @@ test("message body matches the approved template and does not end on a variable"
 });
 
 test("a dry run never marks leads", () => {
-  assert.equal(shouldMarkLeads({ dryRun: true, usingTestRecipient: false }), false);
-});
-
-test("a send diverted to the test number never marks leads", () => {
-  // The agency did not receive it, so those leads must stay pending for the
-  // first genuine reminder.
-  assert.equal(shouldMarkLeads({ dryRun: false, usingTestRecipient: true }), false);
-  assert.equal(shouldMarkLeads({ dryRun: true, usingTestRecipient: true }), false);
+  // Marking during a rehearsal would leave the first real reminder with nothing
+  // new to report, which looks like a broken job.
+  assert.equal(shouldMarkLeads({ dryRun: true }), false);
 });
 
 test("a real send to the agency does mark leads", () => {
   // The anti-repeat rule depends on this: without marking, the same reminder
   // would go out every morning forever.
-  assert.equal(shouldMarkLeads({ dryRun: false, usingTestRecipient: false }), true);
+  assert.equal(shouldMarkLeads({ dryRun: false }), true);
 });
 
 test("the link travels in the body, not only in the template variables", () => {

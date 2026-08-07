@@ -23,19 +23,6 @@ export const INACTIVITY_ALERT_DRY_RUN = defineString("INACTIVITY_ALERT_DRY_RUN",
  */
 export const INACTIVITY_ALERT_ONLY_ORG = defineString("INACTIVITY_ALERT_ONLY_ORG", { default: "" });
 
-/**
- * ANDAMIO TEMPORAL — quitar cuando el aviso esté rodado en producción.
- *
- * Número al que desviar el aviso para probarlo de verdad sin escribir a la
- * agencia. Solo se respeta si además hay INACTIVITY_ALERT_ONLY_ORG: así, aunque
- * alguien se lo deje puesto, nunca puede secuestrar los avisos de todas las
- * agencias a la vez. Con el desvío puesto el envío es real pero **no se marca
- * ningún lead**, para que el primer aviso de verdad los incluya todos.
- */
-export const INACTIVITY_ALERT_TEST_NUMBER = defineString("INACTIVITY_ALERT_TEST_NUMBER", {
-  default: "",
-});
-
 /** Plantilla de Twilio por defecto para el aviso (cada org puede sobrescribirla). */
 export const TWILIO_TEMPLATE_SID_INACTIVE_LEADS = defineString("TWILIO_TEMPLATE_SID_INACTIVE_LEADS", {
   default: "",

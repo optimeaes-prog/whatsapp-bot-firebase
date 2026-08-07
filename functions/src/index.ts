@@ -141,7 +141,6 @@ import {
   INACTIVE_LEADS_SECRET,
   INACTIVITY_ALERT_DRY_RUN,
   INACTIVITY_ALERT_ONLY_ORG,
-  INACTIVITY_ALERT_TEST_NUMBER,
   TWILIO_TEMPLATE_SID_INACTIVE_LEADS,
 } from "./inactiveLeadsParams";
 import { inactiveLeadsApiHandler } from "./inactiveLeadsEndpoints";
@@ -8447,7 +8446,6 @@ export const sendDailyInactiveLeadsAlert = onSchedule({
       envNotificationFallback: NOTIFICATION_NUMBER.value(),
       dryRun,
       onlyOrgId: onlyOrgId || undefined,
-      testRecipient: INACTIVITY_ALERT_TEST_NUMBER.value().trim() || undefined,
     });
     console.log(
       `[inactiveLeadsAlert] dryRun=${summary.dryRun} onlyOrg=${onlyOrgId || "(todas)"} ` +
