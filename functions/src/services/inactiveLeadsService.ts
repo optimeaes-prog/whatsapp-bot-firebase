@@ -58,6 +58,12 @@ export type InactiveLead = {
   lastMessageAtMs: number;
   /** When we last told the agency about this lead, if ever. */
   inactivityNotifiedAtMs: number | null;
+  /**
+   * Agente al que pertenece el lead. Se sincroniza desde el anuncio, y es el
+   * mismo campo por el que filtra la tabla de Leads cuando entra un agente.
+   * Vacío = sin asignar.
+   */
+  assignedAgentUid: string;
   /** Documento de conversación (el id del doc es el chatId). */
   chatId: string;
   /** Mensajes totales del hilo, como la columna "Mensajes" de la tabla de Leads. */
@@ -76,7 +82,14 @@ export type InactiveLead = {
  * - The operation type comes from the listing when we can find it, falling back
  *   to the lead's own field, same as the frontend join.
  */
-export async function listInactiveSalesLeads(orgId: string, nowMs: number): Promise<InactiveLead[]> {
+export async function listInactiveSalesLeads(
+  orgId: string,
+  nowMs: number,
+  opts?: {
+    /** Si viene, solo los leads de ese agente (enlace personal de un agente). */
+    agentUid?: string;
+  }
+): Promise<InactiveLead[]> {
   const quietSince = Timestamp.fromMillis(nowMs - INACTIVITY_MIN_MS);
   const tooOldBefore = Timestamp.fromMillis(nowMs - INACTIVITY_MAX_MS);
   const orgRef = db().collection("organizations").doc(orgId);
@@ -105,12 +118,18 @@ export async function listInactiveSalesLeads(orgId: string, nowMs: number): Prom
     });
   }
 
+  const wantedAgentUid = (opts?.agentUid || "").trim();
+
   const rows: InactiveLead[] = [];
   for (const doc of leadsSnap.docs) {
     const lead = doc.data();
 
     const qualificationStatus = lead.qualificationStatus || "not_qualified";
     if (qualificationStatus !== "not_qualified") continue;
+
+    const assignedAgentUid =
+      typeof lead.assignedAgentUid === "string" ? lead.assignedAgentUid.trim() : "";
+    if (wantedAgentUid && assignedAgentUid !== wantedAgentUid) continue;
 
     const listingCode = typeof lead.listingCode === "string" ? lead.listingCode.trim() : "";
     const listing = listingCode ? listingsByCode.get(listingCode) : undefined;
@@ -128,6 +147,7 @@ export async function listInactiveSalesLeads(orgId: string, nowMs: number): Prom
       listingCode,
       lastMessageAtMs,
       inactivityNotifiedAtMs: lead.inactivityNotifiedAt?.toMillis?.() ?? null,
+      assignedAgentUid,
       chatId: typeof lead.chatId === "string" ? lead.chatId : "",
       messageCount: 0,
       recentMessages: [],
@@ -136,6 +156,36 @@ export async function listInactiveSalesLeads(orgId: string, nowMs: number): Prom
 
   await attachConversations(orgRef, rows);
   return rows;
+}
+
+/**
+ * Nombre de cada agente, para poder decir de quién es cada lead en la lista
+ * completa. Mismo orden de preferencia que la pantalla de Organización.
+ *
+ * Solo hace falta para el enlace de la agencia: en el de un agente todas las
+ * filas serían suyas y repetir su nombre no aporta nada.
+ */
+export async function resolveAgentNames(
+  orgId: string,
+  agentUids: string[]
+): Promise<Map<string, string>> {
+  const uids = [...new Set(agentUids.filter(Boolean))];
+  const names = new Map<string, string>();
+  if (uids.length === 0) return names;
+
+  const snaps = await db().getAll(...uids.map((uid) => db().collection("users").doc(uid)));
+  for (const snap of snaps) {
+    if (!snap.exists) continue;
+    const data = snap.data() || {};
+    // Un usuario de otra organización no se nombra aquí: sería filtrar quién
+    // trabaja en otra agencia a quien abra este enlace.
+    if (data.orgId !== orgId) continue;
+    const name = [data.name, data.displayName, data.email].find(
+      (v) => typeof v === "string" && v.trim()
+    );
+    if (name) names.set(snap.id, String(name).trim());
+  }
+  return names;
 }
 
 /**

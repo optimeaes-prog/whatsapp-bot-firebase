@@ -3,7 +3,7 @@ import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 
 import { INACTIVE_LEADS_SECRET } from "./inactiveLeadsParams";
-import { listInactiveSalesLeads } from "./services/inactiveLeadsService";
+import { listInactiveSalesLeads, resolveAgentNames } from "./services/inactiveLeadsService";
 import { verifyInactiveLeadsToken } from "./services/inactiveLeadsToken";
 import { clientIpKey, enforceRateLimit } from "./utils/rateLimit";
 
@@ -74,9 +74,20 @@ export async function inactiveLeadsApiHandler(req: Request, res: Response): Prom
 
   try {
     const nowMs = Date.now();
-    const leads = await listInactiveSalesLeads(verified.orgId, nowMs);
+    const leads = await listInactiveSalesLeads(verified.orgId, nowMs, {
+      agentUid: verified.agentUid,
+    });
+
+    // El enlace de un agente ya es todo suyo: poner su nombre en cada fila solo
+    // ocuparía sitio. En el de la agencia sí hace falta saber de quién es cada lead.
+    const scopedToAgent = Boolean(verified.agentUid);
+    const agentNames = scopedToAgent
+      ? new Map<string, string>()
+      : await resolveAgentNames(verified.orgId, leads.map((lead) => lead.assignedAgentUid));
+
     res.status(200).json({
       generatedAtMs: nowMs,
+      scopedToAgent,
       leads: leads.map((lead) => ({
         id: lead.id,
         name: lead.name,
@@ -86,6 +97,9 @@ export async function inactiveLeadsApiHandler(req: Request, res: Response): Prom
         lastMessageAtMs: lead.lastMessageAtMs,
         messageCount: lead.messageCount,
         recentMessages: lead.recentMessages,
+        ...(scopedToAgent
+          ? {}
+          : { agentName: agentNames.get(lead.assignedAgentUid) || "" }),
       })),
     });
   } catch (e) {

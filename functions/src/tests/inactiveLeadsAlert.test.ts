@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildAudiences,
   buildInactiveLeadsMessage,
   isNewlyCold,
   shouldMarkLeads,
@@ -19,6 +20,7 @@ function lead(overrides: Partial<InactiveLead> = {}): InactiveLead {
     listingCode: "111993451",
     lastMessageAtMs: Date.now() - 3 * DAY,
     inactivityNotifiedAtMs: null,
+    assignedAgentUid: "",
     chatId: "chat_34669643792",
     messageCount: 3,
     recentMessages: [],
@@ -68,6 +70,61 @@ test("a real send to the agency does mark leads", () => {
   // The anti-repeat rule depends on this: without marking, the same reminder
   // would go out every morning forever.
   assert.equal(shouldMarkLeads({ dryRun: false }), true);
+});
+
+test("central gets every lead, each agent only their own", () => {
+  const jose = lead({ id: "l1", assignedAgentUid: "uid_jose" });
+  const paco = lead({ id: "l2", assignedAgentUid: "uid_paco" });
+  const unassigned = lead({ id: "l3", assignedAgentUid: "" });
+
+  const audiences = buildAudiences({
+    leads: [jose, paco, unassigned],
+    centralNumbers: ["34669354177", "34623021884"],
+    agentNumbers: new Map([["uid_jose", ["34604825903"]]]),
+  });
+
+  const central = audiences.find((a) => a.agentUid === "");
+  assert.deepEqual(central?.numbers, ["34669354177", "34623021884"]);
+  assert.deepEqual(central?.leads.map((l) => l.id), ["l1", "l2", "l3"]);
+
+  const joseAudience = audiences.find((a) => a.agentUid === "uid_jose");
+  assert.deepEqual(joseAudience?.numbers, ["34604825903"]);
+  assert.deepEqual(joseAudience?.leads.map((l) => l.id), ["l1"]);
+});
+
+test("an agent whose number is already central is not messaged twice", () => {
+  // Paco is on the central list, so he already receives the full list; a second
+  // message with a subset of it would be the same reminder again.
+  const audiences = buildAudiences({
+    leads: [lead({ id: "l1", assignedAgentUid: "uid_paco" })],
+    centralNumbers: ["+34 623 02 18 84"],
+    agentNumbers: new Map([["uid_paco", ["34623021884"]]]),
+  });
+
+  assert.equal(audiences.length, 1);
+  assert.equal(audiences[0].agentUid, "");
+});
+
+test("an agent with no configured number gets no message of their own", () => {
+  const audiences = buildAudiences({
+    leads: [lead({ id: "l1", assignedAgentUid: "uid_sin_numero" })],
+    centralNumbers: ["34669354177"],
+    agentNumbers: new Map(),
+  });
+
+  assert.equal(audiences.length, 1);
+  assert.equal(audiences[0].agentUid, "");
+});
+
+test("unassigned leads reach the agency but belong to no agent block", () => {
+  const audiences = buildAudiences({
+    leads: [lead({ id: "l1", assignedAgentUid: "" })],
+    centralNumbers: ["34669354177"],
+    agentNumbers: new Map(),
+  });
+
+  assert.equal(audiences.length, 1);
+  assert.deepEqual(audiences[0].leads.map((l) => l.id), ["l1"]);
 });
 
 test("the link travels in the body, not only in the template variables", () => {

@@ -43,7 +43,12 @@ export function resolveAssignedAgentUid(params: {
   return fromLead;
 }
 
-async function fetchAgentNotificationNumbers(params: {
+/**
+ * Números de WhatsApp de un agente ("resúmenes" en la pantalla de equipo).
+ * Devuelve vacío si el usuario no es de esta organización o si su rol es
+ * `member`. Exportada para reutilizarla en el aviso de leads sin respuesta.
+ */
+export async function fetchAgentNotificationNumbers(params: {
   db: Firestore;
   orgId: string;
   assignedUid: string;

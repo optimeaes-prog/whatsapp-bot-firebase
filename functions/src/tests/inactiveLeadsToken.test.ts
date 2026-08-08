@@ -10,7 +10,29 @@ const SECRET = "test-secret-inactive-leads";
 
 test("a token signed for an org verifies back to that same org", () => {
   const token = signInactiveLeadsToken("org-abc", SECRET);
-  assert.deepEqual(verifyInactiveLeadsToken(token, SECRET), { orgId: "org-abc" });
+  assert.deepEqual(verifyInactiveLeadsToken(token, SECRET), { orgId: "org-abc", agentUid: "" });
+});
+
+test("an agent-scoped token carries the agent back", () => {
+  const token = signInactiveLeadsToken("org-abc", SECRET, undefined, "uid_jose");
+  assert.deepEqual(verifyInactiveLeadsToken(token, SECRET), {
+    orgId: "org-abc",
+    agentUid: "uid_jose",
+  });
+});
+
+test("an agent cannot widen their own link to the whole agency", () => {
+  // Dropping the agent from the payload changes what the signature should be,
+  // so the edited link is rejected rather than showing everyone's leads.
+  const scoped = signInactiveLeadsToken("org-abc", SECRET, undefined, "uid_jose");
+  const [, sig] = scoped.split(".");
+  const widened = Buffer.from(JSON.stringify({ o: "org-abc", exp: Date.now() + 60_000 }), "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+  assert.equal(verifyInactiveLeadsToken(`${widened}.${sig}`, SECRET), null);
 });
 
 test("a token signed with a different secret is rejected", () => {

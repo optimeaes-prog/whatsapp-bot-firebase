@@ -5,15 +5,24 @@ import { getBotConfig } from "./firestore";
 import { listInactiveSalesLeads, type InactiveLead } from "./inactiveLeadsService";
 import { signInactiveLeadsToken } from "./inactiveLeadsToken";
 import { sendAgentNotificationMessage } from "./messagingProvider";
-import { resolveQualifiedLeadNotificationRecipients } from "./qualifiedLeadNotificationTargets";
+import {
+  fetchAgentNotificationNumbers,
+  normalizePhoneForDedupe,
+  resolveQualifiedLeadNotificationRecipients,
+} from "./qualifiedLeadNotificationTargets";
 import { requestContext } from "./requestContext";
 
 /**
  * Aviso diario de "leads sin respuesta".
  *
- * Una vez al día, por cada organización con al menos un lead frío *nuevo*, se
- * manda UN WhatsApp a los números de notificación de esa agencia con cuántos
- * son y un enlace firmado a la página. No es un mensaje por lead: sería ruido.
+ * Una vez al día, por cada organización con leads fríos *nuevos*:
+ *
+ * - a los números centrales les llega la lista entera de la agencia;
+ * - a cada agente con leads suyos le llega un mensaje con los suyos y un enlace
+ *   que solo enseña esos.
+ *
+ * Un agente cuyo número ya esté en los centrales no recibe el suyo aparte: ya
+ * ha visto la lista completa y serían dos mensajes para lo mismo.
  */
 
 const DB_NAME = "realestate-whatsapp-bot";
@@ -73,21 +82,68 @@ export function buildInactiveLeadsMessage(
   return { body, variables: { "1": String(leadCount), "2": pageUrl } };
 }
 
+/** A quién se avisa y con qué leads. `agentUid` vacío = la agencia entera. */
+export type AlertAudience = {
+  agentUid: string;
+  numbers: string[];
+  leads: InactiveLead[];
+};
+
+/**
+ * Reparte los leads en destinatarios: primero la agencia (todos), y luego un
+ * bloque por agente con los suyos.
+ *
+ * Un número que ya esté en los centrales se descarta del bloque del agente: esa
+ * persona ya recibe la lista completa, y mandarle además un recorte sería el
+ * mismo aviso dos veces.
+ */
+export function buildAudiences(params: {
+  leads: InactiveLead[];
+  centralNumbers: string[];
+  agentNumbers: Map<string, string[]>;
+}): AlertAudience[] {
+  const audiences: AlertAudience[] = [];
+
+  if (params.centralNumbers.length > 0) {
+    audiences.push({ agentUid: "", numbers: params.centralNumbers, leads: params.leads });
+  }
+
+  const centralFingerprints = new Set(params.centralNumbers.map(normalizePhoneForDedupe));
+
+  const leadsByAgent = new Map<string, InactiveLead[]>();
+  for (const lead of params.leads) {
+    if (!lead.assignedAgentUid) continue;
+    const list = leadsByAgent.get(lead.assignedAgentUid);
+    if (list) list.push(lead);
+    else leadsByAgent.set(lead.assignedAgentUid, [lead]);
+  }
+
+  for (const [agentUid, agentLeads] of leadsByAgent) {
+    const numbers = (params.agentNumbers.get(agentUid) || []).filter(
+      (n) => !centralFingerprints.has(normalizePhoneForDedupe(n))
+    );
+    if (numbers.length === 0) continue;
+    audiences.push({ agentUid, numbers, leads: agentLeads });
+  }
+
+  return audiences;
+}
+
 /** Marca los leads como avisados para no repetirlos mañana. */
 async function markLeadsNotified(
   orgId: string,
-  leads: InactiveLead[],
+  leadIds: string[],
   atMs: number
 ): Promise<number> {
   const leadsRef = db().collection("organizations").doc(orgId).collection("leads");
   const stamp = Timestamp.fromMillis(atMs);
   let written = 0;
 
-  for (let i = 0; i < leads.length; i += MARKER_BATCH_SIZE) {
-    const chunk = leads.slice(i, i + MARKER_BATCH_SIZE);
+  for (let i = 0; i < leadIds.length; i += MARKER_BATCH_SIZE) {
+    const chunk = leadIds.slice(i, i + MARKER_BATCH_SIZE);
     const batch = db().batch();
-    for (const lead of chunk) {
-      batch.set(leadsRef.doc(lead.id), { inactivityNotifiedAt: stamp }, { merge: true });
+    for (const leadId of chunk) {
+      batch.set(leadsRef.doc(leadId), { inactivityNotifiedAt: stamp }, { merge: true });
     }
     await batch.commit();
     written += chunk.length;
@@ -164,40 +220,78 @@ export async function runDailyInactiveLeadsAlert(params: {
           return;
         }
 
-        // Enlace nuevo en cada envío: caduca a las 48h, así que reutilizar uno
-        // viejo dejaría al agente con un enlace muerto.
-        const token = signInactiveLeadsToken(orgId, params.linkSecret);
-        const pageUrl = `${baseUrl}/leads-inactivos?t=${encodeURIComponent(token)}`;
-        const { body, variables } = buildInactiveLeadsMessage(leads.length, pageUrl);
+        // Números de cada agente que tenga leads en la lista. Se resuelven
+        // ANTES de enviar nada, para que todos los mensajes salgan de la misma
+        // foto de leads.
+        const agentUids = [...new Set(leads.map((l) => l.assignedAgentUid).filter(Boolean))];
+        const agentNumbers = new Map<string, string[]>();
+        for (const agentUid of agentUids) {
+          const numbers = await fetchAgentNotificationNumbers({ db: db(), orgId, assignedUid: agentUid });
+          if (numbers.length > 0) agentNumbers.set(agentUid, numbers);
+        }
+
+        const audiences = buildAudiences({ leads, centralNumbers: recipients, agentNumbers });
 
         if (params.dryRun) {
           console.log(
             `[inactiveLeadsAlert] DRY_RUN org=${orgId} leads=${leads.length} nuevos=${newly.length} ` +
-              `destinatarios=${recipients.join(", ")} template=${templateSid}`
+              `avisos=${audiences.length} template=${templateSid}`
           );
-          console.log(`[inactiveLeadsAlert] DRY_RUN mensaje:\n${body}`);
+          for (const audience of audiences) {
+            const who = audience.agentUid ? `agente ${audience.agentUid}` : "central";
+            console.log(
+              `[inactiveLeadsAlert] DRY_RUN ${who}: ${audience.leads.length} leads → ${audience.numbers.join(", ")}`
+            );
+          }
           summary.orgsNotified += 1;
           return;
         }
 
-        let sent = 0;
-        for (const to of recipients) {
-          try {
-            await sendAgentNotificationMessage({
-              to,
-              body,
-              templateSid,
-              twilioTemplateVariables: variables,
-              context: "inactive_leads_alert",
-            });
-            sent += 1;
-          } catch (e) {
-            console.error(`[inactiveLeadsAlert] send failed org=${orgId}`, e);
+        // Solo se marcan los leads que han entrado en un mensaje que salió. Si
+        // falla el de un agente, sus leads siguen pendientes y mañana se le
+        // vuelve a avisar, aunque el mensaje central sí haya salido.
+        const notifiedLeadIds = new Set<string>();
+        let sentForOrg = 0;
+
+        for (const audience of audiences) {
+          // Enlace nuevo por destinatario: caduca a las 48h, y el del agente va
+          // firmado con su uid para que solo enseñe sus leads.
+          const token = signInactiveLeadsToken(
+            orgId,
+            params.linkSecret,
+            undefined,
+            audience.agentUid || undefined
+          );
+          const pageUrl = `${baseUrl}/leads-inactivos?t=${encodeURIComponent(token)}`;
+          const { body, variables } = buildInactiveLeadsMessage(audience.leads.length, pageUrl);
+
+          let sentForAudience = 0;
+          for (const to of audience.numbers) {
+            try {
+              await sendAgentNotificationMessage({
+                to,
+                body,
+                templateSid,
+                twilioTemplateVariables: variables,
+                context: "inactive_leads_alert",
+              });
+              sentForAudience += 1;
+            } catch (e) {
+              console.error(
+                `[inactiveLeadsAlert] send failed org=${orgId} agente=${audience.agentUid || "central"}`,
+                e
+              );
+            }
+          }
+
+          sentForOrg += sentForAudience;
+          if (sentForAudience > 0) {
+            for (const lead of audience.leads) notifiedLeadIds.add(lead.id);
           }
         }
 
-        summary.messagesSent += sent;
-        if (sent === 0) {
+        summary.messagesSent += sentForOrg;
+        if (notifiedLeadIds.size === 0) {
           // No se enteró nadie: no marcamos, para volver a intentarlo mañana.
           console.error(`[inactiveLeadsAlert] org=${orgId} every send failed; leads left unmarked`);
           return;
@@ -208,7 +302,7 @@ export async function runDailyInactiveLeadsAlert(params: {
         // Redundante hoy (el ensayo ya ha salido antes de enviar), pero deja la
         // regla dicha en un sitio con nombre: solo se marca lo que se ha enviado.
         if (!shouldMarkLeads({ dryRun: params.dryRun })) return;
-        summary.leadsMarked += await markLeadsNotified(orgId, leads, params.nowMs);
+        summary.leadsMarked += await markLeadsNotified(orgId, [...notifiedLeadIds], params.nowMs);
       });
     } catch (e) {
       console.error(`[inactiveLeadsAlert] org=${orgId} failed`, e);

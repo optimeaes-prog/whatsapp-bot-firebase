@@ -8,6 +8,9 @@ import { signInactiveLeadsToken } from "../services/inactiveLeadsToken";
  *   npm run build
  *   INACTIVE_LEADS_SECRET=... node lib/scripts/mintInactiveLeadsLink.js --org=<orgId>
  *
+ * Con --agent=<uid> el enlace solo enseña los leads de ese agente, igual que el
+ * que recibe él en su WhatsApp.
+ *
  * El secreto tiene que ser el mismo que hay en Secret Manager
  * (INACTIVE_LEADS_SECRET), o el servidor rechazará el token.
  */
@@ -32,7 +35,8 @@ function main(): void {
     process.exit(1);
   }
 
-  const token = signInactiveLeadsToken(orgId, secret);
+  const agentUid = (getArg("agent") || "").trim();
+  const token = signInactiveLeadsToken(orgId, secret, undefined, agentUid || undefined);
   console.log(`${baseUrl}/leads-inactivos?t=${encodeURIComponent(token)}`);
 }
 

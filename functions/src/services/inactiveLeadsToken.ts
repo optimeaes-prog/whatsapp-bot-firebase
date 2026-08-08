@@ -38,29 +38,41 @@ export const INACTIVE_LEADS_TOKEN_TTL_MS = 48 * 60 * 60 * 1000;
 
 /**
  * Signed token: base64url(payloadJson).base64url(hmac)
- * Payload: { o: orgId, exp: ms epoch }
+ * Payload: { o: orgId, a?: agentUid, exp: ms epoch }
+ *
+ * Con `a` el enlace solo enseña los leads de ese agente. Va firmado con el
+ * resto, así que nadie puede quitarlo ni cambiarlo para ver los de otro.
  */
 export function signInactiveLeadsToken(
   orgId: string,
   secret: string,
-  ttlMs = INACTIVE_LEADS_TOKEN_TTL_MS
+  ttlMs = INACTIVE_LEADS_TOKEN_TTL_MS,
+  agentUid?: string
 ): string {
   const o = orgId.trim();
   if (!o) throw new Error("signInactiveLeadsToken: orgId is required");
-  const payload = JSON.stringify({ o, exp: Date.now() + ttlMs });
+  const a = (agentUid || "").trim();
+  const payload = JSON.stringify(a ? { o, a, exp: Date.now() + ttlMs } : { o, exp: Date.now() + ttlMs });
   const payloadB64 = base64UrlEncode(Buffer.from(payload, "utf8"));
   const sig = base64UrlEncode(crypto.createHmac("sha256", secret).update(payloadB64).digest());
   return `${payloadB64}.${sig}`;
 }
 
-export function verifyInactiveLeadsToken(token: string, secret: string): { orgId: string } | null {
+/**
+ * `agentUid` vacío = enlace de la agencia entera. Los enlaces firmados antes de
+ * existir el campo siguen valiendo y significan justo eso.
+ */
+export function verifyInactiveLeadsToken(
+  token: string,
+  secret: string
+): { orgId: string; agentUid: string } | null {
   const parts = token.split(".");
   if (parts.length !== 2) return null;
   const [payloadB64, sig] = parts;
   if (!payloadB64 || !sig) return null;
   const expectedSig = base64UrlEncode(crypto.createHmac("sha256", secret).update(payloadB64).digest());
   if (!timingSafeEqualStrings(sig, expectedSig)) return null;
-  let payload: { o?: string; exp?: number };
+  let payload: { o?: string; a?: string; exp?: number };
   try {
     payload = JSON.parse(base64UrlDecodeToBuffer(payloadB64).toString("utf8"));
   } catch {
@@ -69,5 +81,5 @@ export function verifyInactiveLeadsToken(token: string, secret: string): { orgId
   if (!payload.o || typeof payload.o !== "string") return null;
   if (typeof payload.exp !== "number") return null;
   if (payload.exp < Date.now()) return null;
-  return { orgId: payload.o };
+  return { orgId: payload.o, agentUid: typeof payload.a === "string" ? payload.a : "" };
 }

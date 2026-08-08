@@ -33,7 +33,15 @@ type InactiveLeadRow = {
   /** Mensajes totales, como la columna "Mensajes" de la tabla de Leads. */
   messageCount: number;
   recentMessages: RecentMessage[];
+  /**
+   * Agente al que pertenece el lead. Solo llega en el enlace de la agencia: en
+   * el de un agente todas las filas son suyas y repetir su nombre sobra.
+   */
+  agentName?: string;
 };
+
+/** Lo que se enseña cuando un lead no tiene agente asignado todavía. */
+const UNASSIGNED_AGENT_LABEL = "Sin asignar";
 
 /** Código que lleva un lead que aún no tiene inmueble asignado. */
 const PENDING_LISTING_CODE = "__pending__";
@@ -151,16 +159,35 @@ function ConversationPreview({ messages }: { messages: RecentMessage[] }) {
 }
 
 /** Una tarjeta por lead. Es la vista de móvil, donde una tabla no cabe. */
+/** Etiqueta con el agente del lead. Vacía si el enlace ya es de un agente. */
+function AgentBadge({ row, show }: { row: InactiveLeadRow; show: boolean }) {
+  if (!show) return null;
+  const name = row.agentName?.trim();
+  return (
+    <span
+      className={
+        name
+          ? "inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
+          : "inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700"
+      }
+    >
+      {name || UNASSIGNED_AGENT_LABEL}
+    </span>
+  );
+}
+
 function LeadCard({
   row,
   generatedAtMs,
   open,
   onToggle,
+  showAgent,
 }: {
   row: InactiveLeadRow;
   generatedAtMs: number;
   open: boolean;
   onToggle: () => void;
+  showAgent: boolean;
 }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4">
@@ -175,7 +202,10 @@ function LeadCard({
         <PhoneActions phone={row.phone} />
       </div>
 
-      <p className="mt-2 text-sm text-slate-600 break-words">{formatListing(row)}</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <p className="text-sm text-slate-600 break-words">{formatListing(row)}</p>
+        <AgentBadge row={row} show={showAgent} />
+      </div>
 
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-gray-100 pt-2">
         <ConversationToggle
@@ -208,12 +238,15 @@ function LeadsTable({
   generatedAtMs,
   openIds,
   onToggle,
+  showAgent,
 }: {
   rows: InactiveLeadRow[];
   generatedAtMs: number;
   openIds: Set<string>;
   onToggle: (id: string) => void;
+  showAgent: boolean;
 }) {
+  const columnCount = showAgent ? 6 : 5;
   return (
     <div className="overflow-x-auto -mx-2">
       <table className="min-w-full">
@@ -222,6 +255,7 @@ function LeadsTable({
             <th className={TH_CLASS}>Nombre</th>
             <th className={TH_CLASS}>Teléfono</th>
             <th className={TH_CLASS}>Anuncio</th>
+            {showAgent && <th className={TH_CLASS}>Agente</th>}
             <th className={TH_CLASS}>Mensajes</th>
             <th className={`${TH_CLASS} text-right`}>Sin responder</th>
           </tr>
@@ -239,6 +273,11 @@ function LeadsTable({
                     <PhoneActions phone={row.phone} />
                   </td>
                   <td className="px-3 py-3 text-sm text-gray-700">{formatListing(row)}</td>
+                  {showAgent && (
+                    <td className="px-3 py-3 text-sm whitespace-nowrap">
+                      <AgentBadge row={row} show />
+                    </td>
+                  )}
                   <td className="px-3 py-3 text-sm text-gray-700 whitespace-nowrap">
                     <ConversationToggle
                       messageCount={row.messageCount}
@@ -253,7 +292,7 @@ function LeadsTable({
                 </tr>
                 {open && row.recentMessages.length > 0 && (
                   <tr className="border-b border-gray-100 last:border-0">
-                    <td colSpan={5} className="px-3 pb-4">
+                    <td colSpan={columnCount} className="px-3 pb-4">
                       <ConversationPreview messages={row.recentMessages} />
                     </td>
                   </tr>
@@ -290,6 +329,9 @@ export function LeadsInactivos() {
   // Hora en la que el servidor generó la lista: los tiempos "sin responder" se
   // calculan contra ella, no contra el reloj del navegador.
   const [generatedAtMs, setGeneratedAtMs] = useState(() => Date.now());
+  // Enlace de un agente: todas las filas son suyas, así que no se enseña de
+  // quién es cada lead.
+  const [scopedToAgent, setScopedToAgent] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   // Conversaciones desplegadas. Cerradas por defecto: la lista se lee de un
   // vistazo y el hilo solo interesa justo antes de llamar a ese lead.
@@ -331,6 +373,7 @@ export function LeadsInactivos() {
         return;
       }
       setRows(j.leads);
+      setScopedToAgent(Boolean(j.scopedToAgent));
       setVisibleCount(PAGE_SIZE);
       setOpenConversations(new Set());
       setGeneratedAtMs(typeof j.generatedAtMs === "number" ? j.generatedAtMs : Date.now());
@@ -387,6 +430,7 @@ export function LeadsInactivos() {
                       generatedAtMs={generatedAtMs}
                       open={openConversations.has(row.id)}
                       onToggle={() => toggleConversation(row.id)}
+                      showAgent={!scopedToAgent}
                     />
                   ))}
                 </div>
@@ -396,6 +440,7 @@ export function LeadsInactivos() {
                     generatedAtMs={generatedAtMs}
                     openIds={openConversations}
                     onToggle={toggleConversation}
+                    showAgent={!scopedToAgent}
                   />
                 </div>
 
