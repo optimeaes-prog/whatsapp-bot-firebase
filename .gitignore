@@ -44,3 +44,6 @@ functions/lib/
 
 # Local Claude worktrees
 .claude/worktrees/
+
+# Obsidian local workspace (editor state, not project config)
+.obsidian/
