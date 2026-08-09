@@ -54,6 +54,18 @@ export function isNewlyCold(lead: InactiveLead): boolean {
 }
 
 /**
+ * Si esta organización recibe aviso hoy.
+ *
+ * `leads` ya viene sin los marcados como "Contactado": la consulta los quita.
+ * Así que si el agente marca todos, aquí llega vacío y no se manda nada — que
+ * es justo lo que se espera cuando ya ha hablado con todos.
+ */
+export function shouldNotifyOrg(leads: InactiveLead[]): boolean {
+  if (leads.length === 0) return false;
+  return leads.some(isNewlyCold);
+}
+
+/**
  * Solo marcamos leads cuando el aviso ha salido de verdad hacia la agencia.
  *
  * En ensayo no se envía nada, así que marcar dejaría al primer aviso real sin
@@ -207,10 +219,9 @@ export async function runDailyInactiveLeadsAlert(params: {
       // getActiveOrgId() tiene que ver ESTA organización y no la anterior.
       await requestContext.run({ orgId }, async () => {
         const leads = await listInactiveSalesLeads(orgId, params.nowMs);
-        if (leads.length === 0) return;
+        if (!shouldNotifyOrg(leads)) return;
 
         const newly = leads.filter(isNewlyCold);
-        if (newly.length === 0) return;
 
         const botConfig = await getBotConfig();
         const recipients = await resolveQualifiedLeadNotificationRecipients({

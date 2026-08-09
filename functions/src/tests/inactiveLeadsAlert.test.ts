@@ -6,6 +6,7 @@ import {
   buildInactiveLeadsMessage,
   isNewlyCold,
   shouldMarkLeads,
+  shouldNotifyOrg,
 } from "../services/inactiveLeadsAlertService";
 import type { InactiveLead } from "../services/inactiveLeadsService";
 
@@ -71,6 +72,25 @@ test("a real send to the agency does mark leads", () => {
   // The anti-repeat rule depends on this: without marking, the same reminder
   // would go out every morning forever.
   assert.equal(shouldMarkLeads({ dryRun: false }), true);
+});
+
+test("no message when every lead has been marked as contactado", () => {
+  // The query drops leads marked "Contactado", so an agent who has rung all of
+  // them leaves an empty list here — and nothing should go out tomorrow.
+  assert.equal(shouldNotifyOrg([]), false);
+});
+
+test("no message when nothing is newly cold", () => {
+  const now = Date.now();
+  const alreadyReported = lead({ lastMessageAtMs: now - 3 * DAY, inactivityNotifiedAtMs: now - 2 * DAY });
+  assert.equal(shouldNotifyOrg([alreadyReported]), false);
+});
+
+test("one newly cold lead is enough to send", () => {
+  const now = Date.now();
+  const alreadyReported = lead({ id: "old", lastMessageAtMs: now - 3 * DAY, inactivityNotifiedAtMs: now - 2 * DAY });
+  const fresh = lead({ id: "new", inactivityNotifiedAtMs: null });
+  assert.equal(shouldNotifyOrg([alreadyReported, fresh]), true);
 });
 
 test("central gets every lead, each agent only their own", () => {

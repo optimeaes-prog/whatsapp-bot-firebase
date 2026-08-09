@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { Check, MessageSquare, Phone, User } from "lucide-react";
+import { Archive, MessageSquare, Phone, User } from "lucide-react";
 import { WhatsAppIconLink } from "../components/WhatsAppIconLink";
 
 const API_PATH = "/api/leads-inactivos";
@@ -163,8 +163,12 @@ function ConversationPreview({ messages }: { messages: RecentMessage[] }) {
 
 /** Una tarjeta por lead. Es la vista de móvil, donde una tabla no cabe. */
 /**
- * Botón "Contactado". Marcar es definitivo, así que se pregunta antes; el
- * "Deshacer" de después cubre el haber confirmado sin querer.
+ * Icono de archivar: marca el lead como contactado y lo saca de la lista.
+ *
+ * Va sin texto, así que el nombre accesible y el tooltip son lo único que
+ * explica qué hace antes de pulsarlo; el diálogo de confirmación lo dice del
+ * todo. Marcar es definitivo, de ahí la confirmación, y el "Deshacer" cubre el
+ * haber confirmado sin querer.
  */
 function ContactedButton({ onClick, busy }: { onClick: () => void; busy: boolean }) {
   return (
@@ -172,10 +176,11 @@ function ContactedButton({ onClick, busy }: { onClick: () => void; busy: boolean
       type="button"
       onClick={onClick}
       disabled={busy}
-      className="inline-flex items-center justify-center gap-1.5 rounded-btn border border-gray-200 bg-white px-3 py-2 text-sm font-heading font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+      title="Marcar como contactado"
+      aria-label="Marcar como contactado"
+      className="inline-flex items-center justify-center rounded-btn border border-gray-200 bg-white p-2 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
     >
-      <Check size={15} className="shrink-0" aria-hidden="true" />
-      Contactado
+      <Archive size={16} className="shrink-0" aria-hidden="true" />
     </button>
   );
 }
@@ -287,9 +292,12 @@ function LeadCard({
     <div className="rounded-xl border border-gray-200 bg-white p-4">
       <div className="flex items-start gap-2">
         <User size={16} className="mt-0.5 shrink-0 text-slate-400" aria-hidden="true" />
-        <p className="text-sm font-semibold text-gray-900 break-words">
+        <p className="min-w-0 flex-1 text-sm font-semibold text-gray-900 break-words">
           {row.name || "Sin nombre"}
         </p>
+        {/* Arriba a la derecha, separado de llamar y de WhatsApp: es la acción
+            que quita el lead de la lista y no conviene tenerla al lado. */}
+        <ContactedButton onClick={onContacted} busy={busy} />
       </div>
 
       <div className="mt-2 text-sm">
@@ -319,12 +327,6 @@ function LeadCard({
       </div>
 
       {open && row.recentMessages.length > 0 && <ConversationPreview messages={row.recentMessages} />}
-
-      <div className="mt-3 flex">
-        <div className="ml-auto">
-          <ContactedButton onClick={onContacted} busy={busy} />
-        </div>
-      </div>
     </div>
   );
 }
@@ -366,6 +368,11 @@ function LeadsTable({
             {showAgent && <th className={TH_CLASS}>Agente</th>}
             <th className={TH_CLASS}>Mensajes</th>
             <th className={`${TH_CLASS} text-right`}>Sin responder</th>
+            {/* Columna del icono de archivar: sin título visible, pero la
+                cabecera tiene que existir o las columnas se desalinean. */}
+            <th className={TH_CLASS}>
+              <span className="sr-only">Acciones</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -621,7 +628,10 @@ export function LeadsInactivos() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-body text-slate-800 py-8 px-4 sm:py-12">
-      <div className="max-w-3xl mx-auto card p-5 sm:p-8">
+      {/* En móvil son tarjetas y basta con poco ancho; en escritorio la tabla
+          tiene siete columnas y a 3xl había que hacer scroll lateral para ver
+          el icono de archivar. */}
+      <div className="max-w-3xl md:max-w-5xl mx-auto card p-5 sm:p-8">
         <h1 className="text-2xl font-heading font-bold text-[var(--TITLE,#402e32)] mb-2">
           Leads sin respuesta
         </h1>
