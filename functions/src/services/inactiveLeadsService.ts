@@ -64,6 +64,12 @@ export type InactiveLead = {
    * Vacío = sin asignar.
    */
   assignedAgentUid: string;
+  /**
+   * Cuándo alguien marcó el lead como "Contactado" desde la página. A partir de
+   * ahí el lead deja de salir en esta lista para siempre: el seguimiento pasa a
+   * ser cosa del agente, no del bot. Sigue estando en la tabla de Leads.
+   */
+  inactivityHandledAtMs: number | null;
   /** Documento de conversación (el id del doc es el chatId). */
   chatId: string;
   /** Mensajes totales del hilo, como la columna "Mensajes" de la tabla de Leads. */
@@ -127,6 +133,11 @@ export async function listInactiveSalesLeads(
     const qualificationStatus = lead.qualificationStatus || "not_qualified";
     if (qualificationStatus !== "not_qualified") continue;
 
+    // Marcado como "Contactado": el agente ya lo lleva por su cuenta y no vuelve
+    // a esta lista, aunque el lead escriba otra vez y se vuelva a quedar callado.
+    const inactivityHandledAtMs = lead.inactivityHandledAt?.toMillis?.() ?? null;
+    if (inactivityHandledAtMs !== null) continue;
+
     const assignedAgentUid =
       typeof lead.assignedAgentUid === "string" ? lead.assignedAgentUid.trim() : "";
     if (wantedAgentUid && assignedAgentUid !== wantedAgentUid) continue;
@@ -147,6 +158,7 @@ export async function listInactiveSalesLeads(
       listingCode,
       lastMessageAtMs,
       inactivityNotifiedAtMs: lead.inactivityNotifiedAt?.toMillis?.() ?? null,
+      inactivityHandledAtMs,
       assignedAgentUid,
       chatId: typeof lead.chatId === "string" ? lead.chatId : "",
       messageCount: 0,

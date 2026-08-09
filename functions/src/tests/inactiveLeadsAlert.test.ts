@@ -20,6 +20,7 @@ function lead(overrides: Partial<InactiveLead> = {}): InactiveLead {
     listingCode: "111993451",
     lastMessageAtMs: Date.now() - 3 * DAY,
     inactivityNotifiedAtMs: null,
+    inactivityHandledAtMs: null,
     assignedAgentUid: "",
     chatId: "chat_34669643792",
     messageCount: 3,

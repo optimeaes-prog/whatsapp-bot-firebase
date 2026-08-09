@@ -1,6 +1,6 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { MessageSquare, Phone, User } from "lucide-react";
+import { Check, MessageSquare, Phone, User } from "lucide-react";
 import { WhatsAppIconLink } from "../components/WhatsAppIconLink";
 
 const API_PATH = "/api/leads-inactivos";
@@ -42,6 +42,9 @@ type InactiveLeadRow = {
 
 /** Lo que se enseña cuando un lead no tiene agente asignado todavía. */
 const UNASSIGNED_AGENT_LABEL = "Sin asignar";
+
+/** Cuánto se puede deshacer un "Contactado" antes de que la fila desaparezca. */
+const UNDO_WINDOW_MS = 8000;
 
 /** Código que lleva un lead que aún no tiene inmueble asignado. */
 const PENDING_LISTING_CODE = "__pending__";
@@ -159,6 +162,93 @@ function ConversationPreview({ messages }: { messages: RecentMessage[] }) {
 }
 
 /** Una tarjeta por lead. Es la vista de móvil, donde una tabla no cabe. */
+/**
+ * Botón "Contactado". Marcar es definitivo, así que se pregunta antes; el
+ * "Deshacer" de después cubre el haber confirmado sin querer.
+ */
+function ContactedButton({ onClick, busy }: { onClick: () => void; busy: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className="inline-flex items-center justify-center gap-1.5 rounded-btn border border-gray-200 bg-white px-3 py-2 text-sm font-heading font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+    >
+      <Check size={15} className="shrink-0" aria-hidden="true" />
+      Contactado
+    </button>
+  );
+}
+
+/** Fila que sustituye al lead recién marcado, con la salida de emergencia. */
+function UndoRow({ name, onUndo, busy }: { name: string; onUndo: () => void; busy: boolean }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+      {/* "Contactado: X" en vez de "X marcado/a": no sabemos el género del lead. */}
+      <span className="text-sm text-emerald-800">
+        Contactado: <span className="font-semibold">{name || "Sin nombre"}</span>
+      </span>
+      <button
+        type="button"
+        onClick={onUndo}
+        disabled={busy}
+        className="text-sm font-heading font-semibold text-emerald-800 underline disabled:opacity-50"
+      >
+        Deshacer
+      </button>
+    </div>
+  );
+}
+
+/** Confirmación antes de marcar: el lead desaparece de la lista para siempre. */
+function ConfirmDialog({
+  leadName,
+  onConfirm,
+  onCancel,
+  busy,
+}: {
+  leadName: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-lg">
+        <h2 className="text-base font-heading font-bold text-[var(--TITLE,#402e32)]">
+          ¿Marcar como contactado?
+        </h2>
+        <p className="mt-2 text-sm text-slate-600">
+          {leadName ? <span className="font-semibold">{leadName}</span> : "Este lead"} dejará de
+          aparecer en esta lista. Seguirá estando en tus Leads.
+        </p>
+        <div className="mt-5 flex gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="flex-1 rounded-btn border border-gray-200 bg-white px-4 py-2.5 text-sm font-heading font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="flex-1 rounded-btn bg-slate-900 px-4 py-2.5 text-sm font-heading font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            {busy ? "Marcando…" : "Sí, contactado"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Etiqueta con el agente del lead. Vacía si el enlace ya es de un agente. */
 function AgentBadge({ row, show }: { row: InactiveLeadRow; show: boolean }) {
   if (!show) return null;
@@ -182,12 +272,16 @@ function LeadCard({
   open,
   onToggle,
   showAgent,
+  onContacted,
+  busy,
 }: {
   row: InactiveLeadRow;
   generatedAtMs: number;
   open: boolean;
   onToggle: () => void;
   showAgent: boolean;
+  onContacted: () => void;
+  busy: boolean;
 }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4">
@@ -225,6 +319,12 @@ function LeadCard({
       </div>
 
       {open && row.recentMessages.length > 0 && <ConversationPreview messages={row.recentMessages} />}
+
+      <div className="mt-3 flex">
+        <div className="ml-auto">
+          <ContactedButton onClick={onContacted} busy={busy} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -239,14 +339,22 @@ function LeadsTable({
   openIds,
   onToggle,
   showAgent,
+  onContacted,
+  busyId,
+  pendingUndo,
+  onUndo,
 }: {
   rows: InactiveLeadRow[];
   generatedAtMs: number;
   openIds: Set<string>;
   onToggle: (id: string) => void;
   showAgent: boolean;
+  onContacted: (row: InactiveLeadRow) => void;
+  busyId: string | null;
+  pendingUndo: Set<string>;
+  onUndo: (id: string) => void;
 }) {
-  const columnCount = showAgent ? 6 : 5;
+  const columnCount = (showAgent ? 6 : 5) + 1;
   return (
     <div className="overflow-x-auto -mx-2">
       <table className="min-w-full">
@@ -263,6 +371,19 @@ function LeadsTable({
         <tbody>
           {rows.map((row) => {
             const open = openIds.has(row.id);
+            if (pendingUndo.has(row.id)) {
+              return (
+                <tr key={row.id} className="border-b border-gray-100 last:border-0">
+                  <td colSpan={columnCount} className="px-3 py-3">
+                    <UndoRow
+                      name={row.name}
+                      onUndo={() => onUndo(row.id)}
+                      busy={busyId === row.id}
+                    />
+                  </td>
+                </tr>
+              );
+            }
             return (
               <Fragment key={row.id}>
                 <tr className={open ? "border-b border-gray-100" : "border-b border-gray-100 last:border-0"}>
@@ -288,6 +409,9 @@ function LeadsTable({
                   </td>
                   <td className="px-3 py-3 text-sm text-red-600 text-right whitespace-nowrap">
                     {formatTimeSince(row.lastMessageAtMs, generatedAtMs)}
+                  </td>
+                  <td className="px-3 py-3 text-right whitespace-nowrap">
+                    <ContactedButton onClick={() => onContacted(row)} busy={busyId === row.id} />
                   </td>
                 </tr>
                 {open && row.recentMessages.length > 0 && (
@@ -344,6 +468,102 @@ export function LeadsInactivos() {
   // vistazo y el hilo solo interesa justo antes de llamar a ese lead.
   const [openConversations, setOpenConversations] = useState<Set<string>>(new Set());
 
+  // Lead que espera confirmación, y los que ya se han marcado y siguen
+  // enseñando el "Deshacer" antes de irse del todo.
+  const [confirming, setConfirming] = useState<InactiveLeadRow | null>(null);
+  const [pendingUndo, setPendingUndo] = useState<Set<string>>(new Set());
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  // Temporizador por lead que retira la fila cuando pasa la ventana de deshacer.
+  // Hay que poder cancelarlo: si no, al pulsar "Deshacer" la fila vuelve y el
+  // temporizador viejo se la lleva igualmente unos segundos después.
+  const undoTimers = useRef<Map<string, number>>(new Map());
+
+  const clearUndoTimer = useCallback((leadId: string) => {
+    const timer = undoTimers.current.get(leadId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      undoTimers.current.delete(leadId);
+    }
+  }, []);
+
+  const clearAllUndoTimers = useCallback(() => {
+    for (const timer of undoTimers.current.values()) window.clearTimeout(timer);
+    undoTimers.current.clear();
+  }, []);
+
+  // Al desmontar no debe quedar ningún temporizador tocando estado.
+  useEffect(() => clearAllUndoTimers, [clearAllUndoTimers]);
+
+  const postAction = useCallback(
+    async (leadId: string, action: "handled" | "undo"): Promise<boolean> => {
+      const r = await fetch(`${API_PATH}?${query}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ action, leadId }),
+      });
+      return r.ok;
+    },
+    [query]
+  );
+
+  const confirmContacted = useCallback(async () => {
+    const row = confirming;
+    if (!row) return;
+    setBusyId(row.id);
+    try {
+      const ok = await postAction(row.id, "handled");
+      if (!ok) {
+        setError("No se pudo marcar el lead. Inténtalo de nuevo.");
+        return;
+      }
+      setConfirming(null);
+      setPendingUndo((prev) => new Set(prev).add(row.id));
+      // Pasada la ventana de deshacer, la fila se va de la lista. El id se
+      // guarda para poder cancelarlo si el agente pulsa "Deshacer".
+      const timer = window.setTimeout(() => {
+        undoTimers.current.delete(row.id);
+        setRows((prev) => prev.filter((r) => r.id !== row.id));
+        setPendingUndo((prev) => {
+          const next = new Set(prev);
+          next.delete(row.id);
+          return next;
+        });
+      }, UNDO_WINDOW_MS);
+      undoTimers.current.set(row.id, timer);
+    } catch {
+      setError("Error de red al marcar el lead.");
+    } finally {
+      setBusyId(null);
+    }
+  }, [confirming, postAction]);
+
+  const undoContacted = useCallback(
+    async (leadId: string) => {
+      // Lo primero: parar el temporizador. Aunque falle la petición, la fila no
+      // debe desaparecer sola después de que el agente haya pedido deshacer.
+      clearUndoTimer(leadId);
+      setBusyId(leadId);
+      try {
+        const ok = await postAction(leadId, "undo");
+        if (!ok) {
+          setError("No se pudo deshacer. Recarga la página.");
+          return;
+        }
+        setPendingUndo((prev) => {
+          const next = new Set(prev);
+          next.delete(leadId);
+          return next;
+        });
+      } catch {
+        setError("Error de red al deshacer.");
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [postAction, clearUndoTimer]
+  );
+
   const toggleConversation = useCallback((id: string) => {
     setOpenConversations((prev) => {
       const next = new Set(prev);
@@ -379,6 +599,9 @@ export function LeadsInactivos() {
         setRows([]);
         return;
       }
+      // Lista nueva: los temporizadores de la anterior ya no aplican a nada.
+      clearAllUndoTimers();
+      setPendingUndo(new Set());
       setRows(j.leads);
       setScopedToAgent(Boolean(j.scopedToAgent));
       setVisibleCount(PAGE_SIZE);
@@ -390,7 +613,7 @@ export function LeadsInactivos() {
     } finally {
       setLoading(false);
     }
-  }, [shortCode, token, query]);
+  }, [shortCode, token, query, clearAllUndoTimers]);
 
   useEffect(() => {
     void load();
@@ -430,16 +653,27 @@ export function LeadsInactivos() {
 
                 {/* Móvil: tarjetas. Escritorio: tabla. */}
                 <div className="space-y-3 md:hidden">
-                  {visible.map((row) => (
-                    <LeadCard
-                      key={row.id}
-                      row={row}
-                      generatedAtMs={generatedAtMs}
-                      open={openConversations.has(row.id)}
-                      onToggle={() => toggleConversation(row.id)}
-                      showAgent={!scopedToAgent}
-                    />
-                  ))}
+                  {visible.map((row) =>
+                    pendingUndo.has(row.id) ? (
+                      <UndoRow
+                        key={row.id}
+                        name={row.name}
+                        onUndo={() => void undoContacted(row.id)}
+                        busy={busyId === row.id}
+                      />
+                    ) : (
+                      <LeadCard
+                        key={row.id}
+                        row={row}
+                        generatedAtMs={generatedAtMs}
+                        open={openConversations.has(row.id)}
+                        onToggle={() => toggleConversation(row.id)}
+                        showAgent={!scopedToAgent}
+                        onContacted={() => setConfirming(row)}
+                        busy={busyId === row.id}
+                      />
+                    )
+                  )}
                 </div>
                 <div className="hidden md:block">
                   <LeadsTable
@@ -448,6 +682,10 @@ export function LeadsInactivos() {
                     openIds={openConversations}
                     onToggle={toggleConversation}
                     showAgent={!scopedToAgent}
+                    onContacted={setConfirming}
+                    busyId={busyId}
+                    pendingUndo={pendingUndo}
+                    onUndo={(id) => void undoContacted(id)}
                   />
                 </div>
 
@@ -469,6 +707,15 @@ export function LeadsInactivos() {
           Esta lista se genera en el momento de abrir el enlace. El enlace caduca a las 48 horas.
         </p>
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          leadName={confirming.name}
+          onConfirm={() => void confirmContacted()}
+          onCancel={() => setConfirming(null)}
+          busy={busyId === confirming.id}
+        />
+      )}
     </div>
   );
 }

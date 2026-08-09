@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 
 import { INACTIVE_LEADS_SECRET } from "./inactiveLeadsParams";
+import { markLeadHandled, unmarkLeadHandled } from "./services/inactiveLeadsHandled";
 import { resolveInactiveLeadsLink } from "./services/inactiveLeadsLinks";
 import { listInactiveSalesLeads, resolveAgentNames } from "./services/inactiveLeadsService";
 import { verifyInactiveLeadsToken } from "./services/inactiveLeadsToken";
@@ -27,17 +28,71 @@ function readToken(req: Request): string {
   return typeof q === "string" ? q.trim() : "";
 }
 
-/** Código del enlace corto (proplead.io/leads/<code>). */
+/** Código del enlace corto (proplead.io/leads-inactivos/<code>). */
 function readCode(req: Request): string {
   const q = req.query.code;
   return typeof q === "string" ? q.trim() : "";
 }
 
 /**
- * JSON API behind the public "leads sin respuesta" page: GET ?token=
+ * POST: marca o desmarca un lead como "Contactado".
  *
- * The token is the only credential — it carries the orgId, so the caller can
- * never widen the query to another agency's leads. Read-only.
+ * Quién puede hacerlo sale del token, no del cuerpo de la petición: la
+ * organización siempre, y el agente solo sus propios leads.
+ */
+async function handleMarkRequest(
+  req: Request,
+  res: Response,
+  verified: { orgId: string; agentUid: string }
+): Promise<void> {
+  const body = (req.body || {}) as { action?: unknown; leadId?: unknown };
+  const action = typeof body.action === "string" ? body.action : "";
+  const leadId = typeof body.leadId === "string" ? body.leadId.trim() : "";
+
+  if (!leadId) {
+    res.status(400).json({ error: "missing_lead" });
+    return;
+  }
+  if (action !== "handled" && action !== "undo") {
+    res.status(400).json({ error: "bad_action" });
+    return;
+  }
+
+  try {
+    const result =
+      action === "handled"
+        ? await markLeadHandled({
+            orgId: verified.orgId,
+            leadId,
+            agentUid: verified.agentUid,
+            nowMs: Date.now(),
+          })
+        : await unmarkLeadHandled({
+            orgId: verified.orgId,
+            leadId,
+            agentUid: verified.agentUid,
+          });
+
+    if (!result.ok) {
+      res.status(result.reason === "forbidden" ? 403 : 404).json({ error: result.reason });
+      return;
+    }
+    res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error("[inactiveLeads] mark failed", { orgTail: verified.orgId.slice(-8), action, error: e });
+    res.status(500).json({ error: "mark_failed" });
+  }
+}
+
+/**
+ * JSON API behind the public "leads sin respuesta" page.
+ *
+ * - GET  → la lista.
+ * - POST → marcar (o desmarcar) un lead como "Contactado".
+ *
+ * El token es la única credencial y lleva dentro la organización, así que quien
+ * abre el enlace no puede pedir los leads de otra agencia ni marcar los de
+ * otra. Si además lleva agente, solo puede tocar los suyos.
  */
 export async function inactiveLeadsApiHandler(req: Request, res: Response): Promise<void> {
   res.set("Cache-Control", "no-store");
@@ -89,6 +144,11 @@ export async function inactiveLeadsApiHandler(req: Request, res: Response): Prom
   const verified = verifyInactiveLeadsToken(token, secret);
   if (!verified) {
     res.status(400).json({ error: "invalid_token" });
+    return;
+  }
+
+  if (req.method === "POST") {
+    await handleMarkRequest(req, res, verified);
     return;
   }
 
