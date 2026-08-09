@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 
 import { INACTIVE_LEADS_SECRET } from "./inactiveLeadsParams";
+import { resolveInactiveLeadsLink } from "./services/inactiveLeadsLinks";
 import { listInactiveSalesLeads, resolveAgentNames } from "./services/inactiveLeadsService";
 import { verifyInactiveLeadsToken } from "./services/inactiveLeadsToken";
 import { clientIpKey, enforceRateLimit } from "./utils/rateLimit";
@@ -23,6 +24,12 @@ async function enforceInactiveLeadsIpLimit(req: Request): Promise<{ ok: boolean;
 
 function readToken(req: Request): string {
   const q = req.query.token;
+  return typeof q === "string" ? q.trim() : "";
+}
+
+/** Código del enlace corto (proplead.io/leads/<code>). */
+function readCode(req: Request): string {
+  const q = req.query.code;
   return typeof q === "string" ? q.trim() : "";
 }
 
@@ -53,12 +60,17 @@ export async function inactiveLeadsApiHandler(req: Request, res: Response): Prom
     return;
   }
 
-  const token = readToken(req);
-  if (!token) {
+  // `code` es el enlace corto; `token` sigue valiendo para los enlaces largos
+  // que ya se hayan enviado y para el script de pruebas.
+  const code = readCode(req);
+  const directToken = readToken(req);
+  if (!code && !directToken) {
     res.status(400).json({ error: "missing_token" });
     return;
   }
 
+  // Antes de tocar Firestore: adivinar códigos es justo el ataque que el límite
+  // por IP tiene que frenar.
   const ipLimit = await enforceInactiveLeadsIpLimit(req);
   if (!ipLimit.ok) {
     res.setHeader("Retry-After", String(ipLimit.retryAfterSec));
@@ -66,6 +78,14 @@ export async function inactiveLeadsApiHandler(req: Request, res: Response): Prom
     return;
   }
 
+  const token = code ? await resolveInactiveLeadsLink(code) : directToken;
+  if (!token) {
+    res.status(400).json({ error: "invalid_token" });
+    return;
+  }
+
+  // El código solo apunta al token; quien decide organización, agente y
+  // caducidad sigue siendo la firma.
   const verified = verifyInactiveLeadsToken(token, secret);
   if (!verified) {
     res.status(400).json({ error: "invalid_token" });

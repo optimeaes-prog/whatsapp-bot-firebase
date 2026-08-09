@@ -2,8 +2,9 @@ import * as admin from "firebase-admin";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 
 import { getBotConfig } from "./firestore";
+import { createInactiveLeadsLink, purgeExpiredInactiveLeadsLinks } from "./inactiveLeadsLinks";
 import { listInactiveSalesLeads, type InactiveLead } from "./inactiveLeadsService";
-import { signInactiveLeadsToken } from "./inactiveLeadsToken";
+import { INACTIVE_LEADS_TOKEN_TTL_MS, signInactiveLeadsToken } from "./inactiveLeadsToken";
 import { sendAgentNotificationMessage } from "./messagingProvider";
 import {
   fetchAgentNotificationNumbers,
@@ -182,6 +183,18 @@ export async function runDailyInactiveLeadsAlert(params: {
   }
 
   const baseUrl = params.appBaseUrl.replace(/\/+$/, "");
+
+  // Los códigos de ayer ya no valen: se van limpiando aquí para no montar otro
+  // job solo para eso. Si falla, no se envía peor, solo queda basura.
+  if (!params.dryRun) {
+    try {
+      const purged = await purgeExpiredInactiveLeadsLinks(params.nowMs);
+      if (purged > 0) console.log(`[inactiveLeadsAlert] enlaces caducados borrados: ${purged}`);
+    } catch (e) {
+      console.error("[inactiveLeadsAlert] purge of expired links failed", e);
+    }
+  }
+
   const orgsSnap = await db().collection("organizations").limit(MAX_ORGS).get();
 
   for (const orgDoc of orgsSnap.docs) {
@@ -262,7 +275,13 @@ export async function runDailyInactiveLeadsAlert(params: {
             undefined,
             audience.agentUid || undefined
           );
-          const pageUrl = `${baseUrl}/leads-inactivos?t=${encodeURIComponent(token)}`;
+          // El token entero en la URL ocupa cinco líneas en WhatsApp, así que
+          // viaja un código corto que apunta a él.
+          const code = await createInactiveLeadsLink({
+            token,
+            expiresAtMs: params.nowMs + INACTIVE_LEADS_TOKEN_TTL_MS,
+          });
+          const pageUrl = `${baseUrl}/leads-inactivos/${code}`;
           const { body, variables } = buildInactiveLeadsMessage(audience.leads.length, pageUrl);
 
           let sentForAudience = 0;

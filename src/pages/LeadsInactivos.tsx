@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { MessageSquare, Phone, User } from "lucide-react";
 import { WhatsAppIconLink } from "../components/WhatsAppIconLink";
 
@@ -308,7 +308,14 @@ function LeadsTable({
 
 export function LeadsInactivos() {
   const [searchParams] = useSearchParams();
+  // /leads-inactivos/<code> es el enlace corto que se manda por WhatsApp. El
+  // formato largo (?t=<token>) sigue funcionando para los enlaces ya enviados.
+  const { code } = useParams<{ code?: string }>();
+  const shortCode = code?.trim() ?? "";
   const token = searchParams.get("t")?.trim() ?? "";
+  const query = shortCode
+    ? `code=${encodeURIComponent(shortCode)}`
+    : `token=${encodeURIComponent(token)}`;
 
   // Página privada por enlace: pedimos a los buscadores que no la indexen.
   // La cabecera X-Robots-Tag del hosting es la defensa real; esta etiqueta
@@ -347,7 +354,7 @@ export function LeadsInactivos() {
   }, []);
 
   const load = useCallback(async () => {
-    if (!token) {
+    if (!shortCode && !token) {
       setError(ERROR_MESSAGES.missing_token);
       setLoading(false);
       return;
@@ -355,7 +362,7 @@ export function LeadsInactivos() {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`${API_PATH}?token=${encodeURIComponent(token)}`, {
+      const r = await fetch(`${API_PATH}?${query}`, {
         method: "GET",
         headers: { Accept: "application/json" },
       });
@@ -383,7 +390,7 @@ export function LeadsInactivos() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [shortCode, token, query]);
 
   useEffect(() => {
     void load();

@@ -130,6 +130,8 @@ function App() {
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/email-preferences" element={<EmailPreferences />} />
             <Route path="/leads-inactivos" element={<LeadsInactivos />} />
+            {/* Enlace corto que se manda por WhatsApp: el código va en la ruta. */}
+            <Route path="/leads-inactivos/:code" element={<LeadsInactivos />} />
             <Route path="/fonts" element={<FontGallery />} />
             <Route path="/" element={<MarketingLandingV2 />} />
             <Route path="/landingv2" element={<MarketingLanding />} />
