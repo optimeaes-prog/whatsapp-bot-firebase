@@ -77,6 +77,13 @@ async function handleMarkRequest(
       res.status(result.reason === "forbidden" ? 403 : 404).json({ error: result.reason });
       return;
     }
+    // Los aciertos también se registran: antes solo se escribía en el log cuando
+    // fallaba, así que "nadie ha usado el botón" y "todo ha ido bien" se leían
+    // igual desde fuera. El id del lead lleva el teléfono dentro, igual que en
+    // el resto de logs de envío; sin él la línea no sirve para nada.
+    console.log(
+      `[inactiveLeads] ${action} org=${verified.orgId} lead=${leadId} por=${verified.agentUid || "central"}`
+    );
     res.status(200).json({ ok: true });
   } catch (e) {
     console.error("[inactiveLeads] mark failed", { orgTail: verified.orgId.slice(-8), action, error: e });

@@ -41,6 +41,10 @@ export type InactiveLeadsAlertSummary = {
   orgsNotified: number;
   messagesSent: number;
   leadsMarked: number;
+  /** Ninguna lead fría: o no hay, o están todas marcadas como contactadas. */
+  orgsWithoutColdLeads: number;
+  /** Hay leads frías, pero ya se avisó de todas y ninguna ha vuelto a enfriarse. */
+  orgsWithoutNewLeads: number;
 };
 
 /**
@@ -54,15 +58,21 @@ export function isNewlyCold(lead: InactiveLead): boolean {
 }
 
 /**
- * Si esta organización recibe aviso hoy.
+ * Por qué una organización no recibe aviso hoy, o `null` si sí lo recibe.
+ *
+ * Devuelve el motivo y no un booleano porque los dos casos se leen igual desde
+ * fuera (no llega nada) y significan cosas distintas: "ya se ha hablado con
+ * todos" contra "no hay novedades". Sin distinguirlos, un día sin mensajes no
+ * se puede interpretar.
  *
  * `leads` ya viene sin los marcados como "Contactado": la consulta los quita.
- * Así que si el agente marca todos, aquí llega vacío y no se manda nada — que
- * es justo lo que se espera cuando ya ha hablado con todos.
  */
-export function shouldNotifyOrg(leads: InactiveLead[]): boolean {
-  if (leads.length === 0) return false;
-  return leads.some(isNewlyCold);
+export type OrgSkipReason = "sin_leads_frias" | "sin_leads_nuevas";
+
+export function orgSkipReason(leads: InactiveLead[]): OrgSkipReason | null {
+  if (leads.length === 0) return "sin_leads_frias";
+  if (!leads.some(isNewlyCold)) return "sin_leads_nuevas";
+  return null;
 }
 
 /**
@@ -187,6 +197,8 @@ export async function runDailyInactiveLeadsAlert(params: {
     orgsNotified: 0,
     messagesSent: 0,
     leadsMarked: 0,
+    orgsWithoutColdLeads: 0,
+    orgsWithoutNewLeads: 0,
   };
 
   if (!params.linkSecret) {
@@ -219,7 +231,15 @@ export async function runDailyInactiveLeadsAlert(params: {
       // getActiveOrgId() tiene que ver ESTA organización y no la anterior.
       await requestContext.run({ orgId }, async () => {
         const leads = await listInactiveSalesLeads(orgId, params.nowMs);
-        if (!shouldNotifyOrg(leads)) return;
+        const skipReason = orgSkipReason(leads);
+        if (skipReason === "sin_leads_frias") {
+          summary.orgsWithoutColdLeads += 1;
+          return;
+        }
+        if (skipReason === "sin_leads_nuevas") {
+          summary.orgsWithoutNewLeads += 1;
+          return;
+        }
 
         const newly = leads.filter(isNewlyCold);
 

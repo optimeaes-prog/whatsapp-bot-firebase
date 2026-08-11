@@ -5,8 +5,8 @@ import {
   buildAudiences,
   buildInactiveLeadsMessage,
   isNewlyCold,
+  orgSkipReason,
   shouldMarkLeads,
-  shouldNotifyOrg,
 } from "../services/inactiveLeadsAlertService";
 import type { InactiveLead } from "../services/inactiveLeadsService";
 
@@ -77,20 +77,22 @@ test("a real send to the agency does mark leads", () => {
 test("no message when every lead has been marked as contactado", () => {
   // The query drops leads marked "Contactado", so an agent who has rung all of
   // them leaves an empty list here — and nothing should go out tomorrow.
-  assert.equal(shouldNotifyOrg([]), false);
+  assert.equal(orgSkipReason([]), "sin_leads_frias");
 });
 
-test("no message when nothing is newly cold", () => {
+test("no message when nothing is newly cold, and the reason says so", () => {
+  // Distinct from the case above on purpose: from outside both look like
+  // silence, but one means "all handled" and the other "no news".
   const now = Date.now();
   const alreadyReported = lead({ lastMessageAtMs: now - 3 * DAY, inactivityNotifiedAtMs: now - 2 * DAY });
-  assert.equal(shouldNotifyOrg([alreadyReported]), false);
+  assert.equal(orgSkipReason([alreadyReported]), "sin_leads_nuevas");
 });
 
 test("one newly cold lead is enough to send", () => {
   const now = Date.now();
   const alreadyReported = lead({ id: "old", lastMessageAtMs: now - 3 * DAY, inactivityNotifiedAtMs: now - 2 * DAY });
   const fresh = lead({ id: "new", inactivityNotifiedAtMs: null });
-  assert.equal(shouldNotifyOrg([alreadyReported, fresh]), true);
+  assert.equal(orgSkipReason([alreadyReported, fresh]), null);
 });
 
 test("central gets every lead, each agent only their own", () => {

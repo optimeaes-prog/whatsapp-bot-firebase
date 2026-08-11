@@ -8451,6 +8451,7 @@ export const sendDailyInactiveLeadsAlert = onSchedule({
     console.log(
       `[inactiveLeadsAlert] dryRun=${summary.dryRun} onlyOrg=${onlyOrgId || "(todas)"} ` +
         `orgs=${summary.orgsScanned} avisadas=${summary.orgsNotified} ` +
+        `sinLeads=${summary.orgsWithoutColdLeads} sinNuevas=${summary.orgsWithoutNewLeads} ` +
         `mensajes=${summary.messagesSent} marcados=${summary.leadsMarked}`
     );
   } catch (error) {
