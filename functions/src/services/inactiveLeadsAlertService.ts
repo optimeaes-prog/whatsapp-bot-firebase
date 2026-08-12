@@ -7,9 +7,12 @@ import { listInactiveSalesLeads, type InactiveLead } from "./inactiveLeadsServic
 import { INACTIVE_LEADS_TOKEN_TTL_MS, signInactiveLeadsToken } from "./inactiveLeadsToken";
 import { sendAgentNotificationMessage } from "./messagingProvider";
 import {
+  QUALIFIED_LEAD_NOTIFICATION_NUMBERS_FIELD,
   fetchAgentNotificationNumbers,
+  mergeOrgAndAgentRecipients,
   normalizePhoneForDedupe,
   resolveQualifiedLeadNotificationRecipients,
+  splitNotificationNumberRaw,
 } from "./qualifiedLeadNotificationTargets";
 import { requestContext } from "./requestContext";
 
@@ -105,6 +108,42 @@ export function buildInactiveLeadsMessage(
   return { body, variables: { "1": String(leadCount), "2": pageUrl } };
 }
 
+/**
+ * Roles que ven la lista entera de la agencia, no solo sus leads.
+ *
+ * `super_admin` queda fuera a propósito: es un rol de plataforma, no de la
+ * agencia, y no debe recibir automáticamente los leads de todos los clientes.
+ * Si alguien de Proplead tiene que verlos, se le pone en los números centrales.
+ */
+const SUPERVISOR_ROLES = ["owner", "admin"];
+
+/**
+ * Números de los responsables de la organización (owner/admin) con WhatsApp
+ * configurado en la pantalla de equipo.
+ *
+ * La regla es por rol y no por una lista aparte: quien dirige la agencia ve
+ * todo y quien lleva sus leads ve los suyos, que es la distinción que ya existe
+ * en el equipo. Así no hay una segunda lista que mantener ni que recordar
+ * actualizar al dar de alta a alguien.
+ */
+async function fetchSupervisorNumbers(orgId: string): Promise<string[]> {
+  // Se filtra por organización en la consulta y por rol en memoria a propósito.
+  // Combinar los dos campos pediría un índice compuesto que no existe, y un
+  // equipo son unas pocas personas: no compensa arriesgarse a que el job casque
+  // a las 09:00 por un índice que falta.
+  const snap = await db().collection("users").where("orgId", "==", orgId).get();
+
+  const numbers: string[] = [];
+  for (const doc of snap.docs) {
+    const data = doc.data() || {};
+    const role = typeof data.role === "string" ? data.role : "";
+    if (!SUPERVISOR_ROLES.includes(role)) continue;
+    const raw = data[QUALIFIED_LEAD_NOTIFICATION_NUMBERS_FIELD];
+    if (typeof raw === "string" && raw.trim()) numbers.push(...splitNotificationNumberRaw(raw));
+  }
+  return numbers;
+}
+
 /** A quién se avisa y con qué leads. `agentUid` vacío = la agencia entera. */
 export type AlertAudience = {
   agentUid: string;
@@ -113,25 +152,25 @@ export type AlertAudience = {
 };
 
 /**
- * Reparte los leads en destinatarios: primero la agencia (todos), y luego un
- * bloque por agente con los suyos.
+ * Reparte los leads en destinatarios: primero quien ve la agencia entera
+ * (números centrales + responsables), y luego un bloque por agente con los suyos.
  *
- * Un número que ya esté en los centrales se descarta del bloque del agente: esa
- * persona ya recibe la lista completa, y mandarle además un recorte sería el
- * mismo aviso dos veces.
+ * Un número que ya recibe la lista completa se descarta del bloque del agente:
+ * esa persona ya la tiene, y mandarle además un recorte sería el mismo aviso
+ * dos veces.
  */
 export function buildAudiences(params: {
   leads: InactiveLead[];
-  centralNumbers: string[];
+  fullListNumbers: string[];
   agentNumbers: Map<string, string[]>;
 }): AlertAudience[] {
   const audiences: AlertAudience[] = [];
 
-  if (params.centralNumbers.length > 0) {
-    audiences.push({ agentUid: "", numbers: params.centralNumbers, leads: params.leads });
+  if (params.fullListNumbers.length > 0) {
+    audiences.push({ agentUid: "", numbers: params.fullListNumbers, leads: params.leads });
   }
 
-  const centralFingerprints = new Set(params.centralNumbers.map(normalizePhoneForDedupe));
+  const centralFingerprints = new Set(params.fullListNumbers.map(normalizePhoneForDedupe));
 
   const leadsByAgent = new Map<string, InactiveLead[]>();
   for (const lead of params.leads) {
@@ -244,7 +283,7 @@ export async function runDailyInactiveLeadsAlert(params: {
         const newly = leads.filter(isNewlyCold);
 
         const botConfig = await getBotConfig();
-        const recipients = await resolveQualifiedLeadNotificationRecipients({
+        const centralNumbers = await resolveQualifiedLeadNotificationRecipients({
           orgId,
           botConfig,
           envNotificationFallback: params.envNotificationFallback,
@@ -253,7 +292,14 @@ export async function runDailyInactiveLeadsAlert(params: {
           listing: null,
           db: db(),
         });
-        if (recipients.length === 0) {
+        // Los responsables (owner/admin) ven la lista entera aunque no estén en
+        // los números centrales. Así el dueño de la agencia recibe todos los
+        // leads sin quedar suscrito además a los cualificados de sus agentes,
+        // que es lo que pasaría si se le metiera en los centrales.
+        const supervisorNumbers = await fetchSupervisorNumbers(orgId);
+        const fullListNumbers = mergeOrgAndAgentRecipients(centralNumbers, supervisorNumbers);
+
+        if (fullListNumbers.length === 0) {
           console.warn(`[inactiveLeadsAlert] org=${orgId} has ${leads.length} cold leads but no notification numbers`);
           return;
         }
@@ -274,7 +320,7 @@ export async function runDailyInactiveLeadsAlert(params: {
           if (numbers.length > 0) agentNumbers.set(agentUid, numbers);
         }
 
-        const audiences = buildAudiences({ leads, centralNumbers: recipients, agentNumbers });
+        const audiences = buildAudiences({ leads, fullListNumbers, agentNumbers });
 
         if (params.dryRun) {
           console.log(

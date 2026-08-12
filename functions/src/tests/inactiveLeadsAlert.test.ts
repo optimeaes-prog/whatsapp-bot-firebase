@@ -102,7 +102,7 @@ test("central gets every lead, each agent only their own", () => {
 
   const audiences = buildAudiences({
     leads: [jose, paco, unassigned],
-    centralNumbers: ["34669354177", "34623021884"],
+    fullListNumbers: ["34669354177", "34623021884"],
     agentNumbers: new Map([["uid_jose", ["34604825903"]]]),
   });
 
@@ -115,12 +115,41 @@ test("central gets every lead, each agent only their own", () => {
   assert.deepEqual(joseAudience?.leads.map((l) => l.id), ["l1"]);
 });
 
+test("an owner gets the whole agency's list, not just the leads assigned to them", () => {
+  // Paco owns the agency and also has leads of his own. He is deliberately NOT a
+  // central number — that would also subscribe him to every agent's qualified
+  // lead. His number arrives here through the supervisor lookup instead, and he
+  // must get the full list rather than his own slice.
+  const jose = lead({ id: "l1", assignedAgentUid: "uid_jose" });
+  const paco = lead({ id: "l2", assignedAgentUid: "uid_paco" });
+
+  const audiences = buildAudiences({
+    leads: [jose, paco],
+    fullListNumbers: ["34669354177", "34623021884"], // Eddy (central) + Paco (owner)
+    agentNumbers: new Map([
+      ["uid_jose", ["34604825903"]],
+      ["uid_paco", ["34623021884"]],
+    ]),
+  });
+
+  const full = audiences.find((a) => a.agentUid === "");
+  assert.deepEqual(full?.leads.map((l) => l.id), ["l1", "l2"]);
+  assert.ok(full?.numbers.includes("34623021884"), "Paco is on the full list");
+
+  // And no second, smaller message to Paco.
+  assert.equal(audiences.some((a) => a.agentUid === "uid_paco"), false);
+  assert.deepEqual(
+    audiences.find((a) => a.agentUid === "uid_jose")?.leads.map((l) => l.id),
+    ["l1"]
+  );
+});
+
 test("an agent whose number is already central is not messaged twice", () => {
   // Paco is on the central list, so he already receives the full list; a second
   // message with a subset of it would be the same reminder again.
   const audiences = buildAudiences({
     leads: [lead({ id: "l1", assignedAgentUid: "uid_paco" })],
-    centralNumbers: ["+34 623 02 18 84"],
+    fullListNumbers: ["+34 623 02 18 84"],
     agentNumbers: new Map([["uid_paco", ["34623021884"]]]),
   });
 
@@ -131,7 +160,7 @@ test("an agent whose number is already central is not messaged twice", () => {
 test("an agent with no configured number gets no message of their own", () => {
   const audiences = buildAudiences({
     leads: [lead({ id: "l1", assignedAgentUid: "uid_sin_numero" })],
-    centralNumbers: ["34669354177"],
+    fullListNumbers: ["34669354177"],
     agentNumbers: new Map(),
   });
 
@@ -142,7 +171,7 @@ test("an agent with no configured number gets no message of their own", () => {
 test("unassigned leads reach the agency but belong to no agent block", () => {
   const audiences = buildAudiences({
     leads: [lead({ id: "l1", assignedAgentUid: "" })],
-    centralNumbers: ["34669354177"],
+    fullListNumbers: ["34669354177"],
     agentNumbers: new Map(),
   });
 
