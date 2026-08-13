@@ -3831,32 +3831,25 @@ async function recordVoiceConsent(params: {
 }): Promise<void> {
   const orgId = getActiveOrgId();
   if (!orgId) return;
-  const DATABASE_ID = "realestate-whatsapp-bot";
-  const db = getFirestore(admin.app(), DATABASE_ID);
   const phoneDigits = params.phone.replace(/[^0-9]/g, "");
-  const leadsRef = db.collection(`organizations/${orgId}/leads`);
-  const snap = await leadsRef.where("phone", "==", phoneDigits).limit(1).get();
   const consent = {
-    capturedAt: new Date(),
+    capturedAt: admin.firestore.Timestamp.now(),
     source: "phone_call" as const,
-    proofUrl: params.callSid || null,
+    proofUrl: params.callSid || undefined,
     language: "es" as const,
     proofType: "twilio_call_sid" as const,
     consentScriptVersion: VOICE_CONSENT_SCRIPT_VERSION.value() || "v1",
     dtmfDigit: "1" as const,
   };
-  if (snap.empty) {
-    // Create a minimal lead row so the consent gate finds it.
-    await leadsRef.add({
-      phone: phoneDigits,
-      chatId: params.chatId,
-      listingCode: "__pending__",
-      operationType: "unknown",
-      consent,
-    });
-    return;
-  }
-  await snap.docs[0].ref.set({ consent }, { merge: true });
+  // Goes through the shared path on purpose. This used to look the lead up by
+  // phone alone and, on a miss, create a row with a random document id — the one
+  // place in the codebase that did, and a row nothing else could ever find again.
+  await setLeadConsentByChatId({
+    chatId: params.chatId,
+    phone: phoneDigits,
+    listingCode: "__pending__",
+    consent,
+  });
 }
 
 /**

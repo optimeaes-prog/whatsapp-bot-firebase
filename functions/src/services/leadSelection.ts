@@ -47,6 +47,23 @@ function completenessScore(candidate: LeadCandidate): number {
 }
 
 /**
+ * Should the property a lead row is moving away from be kept in its history?
+ *
+ * Yes whenever it was a real property and it is actually changing — so a lead who
+ * asked about the rental and then the sale keeps both on the record. The call
+ * placeholder is not a property, and re-saving the same code is not a change.
+ */
+export function shouldRecordPreviousListing(
+  previousListingCode: string | undefined,
+  nextListingCode: string | undefined
+): boolean {
+  const previous = (previousListingCode || "").trim();
+  const next = (nextListingCode || "").trim();
+  if (!previous || previous === "__pending__") return false;
+  return previous !== next;
+}
+
+/**
  * Pick the lead row that owns this conversation.
  *
  * Order of preference:

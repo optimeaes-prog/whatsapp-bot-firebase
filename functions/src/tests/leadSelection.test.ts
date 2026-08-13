@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { pickLeadCandidate, LeadCandidate } from "../services/leadSelection";
+import { pickLeadCandidate, shouldRecordPreviousListing, LeadCandidate } from "../services/leadSelection";
 
 const at = (millis: number) => ({ toMillis: () => millis });
 
@@ -85,3 +85,19 @@ test("a preferred property nobody has does not empty the result", () => {
   assert.equal(chosen?.id, qualifiedRow.id);
 });
 
+test("moving a lead to another property keeps the old one on the record", () => {
+  assert.equal(shouldRecordPreviousListing("111993451", "112009850"), true);
+});
+
+test("the call placeholder is not a property worth remembering", () => {
+  assert.equal(shouldRecordPreviousListing("__pending__", "112009850"), false);
+});
+
+test("re-saving the same property is not a change", () => {
+  assert.equal(shouldRecordPreviousListing("112009850", "112009850"), false);
+});
+
+test("a brand new row has no previous property", () => {
+  assert.equal(shouldRecordPreviousListing(undefined, "112009850"), false);
+  assert.equal(shouldRecordPreviousListing("", "112009850"), false);
+});

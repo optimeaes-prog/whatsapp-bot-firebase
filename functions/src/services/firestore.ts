@@ -19,7 +19,7 @@ import {
 } from "../types";
 import { getChatIdVariants, normalizeToCanonicalChatId } from "../utils";
 import { normalizeForSearch } from "../utils/addressNormalize";
-import { pickLeadCandidate } from "./leadSelection";
+import { pickLeadCandidate, shouldRecordPreviousListing } from "./leadSelection";
 
 
 // Initialize Firestore with specific database once
@@ -789,9 +789,19 @@ export async function updateLeadChatInfo(params: {
   tags?: string[];
   recordings?: string[];
 }): Promise<void> {
-  const docId = buildLeadDocId(params.phone, params.listingCode);
-  const docRef = getOrgDb().collection("leads").doc(docId);
-  const snap = await docRef.get();
+  // One lead row per person per conversation.
+  //
+  // Rows used to be keyed by phone + listing code, but a conversation is keyed by
+  // phone alone. So when a chat changed property — a call lead whose listing is
+  // resolved after the fact, or a lead asking about a second ad — this created a
+  // SECOND row, and the first one was orphaned: still visible in the table, never
+  // updated again, no name and no status. Reuse the row this chat already owns and
+  // move its listing code instead; only create when the chat has no row at all.
+  const existing = params.chatId ? await findLeadDocForChat(params.chatId, params.listingCode) : null;
+  const docRef = existing
+    ? existing.ref
+    : getOrgDb().collection("leads").doc(buildLeadDocId(params.phone, params.listingCode));
+  const previous = existing?.data() as Record<string, unknown> | undefined;
   const updateData: Record<string, unknown> = {
     phone: params.phone,
     listingCode: params.listingCode,
@@ -805,7 +815,21 @@ export async function updateLeadChatInfo(params: {
       updateData.assignedAgentUid = assignedAgentUid;
     }
   }
-  if (!snap.exists) {
+
+  // Moving the row to another property would silently lose the previous one, so
+  // keep it: "asked about the rental first, then the sale" stays on the record.
+  // Timestamp.now() rather than serverTimestamp() — the latter is rejected inside
+  // an array element.
+  const previousListingCode = typeof previous?.listingCode === "string" ? previous.listingCode : "";
+  if (shouldRecordPreviousListing(previousListingCode, params.listingCode)) {
+    updateData.listingCodeHistory = admin.firestore.FieldValue.arrayUnion({
+      listingCode: previousListingCode,
+      operationType: (previous?.operationType as OperationType | undefined) || null,
+      replacedAt: admin.firestore.Timestamp.now(),
+    });
+  }
+
+  if (!existing) {
     const ts = admin.firestore.FieldValue.serverTimestamp();
     updateData.createdAt = ts;
     updateData.firstMessageDate = ts;
