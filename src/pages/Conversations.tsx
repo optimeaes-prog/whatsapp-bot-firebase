@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { Fragment, useEffect, useState, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { MessageSquare, Search, ArrowLeft, Trash2, Send, Bot, BotOff, Download, ChevronDown, ChevronUp, CheckCircle, Megaphone, Activity, Calendar, CheckSquare, Square, Filter } from "lucide-react";
 import type { Conversation } from "../types";
@@ -15,11 +15,12 @@ import {
   subscribeConversationById,
   alignSelectedConversationWithList,
 } from "../services/conversations";
-import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn } from "../lib/utils";
+import { formatDate, formatPhoneWhatsApp, formatMessageTime, cn, shouldShowDayDivider } from "../lib/utils";
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
 import { resolveConversationQualification } from "../lib/conversationQualification";
 import { downloadConversation } from "../lib/export";
 import { renderMessageText } from "../utils/renderMessageText";
+import { ChatDayDivider } from "../components/ChatDayDivider";
 import { LeadDetails } from "../components/LeadDetails";
 import { getListings, getListingsForAgent } from "../services/listings";
 import type { Listing } from "../types";
@@ -1132,9 +1133,14 @@ export function Conversations() {
           }}>
             <div className="space-y-3 sm:max-w-4xl sm:mx-auto">
               {selectedConversation.history && selectedConversation.history.length > 0 ? (
-                selectedConversation.history.map((item, index) => (
+                selectedConversation.history.map((item, index) => {
+                  const previousTimestamp = selectedConversation.history?.[index - 1]?.timestamp;
+                  return (
+                  <Fragment key={index}>
+                  {shouldShowDayDivider(item.timestamp, previousTimestamp) && (
+                    <ChatDayDivider timestamp={item.timestamp} />
+                  )}
                   <div
-                    key={index}
                     className={cn(
                       "p-3 rounded-lg text-sm min-w-0 max-w-full",
                       item.role === "assistant"
@@ -1161,7 +1167,9 @@ export function Conversations() {
                       </p>
                     )}
                   </div>
-                ))
+                  </Fragment>
+                  );
+                })
               ) : (
                 <div className="text-center py-12 text-gray-400">
                   <MessageSquare size={48} className="mx-auto mb-3 opacity-50" />

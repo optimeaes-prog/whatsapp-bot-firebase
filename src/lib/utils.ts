@@ -24,6 +24,47 @@ export function formatMessageTime(timestamp: number): string {
   });
 }
 
+/** ¿Caen las dos marcas de tiempo en el mismo día natural (hora local)? */
+export function isSameCalendarDay(a: number, b: number): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
+/**
+ * ¿Toca separador de día antes de este mensaje? Sí en el primero con fecha y
+ * siempre que cambie el día respecto al mensaje anterior.
+ */
+export function shouldShowDayDivider(
+  timestamp: number | undefined,
+  previousTimestamp: number | undefined
+): timestamp is number {
+  if (!timestamp) return false;
+  if (!previousTimestamp) return true;
+  return !isSameCalendarDay(previousTimestamp, timestamp);
+}
+
+/**
+ * Etiqueta del separador de día en el chat: "Hoy", "Ayer" o la fecha completa.
+ * Sin ella, un mensaje de las 20:17 y otro de las 09:18 parecen del mismo día.
+ */
+export function formatMessageDay(timestamp: number): string {
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const d = new Date(timestamp);
+  const daysAgo = Math.round((startOfDay(new Date()) - startOfDay(d)) / 86_400_000);
+  if (daysAgo === 0) return 'Hoy';
+  if (daysAgo === 1) return 'Ayer';
+  return d.toLocaleDateString('es-ES', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  });
+}
+
 export function formatPhone(phone: string): string {
   if (!phone) return '';
   // Format Spanish phone numbers
