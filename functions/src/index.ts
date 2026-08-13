@@ -32,6 +32,7 @@ import {
   fetchListingByCode,
   fetchListingGlobally,
   findLeadByChatId,
+  findLeadDocForChat,
   findLeadByPhone,
   findOrgIdByChatId,
   updateLeadChatInfo,
@@ -1824,12 +1825,12 @@ async function executeCrossOrgCallHandoff(
 
   const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
   const inheritedConsent = async () => {
-    const sourceLeadSnap = await db
-      .collection(`organizations/${sourceOrgId}/leads`)
-      .where("chatId", "==", state.chatId)
-      .limit(1)
-      .get();
-    const sourceConsent = sourceLeadSnap.docs[0]?.data()?.consent as
+    const sourceLeadDoc = await findLeadDocForChat(
+      state.chatId,
+      undefined,
+      db.collection(`organizations/${sourceOrgId}/leads`)
+    );
+    const sourceConsent = sourceLeadDoc?.data()?.consent as
       | { source?: string; proofUrl?: string; proofType?: "twilio_call_sid" | "twilio_recording_sid" | "wa_inbound"; consentScriptVersion?: string; dtmfDigit?: "1" }
       | undefined;
     const proofUrl = sourceConsent?.proofUrl || undefined;
@@ -1918,13 +1919,13 @@ async function executeCrossOrgCallHandoff(
       operationType: listing.operationType,
       consent: handoffConsent,
     });
-    const targetLeadSnap = await db
-      .collection(`organizations/${targetOrgId}/leads`)
-      .where("chatId", "==", state.chatId)
-      .limit(1)
-      .get();
-    if (!targetLeadSnap.empty) {
-      await targetLeadSnap.docs[0].ref.set(
+    const targetLeadDoc = await findLeadDocForChat(
+      state.chatId,
+      listing.listingCode,
+      db.collection(`organizations/${targetOrgId}/leads`)
+    );
+    if (targetLeadDoc) {
+      await targetLeadDoc.ref.set(
         { leadSource: "call", listingResolutionStatus: "resolved" },
         { merge: true }
       );
@@ -2198,12 +2199,13 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
   // Mark lead as responded if there are user messages
   if (sortedMessages.length > 0) {
-    await markLeadAsResponded(state.chatId);
+    await markLeadAsResponded(state.chatId, state.listingCode);
     const firstInbound = sortedMessages[0];
     const created = await ensureInboundWhatsAppConsentByChatId({
       chatId: state.chatId,
       language: state.language || "es",
       proofUrl: `wa_inbound:${state.chatId}:${firstInbound.timestamp}`,
+      listingCode: state.listingCode,
     });
     if (created) {
       await recordSystemAction("lead", created.leadId, "consent_auto_captured", {
@@ -2226,6 +2228,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
             chatId: state.chatId,
             name: detectedName,
             qualificationStatus: "not_qualified",
+            listingCode: state.listingCode,
           });
         } catch (error) {
           console.warn("Failed to update lead with name", error);
@@ -2400,6 +2403,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         chatId: state.chatId,
         name: state.name,
         qualificationStatus: "not_qualified",
+        listingCode: state.listingCode,
       });
       await upsertConversation(state.chatId, {
         isFinished: true,
@@ -3006,6 +3010,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           paymentMethod: leadSummary?.paymentMethod,
           notes: leadSummary?.notes,
           conversationSummary: notificationBody,
+          listingCode: state.listingCode,
         });
         console.log("Lead status updated to qualified", state.chatId);
       } catch (error) {
@@ -3018,6 +3023,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           chatId: state.chatId,
           name: state.name,
           qualificationStatus: "rejected",
+          listingCode: state.listingCode,
         });
         console.log("Lead status updated to rejected", state.chatId);
       } catch (error) {
@@ -3198,12 +3204,13 @@ export const webhook = onRequest(
 
             // Mirror inbound on lead metadata immediately (hasResponse + implicit consent).
             if (sorted.length > 0) {
-              await markLeadAsResponded(canonicalChatId);
+              await markLeadAsResponded(canonicalChatId, state.listingCode);
               const firstInbound = sorted[0];
               const created = await ensureInboundWhatsAppConsentByChatId({
                 chatId: canonicalChatId,
                 language: state.language || "es",
                 proofUrl: `wa_inbound:${canonicalChatId}:${firstInbound.timestamp}`,
+                listingCode: state.listingCode,
               });
               if (created) {
                 await recordSystemAction("lead", created.leadId, "consent_auto_captured", {
@@ -3511,12 +3518,13 @@ async function dispatchCloudApiInbound(orgId: string, inboundMessages: Array<{ c
           });
 
           if (sorted.length > 0) {
-            await markLeadAsResponded(canonicalChatId);
+            await markLeadAsResponded(canonicalChatId, state.listingCode);
             const firstInbound = sorted[0];
             const created = await ensureInboundWhatsAppConsentByChatId({
               chatId: canonicalChatId,
               language: state.language || "es",
               proofUrl: `wa_inbound:${canonicalChatId}:${firstInbound.timestamp}`,
+              listingCode: state.listingCode,
             });
             if (created) {
               await recordSystemAction("lead", created.leadId, "consent_auto_captured", {
@@ -4492,12 +4500,13 @@ type OutboundCallOutcome =
   | "hangup_before_consent"
   | "failed";
 
-async function getLeadDocByChatId(chatId: string): Promise<FirebaseFirestore.QueryDocumentSnapshot | null> {
+async function getLeadDocByChatId(
+  chatId: string,
+  listingCode?: string
+): Promise<FirebaseFirestore.QueryDocumentSnapshot | null> {
   const orgId = getActiveOrgId();
   if (!orgId) return null;
-  const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
-  const snap = await db.collection(`organizations/${orgId}/leads`).where("chatId", "==", chatId).limit(1).get();
-  return snap.empty ? null : snap.docs[0];
+  return findLeadDocForChat(chatId, listingCode);
 }
 
 function resolveConfiguredAssistantName(config: BotConfig): string {
