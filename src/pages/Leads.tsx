@@ -7,9 +7,10 @@ import { getLeads, getLeadsForAgent, deleteLead, deleteLeads, bulkUpdateLeadsQua
 import { getListings, getListingsForAgent } from "../services/listings";
 import { getConversationByChatId, getConversationByChatIdForAgent, getConversations, getConversationsForAgent, sendMassMessageToWhatsApp } from "../services/conversations";
 
-import { formatDate, formatPhone, cn, formatMessageTime } from "../lib/utils";
+import { formatDate, formatPhone, cn, formatMessageTime, shouldShowDayDivider } from "../lib/utils";
 import { metricTheme, customLeadTagSm, conversationHeaderPills } from "../lib/metricTheme";
 import { renderMessageText } from "../utils/renderMessageText";
+import { ChatDayDivider } from "../components/ChatDayDivider";
 import { resolveConversationQualification } from "../lib/conversationQualification";
 import { downloadConversation } from "../lib/export";
 import { LeadDetails } from "../components/LeadDetails";
@@ -2091,9 +2092,14 @@ export function Leads() {
             >
               <div className="space-y-3 sm:max-w-4xl sm:mx-auto">
                 {selectedConversation.history && selectedConversation.history.length > 0 ? (
-                  selectedConversation.history.map((item, index) => (
+                  selectedConversation.history.map((item, index) => {
+                    const previousTimestamp = selectedConversation.history?.[index - 1]?.timestamp;
+                    return (
+                    <Fragment key={index}>
+                    {shouldShowDayDivider(item.timestamp, previousTimestamp) && (
+                      <ChatDayDivider timestamp={item.timestamp} />
+                    )}
                     <div
-                      key={index}
                       className={cn(
                         "p-3 rounded-lg text-sm",
                         item.role === "assistant"
@@ -2120,7 +2126,9 @@ export function Leads() {
                         </p>
                       )}
                     </div>
-                  ))
+                    </Fragment>
+                    );
+                  })
                 ) : (
                   <div className="text-center py-12 text-gray-400">
                     <MessageSquare size={48} className="mx-auto mb-3 opacity-50" />

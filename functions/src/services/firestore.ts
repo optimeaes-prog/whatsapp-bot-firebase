@@ -19,6 +19,7 @@ import {
 } from "../types";
 import { getChatIdVariants, normalizeToCanonicalChatId } from "../utils";
 import { normalizeForSearch } from "../utils/addressNormalize";
+import { pickLeadCandidate, shouldRecordPreviousListing } from "./leadSelection";
 
 
 // Initialize Firestore with specific database once
@@ -383,6 +384,49 @@ export async function searchListings(filters: {
 }
 
 // Leads
+
+/**
+ * The lead row that owns this conversation.
+ *
+ * Single entry point for "which lead is this chat about?". Every caller used to
+ * run its own `.where("chatId", ...).limit(1)` and take the first document,
+ * which meant the answer depended on how document ids happened to sort — so the
+ * name could be saved on one row and the qualification on another. The rule now
+ * lives in pickLeadCandidate; pass the conversation's current listing code when
+ * it is known, so a lead interested in two properties gets the right row.
+ *
+ * Matches across chatId variants (suffix + Argentine "9" forms) so a lead saved
+ * under one number form is found when the inbound arrives under another.
+ */
+export async function findLeadDocForChat(
+  chatId: string,
+  preferredListingCode?: string,
+  /** Defaults to the active org. Cross-org flows pass the collection explicitly. */
+  leadsCollection?: FirebaseFirestore.CollectionReference
+): Promise<FirebaseFirestore.QueryDocumentSnapshot | null> {
+  const snapshot = await (leadsCollection || getOrgDb().collection("leads"))
+    .where("chatId", "in", getChatIdVariants(chatId))
+    .get();
+  if (snapshot.empty) return null;
+
+  const chosen = pickLeadCandidate(
+    // Stored fields first: a stray `id` field on a lead row must not shadow the
+    // document id or the snapshot we need to write back to.
+    snapshot.docs.map((doc) => ({ ...(doc.data() as Record<string, unknown>), id: doc.id, doc })),
+    preferredListingCode
+  );
+  if (!chosen) return null;
+
+  if (snapshot.size > 1) {
+    // Duplicated rows are a known data problem (a lead row used to be created per
+    // phone+listing while the chat is per phone). Log it so the pairs are visible.
+    console.warn(
+      `Multiple lead rows for chat ${chatId}: ${snapshot.docs.map((d) => d.id).join(", ")} — using ${chosen.id}`
+    );
+  }
+  return chosen.doc;
+}
+
 export async function findLeadByChatId(chatId: string): Promise<{
   phone: string;
   listingCode: string;
@@ -395,13 +439,12 @@ export async function findLeadByChatId(chatId: string): Promise<{
   hasResponse?: boolean;
   callFlowMode?: "per_org" | "global_intake";
 } | null> {
-  // Match across chatId variants (suffix + Argentine "9" forms) so a lead saved
-  // under one number form is found when the inbound arrives under another.
-  const snapshot = await getOrgDb().collection("leads").where("chatId", "in", getChatIdVariants(chatId)).get();
-  if (snapshot.empty) {
+  // No listing preference here: this is what tells the conversation which listing
+  // it is about, so there is nothing to prefer yet.
+  const doc = await findLeadDocForChat(chatId);
+  if (!doc) {
     return null;
   }
-  const doc = snapshot.docs[0];
   const data = doc.data();
   return {
     phone: data.phone || "",
@@ -619,9 +662,9 @@ export async function createPendingCallLead(params: {
   });
 
   // Add extra metadata on the lead doc (by chatId) if possible.
-  const snapshot = await getOrgDb().collection("leads").where("chatId", "==", params.chatId).limit(1).get();
-  if (!snapshot.empty) {
-    await snapshot.docs[0].ref.set(
+  const leadDoc = await findLeadDocForChat(params.chatId);
+  if (leadDoc) {
+    await leadDoc.ref.set(
       {
         leadSource: "call",
         listingResolutionStatus: "pending",
@@ -672,8 +715,11 @@ export async function updateLeadListingByChatId(params: {
   listingResolutionStatus: "resolved" | "failed";
   tags?: string[];
 }): Promise<void> {
-  const snapshot = await getOrgDb().collection("leads").where("chatId", "==", params.chatId).limit(1).get();
-  if (snapshot.empty) {
+  // The call flow has worked out which property the caller meant. No listing
+  // preference: this has to land on the same row the rest of the conversation
+  // writes to, which is exactly what the shared rule returns.
+  const leadDoc = await findLeadDocForChat(params.chatId);
+  if (!leadDoc) {
     console.warn(`No lead found with chatId ${params.chatId} to update listing`);
     return;
   }
@@ -689,7 +735,7 @@ export async function updateLeadListingByChatId(params: {
     }
   }
 
-  await snapshot.docs[0].ref.set(
+  await leadDoc.ref.set(
     {
       phone: params.phone,
       listingCode: params.listingCode,
@@ -743,9 +789,19 @@ export async function updateLeadChatInfo(params: {
   tags?: string[];
   recordings?: string[];
 }): Promise<void> {
-  const docId = buildLeadDocId(params.phone, params.listingCode);
-  const docRef = getOrgDb().collection("leads").doc(docId);
-  const snap = await docRef.get();
+  // One lead row per person per conversation.
+  //
+  // Rows used to be keyed by phone + listing code, but a conversation is keyed by
+  // phone alone. So when a chat changed property — a call lead whose listing is
+  // resolved after the fact, or a lead asking about a second ad — this created a
+  // SECOND row, and the first one was orphaned: still visible in the table, never
+  // updated again, no name and no status. Reuse the row this chat already owns and
+  // move its listing code instead; only create when the chat has no row at all.
+  const existing = params.chatId ? await findLeadDocForChat(params.chatId, params.listingCode) : null;
+  const docRef = existing
+    ? existing.ref
+    : getOrgDb().collection("leads").doc(buildLeadDocId(params.phone, params.listingCode));
+  const previous = existing?.data() as Record<string, unknown> | undefined;
   const updateData: Record<string, unknown> = {
     phone: params.phone,
     listingCode: params.listingCode,
@@ -759,7 +815,21 @@ export async function updateLeadChatInfo(params: {
       updateData.assignedAgentUid = assignedAgentUid;
     }
   }
-  if (!snap.exists) {
+
+  // Moving the row to another property would silently lose the previous one, so
+  // keep it: "asked about the rental first, then the sale" stays on the record.
+  // Timestamp.now() rather than serverTimestamp() — the latter is rejected inside
+  // an array element.
+  const previousListingCode = typeof previous?.listingCode === "string" ? previous.listingCode : "";
+  if (shouldRecordPreviousListing(previousListingCode, params.listingCode)) {
+    updateData.listingCodeHistory = admin.firestore.FieldValue.arrayUnion({
+      listingCode: previousListingCode,
+      operationType: (previous?.operationType as OperationType | undefined) || null,
+      replacedAt: admin.firestore.Timestamp.now(),
+    });
+  }
+
+  if (!existing) {
     const ts = admin.firestore.FieldValue.serverTimestamp();
     updateData.createdAt = ts;
     updateData.firstMessageDate = ts;
@@ -1195,18 +1265,17 @@ export async function updateLeadStatus(params: {
   visitAvailability?: string;
   notes?: string;
   conversationSummary?: string;
+  /** The property the conversation is about, so the status lands on its row. */
+  listingCode?: string;
 }): Promise<void> {
-  const snapshot = await getOrgDb()
-    .collection("leads")
-    .where("chatId", "in", getChatIdVariants(params.chatId))
-    .get();
+  const leadDoc = await findLeadDocForChat(params.chatId, params.listingCode);
 
-  if (snapshot.empty) {
+  if (!leadDoc) {
     console.warn(`No lead found with chatId ${params.chatId}`);
     return;
   }
 
-  const docRef = snapshot.docs[0].ref;
+  const docRef = leadDoc.ref;
   const updateData: Record<string, unknown> = {
     qualificationStatus: params.qualificationStatus,
     lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
@@ -1283,17 +1352,13 @@ export async function addRecordingByPhone(phone: string, recordingUrl: string): 
 /**
  * Mark a lead as having responded
  */
-export async function markLeadAsResponded(chatId: string): Promise<void> {
-  const snapshot = await getOrgDb()
-    .collection("leads")
-    .where("chatId", "in", getChatIdVariants(chatId))
-    .limit(1)
-    .get();
+export async function markLeadAsResponded(chatId: string, listingCode?: string): Promise<void> {
+  const leadDoc = await findLeadDocForChat(chatId, listingCode);
 
-  if (snapshot.empty) return;
+  if (!leadDoc) return;
 
-  const docRef = snapshot.docs[0].ref;
-  const data = snapshot.docs[0].data();
+  const docRef = leadDoc.ref;
+  const data = leadDoc.data();
 
   // Only update if not already marked to save on writes
   if (!data.hasResponse) {
@@ -1352,9 +1417,9 @@ export async function setLeadConsentByChatId(params: {
   };
 }): Promise<{ leadId: string } | null> {
   const leadsRef = getOrgDb().collection("leads");
-  const snap = await leadsRef.where("chatId", "==", params.chatId).limit(1).get();
+  const existing = await findLeadDocForChat(params.chatId, params.listingCode);
 
-  if (snap.empty) {
+  if (!existing) {
     if (!params.phone || !params.listingCode) return null;
     const docRef = leadsRef.doc(buildLeadDocId(params.phone, params.listingCode));
     await docRef.set(
@@ -1374,7 +1439,7 @@ export async function setLeadConsentByChatId(params: {
     return { leadId: docRef.id };
   }
 
-  const docRef = snap.docs[0].ref;
+  const docRef = existing.ref;
   await docRef.set(
     {
       consent: params.consent,
@@ -1431,11 +1496,11 @@ export async function ensureInboundWhatsAppConsentByChatId(params: {
   chatId: string;
   proofUrl?: string;
   language?: "es" | "en";
+  listingCode?: string;
 }): Promise<{ leadId: string } | null> {
-  const snap = await getOrgDb().collection("leads").where("chatId", "==", params.chatId).limit(1).get();
-  if (snap.empty) return null;
+  const doc = await findLeadDocForChat(params.chatId, params.listingCode);
+  if (!doc) return null;
 
-  const doc = snap.docs[0];
   const data = doc.data() as { consent?: unknown } | undefined;
   if (data?.consent) {
     return null;
