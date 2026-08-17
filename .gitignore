@@ -26,6 +26,8 @@ dist-ssr
 # Firebase
 .firebase/
 .runtimeconfig.json
+service-account*.json
+*-firebase-adminsdk-*.json
 *-debug.log
 firebase-debug*.log
 
