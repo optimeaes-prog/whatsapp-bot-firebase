@@ -144,6 +144,8 @@ import {
   TWILIO_TEMPLATE_SID_INACTIVE_LEADS,
 } from "./inactiveLeadsParams";
 import { inactiveLeadsApiHandler } from "./inactiveLeadsEndpoints";
+import { catalogApiHandler } from "./catalogEndpoints";
+import { buildCatalogUrl, getOrCreateCatalogCode } from "./services/catalogLinks";
 import { runDailyInactiveLeadsAlert } from "./services/inactiveLeadsAlertService";
 import {
   exchangeCodeForToken,
@@ -734,11 +736,50 @@ type ListingCandidate = {
 
 const MIN_CANDIDATE_CONFIDENCE = 0.4;
 const AUTO_ACCEPT_CONFIDENCE = 0.9;
+
+/**
+ * Cuántas veces se le vuelve a preguntar al lead por su vivienda antes de
+ * pasárselo a la agencia.
+ *
+ * Uno: el primer mensaje ya lleva el enlace al catálogo, así que quien no lo
+ * resuelve a la segunda no lo va a resolver a la tercera; insistir solo alarga
+ * la conversación antes de que le llame una persona. Antes eran dos.
+ */
+const MAX_LISTING_LOOKUP_RETRIES = 1;
 const MAX_AI_SHORTLIST = 120;
 const MAX_RETURNED_CANDIDATES = 30;
 
-function buildRetryListingLookupMessage(attempt: number, language: InitialLanguage): string {
+/**
+ * Qué se le contesta al lead cuando no se ha podido identificar la vivienda.
+ *
+ * Con `catalogUrl` se le manda el catálogo desde el PRIMER fallo: pedirle otra
+ * vez la referencia a quien ya ha demostrado que no la tiene a mano es lo que
+ * hace que se pierdan leads. En la página busca la suya y copia la referencia
+ * con un botón.
+ *
+ * Sin `catalogUrl` (flujo de intake global, donde todavía no se sabe de qué
+ * agencia es el lead) se manda el mensaje de siempre.
+ */
+function buildRetryListingLookupMessage(
+  attempt: number,
+  language: InitialLanguage,
+  catalogUrl?: string
+): string {
   if (language === "en") {
+    if (catalogUrl) {
+      return compactMessage([
+        attempt <= 1
+          ? "Sorry, I couldn't identify the property from that."
+          : "I still can't find it with those details.",
+        "",
+        "Here are all our listings 👇",
+        catalogUrl,
+        "",
+        "Find yours, copy the reference number with the button and paste it here.",
+        "",
+        "If you prefer, tell me the street or the approximate price.",
+      ]);
+    }
     const header = attempt <= 1
       ? "Okay, I still can't locate it with that information."
       : "I still can't identify it with enough confidence.";
@@ -751,6 +792,20 @@ function buildRetryListingLookupMessage(attempt: number, language: InitialLangua
       "2) Street or area",
       "3) Approximate price",
       "4) Or the listing link",
+    ]);
+  }
+  if (catalogUrl) {
+    return compactMessage([
+      attempt <= 1
+        ? "Perdona, no he conseguido identificar la vivienda con esos datos."
+        : "Sigo sin localizarla con esos datos.",
+      "",
+      "Aquí tienes todos nuestros anuncios 👇",
+      catalogUrl,
+      "",
+      "Busca la tuya, copia el número de referencia con el botón y pégamelo aquí.",
+      "",
+      "Si lo prefieres, dime la calle o el precio aproximado.",
     ]);
   }
   const header = attempt <= 1
@@ -766,6 +821,30 @@ function buildRetryListingLookupMessage(attempt: number, language: InitialLangua
     "3) Precio aproximado",
     "4) O el enlace al anuncio",
   ]);
+}
+
+/**
+ * Enlace al catálogo de la agencia para los reintentos del flujo de llamada.
+ *
+ * Solo tiene sentido en el flujo per-org: en el de intake global la
+ * organización activa es la de Proplead y todavía no se sabe de qué agencia es
+ * el lead — justo lo que se le está preguntando —, así que no hay catálogo que
+ * enseñarle.
+ *
+ * Si falla, se devuelve undefined y el bot manda el mensaje de siempre: quedarse
+ * sin responder por no poder montar un enlace sería mucho peor.
+ */
+async function resolveCallCatalogUrl(state: ConversationState): Promise<string | undefined> {
+  if (state.callFlowMode !== "per_org") return undefined;
+  const orgId = getActiveOrgId();
+  if (!orgId) return undefined;
+  try {
+    const code = await getOrCreateCatalogCode(orgId);
+    return buildCatalogUrl(APP_BASE_URL.value(), code);
+  } catch (error) {
+    console.warn("No se pudo resolver el catálogo de la agencia", error);
+    return undefined;
+  }
 }
 
 function buildConfirmListingMessage(candidate: ListingCandidate, language: InitialLanguage): string {
@@ -2665,6 +2744,29 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       await upsertConversation(state.chatId, { isFinished: true, tags: state.tags, flowStep: "closed" });
     };
 
+    /**
+     * Se acabaron los intentos: se le dice al lead que le llamará la agencia y
+     * se cierra la conversación con el aviso al agente.
+     *
+     * Estaba escrito dos veces (una por cada punto en el que el bot se rinde) y
+     * solo una de las dos respetaba el límite de intentos. Con el límite en uno
+     * esa diferencia se nota, así que ahora las dos salidas pasan por aquí.
+     */
+    const handOverToAgency = async (reason: string) => {
+      await sendAssistantTextAndRecord(state, buildListingNotFoundFallback(undefined, callFlowLanguage));
+      state.tags = Array.from(new Set([...(state.tags || []), "listing-not-found"]));
+      await updateLeadListingByChatId({
+        chatId: state.chatId,
+        phone: state.phone,
+        listingCode: CALL_PENDING_LISTING_CODE,
+        operationType: state.operationType,
+        name: state.name,
+        listingResolutionStatus: "failed",
+        tags: state.tags,
+      });
+      await notifyAgentAndClose(reason, combinedText);
+    };
+
     try {
       const classifyBinaryDecision = async (text: string, candidate: ListingCandidate): Promise<"confirm" | "deny" | "unclear"> => {
         const normalized = normalizeForSearch(text);
@@ -2723,7 +2825,14 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
               pendingListingQueue: undefined,
               pendingListingQueueIndex: undefined,
             });
-            await sendAssistantTextAndRecord(state, buildRetryListingLookupMessage(nextAttempt, callFlowLanguage));
+            if (nextAttempt > MAX_LISTING_LOOKUP_RETRIES) {
+              await handOverToAgency("Nuevo lead (el anuncio confirmado ya no existe).");
+              return;
+            }
+            await sendAssistantTextAndRecord(
+              state,
+              buildRetryListingLookupMessage(nextAttempt, callFlowLanguage, await resolveCallCatalogUrl(state))
+            );
             return;
           }
           await applyListingToStateAndPersist(listing.data, candidate.orgId || listing.orgId);
@@ -2747,18 +2856,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
             return;
           }
 
-          const fallbackToUser = buildListingNotFoundFallback(undefined, callFlowLanguage);
-          await sendAssistantTextAndRecord(state, fallbackToUser);
-          await updateLeadListingByChatId({
-            chatId: state.chatId,
-            phone: state.phone,
-            listingCode: CALL_PENDING_LISTING_CODE,
-            operationType: state.operationType,
-            name: state.name,
-            listingResolutionStatus: "failed",
-            tags: state.tags,
-          });
-          await notifyAgentAndClose("Nuevo lead (sin coincidencias confirmadas tras ranking AI).", combinedText);
+          await handOverToAgency("Nuevo lead (sin coincidencias confirmadas tras ranking AI).");
           return;
         }
 
@@ -2840,31 +2938,22 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           return;
         }
 
-        // none → retry up to 2 times
+        // none → un reintento y, si sigue sin salir, a la agencia
         const nextAttempt = attempt + 1;
         state.listingResolveAttempts = nextAttempt;
         await upsertConversation(state.chatId, {
           flowStep: "call_listing_collect",
           listingResolveAttempts: nextAttempt,
         });
-        if (nextAttempt <= 2) {
-          await sendAssistantTextAndRecord(state, buildRetryListingLookupMessage(nextAttempt, callFlowLanguage));
+        if (nextAttempt <= MAX_LISTING_LOOKUP_RETRIES) {
+          await sendAssistantTextAndRecord(
+            state,
+            buildRetryListingLookupMessage(nextAttempt, callFlowLanguage, await resolveCallCatalogUrl(state))
+          );
           return;
         }
 
-        const fallbackToUser = buildListingNotFoundFallback(undefined, callFlowLanguage);
-        await sendAssistantTextAndRecord(state, fallbackToUser);
-        state.tags = Array.from(new Set([...(state.tags || []), "listing-not-found"]));
-        await updateLeadListingByChatId({
-          chatId: state.chatId,
-          phone: state.phone,
-          listingCode: CALL_PENDING_LISTING_CODE,
-          operationType: state.operationType,
-          name: state.name,
-          listingResolutionStatus: "failed",
-          tags: state.tags,
-        });
-        await notifyAgentAndClose("Nuevo lead (no se pudo encontrar el anuncio).", combinedText);
+        await handOverToAgency("Nuevo lead (no se pudo encontrar el anuncio).");
         return;
       }
     } catch (error) {
@@ -8418,6 +8507,12 @@ export const inactiveLeadsApi = onRequest(
   { cors: true, region: REGION, secrets: [INACTIVE_LEADS_SECRET] },
   inactiveLeadsApiHandler
 );
+
+/**
+ * JSON API behind the public listings page the bot links to when it can't
+ * identify the property: GET ?code=. No secret — the catalog is public info.
+ */
+export const catalogApi = onRequest({ cors: true, region: REGION }, catalogApiHandler);
 
 /**
  * Aviso diario de "leads sin respuesta" (09:00 Madrid): un WhatsApp por agencia
