@@ -5,12 +5,27 @@ import { Button } from "./ui/Button";
 import { cn } from "../lib/utils";
 
 /**
- * Páginas a las que se llega por un enlace firmado, sin sesión: se abren para
- * mirar una cosa concreta y ya. No cargan analítica (el consentimiento arranca
- * denegado en index.html y aquí nunca se concede), así que el banner solo
- * estorbaría.
+ * Páginas a las que se llega por un enlace, sin sesión: se abren para mirar una
+ * cosa concreta y ya. No cargan analítica (el consentimiento arranca denegado en
+ * index.html y aquí nunca se concede), así que el banner solo estorbaría. En el
+ * móvil, además, tapa media pantalla.
  */
-const PATHS_WITHOUT_COOKIE_BANNER = ["/leads-inactivos"];
+const PATHS_WITHOUT_COOKIE_BANNER = ["/leads-inactivos", "/anuncios"];
+
+/**
+ * Si la ruta es una de esas páginas, contando las que llevan el código del
+ * enlace corto detrás (`/anuncios/Xk7mQ2pRt9`).
+ *
+ * Antes se comparaba la ruta entera, así que el banner no salía en
+ * `/leads-inactivos` pero sí en `/leads-inactivos/<código>`, que es justo la
+ * versión que se manda por WhatsApp. Se compara con la barra incluida para que
+ * `/anuncios-de-algo` no se cuele.
+ */
+function isPathWithoutCookieBanner(pathname: string): boolean {
+  return PATHS_WITHOUT_COOKIE_BANNER.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`)
+  );
+}
 
 export function CookieBanner() {
   const { pathname } = useLocation();
@@ -30,7 +45,7 @@ export function CookieBanner() {
   // Capa 2 visible whenever user explicitly opens it (banner or footer link).
   const showLayer2 = isPreferencesOpen;
 
-  if (PATHS_WITHOUT_COOKIE_BANNER.includes(pathname)) return null;
+  if (isPathWithoutCookieBanner(pathname)) return null;
   if (!showLayer1 && !showLayer2) return null;
 
   return (
