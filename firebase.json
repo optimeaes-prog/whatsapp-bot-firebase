@@ -45,6 +45,19 @@
         ]
       },
       {
+        "source": "/anuncios{,/**}",
+        "headers": [
+          {
+            "key": "X-Robots-Tag",
+            "value": "noindex, nofollow, noarchive"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "no-referrer"
+          }
+        ]
+      },
+      {
         "source": "**/*.@(html)",
         "headers": [
           {
@@ -121,6 +134,13 @@
         "source": "/api/leads-inactivos",
         "function": {
           "functionId": "inactiveLeadsApi",
+          "region": "europe-west1"
+        }
+      },
+      {
+        "source": "/api/anuncios",
+        "function": {
+          "functionId": "catalogApi",
           "region": "europe-west1"
         }
       },

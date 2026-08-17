@@ -41,6 +41,7 @@ import FontGallery from "./pages/FontGallery";
 import EmailGallery from "./pages/EmailGallery";
 import EmailPreferences from "./pages/EmailPreferences";
 import LeadsInactivos from "./pages/LeadsInactivos";
+import Anuncios from "./pages/Anuncios";
 import { Organizacion } from "./pages/Organizacion";
 import { BotTest } from "./pages/BotTest";
 import { Usage } from "./pages/Usage";
@@ -132,6 +133,8 @@ function App() {
             <Route path="/leads-inactivos" element={<LeadsInactivos />} />
             {/* Enlace corto que se manda por WhatsApp: el código va en la ruta. */}
             <Route path="/leads-inactivos/:code" element={<LeadsInactivos />} />
+            {/* Catálogo que el bot manda al lead cuando no identifica la vivienda. */}
+            <Route path="/anuncios/:code" element={<Anuncios />} />
             <Route path="/fonts" element={<FontGallery />} />
             <Route path="/" element={<MarketingLandingV2 />} />
             <Route path="/landingv2" element={<MarketingLanding />} />
