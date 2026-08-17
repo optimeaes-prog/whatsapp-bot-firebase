@@ -413,3 +413,21 @@ test("the second call's own row merges back without downgrading anything", { ski
   assert.ok(all[0].conversationSummary);
 });
 
+test("a second call cannot undo a qualification even if the property never resolved", { skip }, async () => {
+  // Francisco's row never moved because its listing was resolved; this is the
+  // harder case — the lead qualifies while still on the placeholder row.
+  await inOrg(async () => {
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT });
+    await updateLeadStatus({
+      chatId: CHAT, name: "Francisco", qualificationStatus: "qualified",
+      conversationSummary: "Lead cualificado ✅",
+    });
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT });
+  });
+
+  const all = await rows();
+  assert.equal(all.length, 1);
+  assert.equal(all[0].qualificationStatus, "qualified", "the second call must not downgrade it");
+  assert.equal(all[0].name, "Francisco");
+  assert.ok(all[0].conversationSummary);
+});

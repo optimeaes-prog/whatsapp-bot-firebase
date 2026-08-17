@@ -5,6 +5,7 @@ import {
   pickLeadCandidate,
   fieldsToCarryOver,
   missingIdentityFields,
+  shouldApplyQualificationStatus,
   LeadCandidate,
 } from "../services/leadSelection";
 
@@ -140,3 +141,28 @@ test("only the person's own details are mirrored, never the qualification", () =
   assert.deepEqual(Object.keys(patch).sort(), ["consent", "name"]);
 });
 
+// --- a new intake must not undo a conclusion the bot already reached ---
+
+test("a second intake cannot push a qualified lead back to not_qualified", () => {
+  assert.equal(shouldApplyQualificationStatus("qualified", "not_qualified"), false);
+});
+
+test("nor a rejected one", () => {
+  assert.equal(shouldApplyQualificationStatus("rejected", "not_qualified"), false);
+});
+
+test("a lead still in progress takes the new status", () => {
+  assert.equal(shouldApplyQualificationStatus("not_qualified", "not_qualified"), true);
+  assert.equal(shouldApplyQualificationStatus(undefined, "not_qualified"), true);
+  assert.equal(shouldApplyQualificationStatus("no_response", "not_qualified"), true);
+});
+
+test("qualifying or rejecting always wins", () => {
+  assert.equal(shouldApplyQualificationStatus("qualified", "rejected"), true);
+  assert.equal(shouldApplyQualificationStatus("rejected", "qualified"), true);
+  assert.equal(shouldApplyQualificationStatus("not_qualified", "qualified"), true);
+});
+
+test("no status means nothing to write", () => {
+  assert.equal(shouldApplyQualificationStatus("qualified", undefined), false);
+});

@@ -23,6 +23,7 @@ import {
   pickLeadCandidate,
   fieldsToCarryOver,
   missingIdentityFields,
+  shouldApplyQualificationStatus,
 } from "./leadSelection";
 
 
@@ -927,7 +928,13 @@ export async function updateLeadChatInfo(params: {
     updateData.name = params.name;
   }
 
-  if (params.qualificationStatus !== undefined) {
+  if (
+    params.qualificationStatus !== undefined &&
+    shouldApplyQualificationStatus(
+      snap.data()?.qualificationStatus as string | undefined,
+      params.qualificationStatus
+    )
+  ) {
     updateData.qualificationStatus = params.qualificationStatus;
   }
 
@@ -1361,9 +1368,16 @@ export async function updateLeadStatus(params: {
 
   const docRef = leadDoc.ref;
   const updateData: Record<string, unknown> = {
-    qualificationStatus: params.qualificationStatus,
     lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
   };
+  if (
+    shouldApplyQualificationStatus(
+      leadDoc.data()?.qualificationStatus as string | undefined,
+      params.qualificationStatus
+    )
+  ) {
+    updateData.qualificationStatus = params.qualificationStatus;
+  }
 
   if (params.name !== undefined) {
     updateData.name = params.name;

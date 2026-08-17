@@ -83,6 +83,29 @@ export function fieldsToCarryOver(
   return carried;
 }
 
+/** A conclusion the bot reached about the lead. Not to be undone by a new intake. */
+const SETTLED_STATUSES = new Set(["qualified", "rejected"]);
+
+/**
+ * May this qualification status be written over the one already stored?
+ *
+ * "not_qualified" is the starting state every intake sets: a second phone call, a
+ * repeat Idealista form, a call handoff. When the lead had already qualified,
+ * writing it again silently undid the qualification — the row kept its summary
+ * but read "No cualificado", and the lead reappeared in the cold-leads list.
+ *
+ * So a conclusion (qualified / rejected) is never replaced by the starting state.
+ * Agents changing a status by hand go through a different path and are unaffected.
+ */
+export function shouldApplyQualificationStatus(
+  currentStatus: string | undefined,
+  incomingStatus: string | undefined
+): boolean {
+  if (!incomingStatus) return false;
+  if (SETTLED_STATUSES.has(incomingStatus)) return true;
+  return !SETTLED_STATUSES.has(currentStatus || "");
+}
+
 /** The person's own details, mirrored across every row of the same chat. */
 export const LEAD_IDENTITY_FIELDS = ["name", "phone", "email", "consent"] as const;
 
