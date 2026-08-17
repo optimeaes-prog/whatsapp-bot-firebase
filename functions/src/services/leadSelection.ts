@@ -47,20 +47,62 @@ function completenessScore(candidate: LeadCandidate): number {
 }
 
 /**
- * Should the property a lead row is moving away from be kept in its history?
- *
- * Yes whenever it was a real property and it is actually changing — so a lead who
- * asked about the rental and then the sale keeps both on the record. The call
- * placeholder is not a property, and re-saving the same code is not a change.
+ * Fields that belong to a property, not to a person. They are never carried
+ * from one lead row to another — each row keeps its own.
  */
-export function shouldRecordPreviousListing(
-  previousListingCode: string | undefined,
-  nextListingCode: string | undefined
-): boolean {
-  const previous = (previousListingCode || "").trim();
-  const next = (nextListingCode || "").trim();
-  if (!previous || previous === "__pending__") return false;
-  return previous !== next;
+const PROPERTY_FIELDS = new Set([
+  "listingCode",
+  "listingResolutionStatus",
+  "assignedAgentUid",
+  "operationType",
+]);
+
+function isBlank(value: unknown): boolean {
+  return value === undefined || value === null || value === "";
+}
+
+/**
+ * What to copy from one lead row onto another: everything the target is missing,
+ * minus the fields that describe the property rather than the person.
+ *
+ * Used when a call placeholder row moves to its real property (the placeholder's
+ * name, consent and dates come along) and to keep a lead's identity consistent
+ * across the rows of the properties they asked about.
+ */
+export function fieldsToCarryOver(
+  target: Record<string, unknown> | undefined,
+  source: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const carried: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source || {})) {
+    if (PROPERTY_FIELDS.has(key)) continue;
+    if (isBlank(value)) continue;
+    if (!isBlank((target || {})[key])) continue;
+    carried[key] = value;
+  }
+  return carried;
+}
+
+/** The person's own details, mirrored across every row of the same chat. */
+export const LEAD_IDENTITY_FIELDS = ["name", "phone", "email", "consent"] as const;
+
+/**
+ * Which identity fields this row is missing. A lead who asked about two
+ * properties should read the same on both rows, rather than having the name on
+ * whichever row happened to be current when the bot learned it.
+ */
+export function missingIdentityFields(
+  row: Record<string, unknown> | undefined,
+  identity: Record<string, unknown>
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const key of LEAD_IDENTITY_FIELDS) {
+    const value = identity[key];
+    if (isBlank(value)) continue;
+    if (!isBlank((row || {})[key])) continue;
+    patch[key] = value;
+  }
+  return patch;
 }
 
 /**

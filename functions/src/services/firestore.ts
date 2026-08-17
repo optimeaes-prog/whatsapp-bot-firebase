@@ -19,7 +19,11 @@ import {
 } from "../types";
 import { getChatIdVariants, normalizeToCanonicalChatId } from "../utils";
 import { normalizeForSearch } from "../utils/addressNormalize";
-import { pickLeadCandidate, shouldRecordPreviousListing } from "./leadSelection";
+import {
+  pickLeadCandidate,
+  fieldsToCarryOver,
+  missingIdentityFields,
+} from "./leadSelection";
 
 
 // Initialize Firestore with specific database once
@@ -661,10 +665,14 @@ export async function createPendingCallLead(params: {
     recordings: [],
   });
 
-  // Add extra metadata on the lead doc (by chatId) if possible.
-  const leadDoc = await findLeadDocForChat(params.chatId);
-  if (leadDoc) {
-    await leadDoc.ref.set(
+  // Metadata goes on the placeholder row this call just created, addressed
+  // directly. Looking it up by chat would find whichever row the caller already
+  // has — and marking an existing property's lead "pending resolution" would be
+  // a lie about that property.
+  await getOrgDb()
+    .collection("leads")
+    .doc(buildLeadDocId(params.phone, sentinelListingCode))
+    .set(
       {
         leadSource: "call",
         listingResolutionStatus: "pending",
@@ -672,7 +680,6 @@ export async function createPendingCallLead(params: {
       },
       { merge: true }
     );
-  }
 
   // Ensure there's a conversation doc to buffer messages into.
   // IMPORTANT: only initialize transient fields (history, pendingUserMessages, isFinished, tags)
@@ -715,9 +722,7 @@ export async function updateLeadListingByChatId(params: {
   listingResolutionStatus: "resolved" | "failed";
   tags?: string[];
 }): Promise<void> {
-  // The call flow has worked out which property the caller meant. No listing
-  // preference: this has to land on the same row the rest of the conversation
-  // writes to, which is exactly what the shared rule returns.
+  // The call flow has worked out which property the caller meant.
   const leadDoc = await findLeadDocForChat(params.chatId);
   if (!leadDoc) {
     console.warn(`No lead found with chatId ${params.chatId} to update listing`);
@@ -735,23 +740,122 @@ export async function updateLeadListingByChatId(params: {
     }
   }
 
-  await leadDoc.ref.set(
-    {
+  // Undefined keys are dropped rather than kept: spreading this patch over the
+  // fields carried from another row must not blank them out. `{...{name: "Ana"},
+  // ...{name: undefined}}` is `{name: undefined}`, which would silently lose the
+  // name the call had captured.
+  const patch: Record<string, unknown> = Object.fromEntries(
+    Object.entries({
       phone: params.phone,
       listingCode: params.listingCode,
-      ...(params.operationType ? { operationType: params.operationType } : {}),
+      operationType: params.operationType,
       name: params.name,
       listingResolutionStatus: params.listingResolutionStatus,
       tags: params.tags,
       lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
       ...assignedPatch,
-    },
-    { merge: true }
+    }).filter(([, value]) => value !== undefined)
   );
 
-  if (scopeForSync && params.listingCode && params.listingCode !== "__pending__") {
+  const isRealListing = Boolean(params.listingCode) && params.listingCode !== "__pending__";
+  const source = (leadDoc.data() || {}) as Record<string, unknown>;
+  const leads = getOrgDb().collection("leads");
+  // Go straight to the placeholder rather than to whichever row the chat lookup
+  // returns: a caller may already have a row for another property, and that row
+  // is that property's lead — it must never be repurposed.
+  const placeholderRef = leads.doc(buildLeadDocId(params.phone, "__pending__"));
+  const placeholderSnap = await placeholderRef.get();
+
+  if (!isRealListing) {
+    // The call flow gave up on identifying the property. Record that on the
+    // placeholder, never stamping "__pending__" over a row that owns a real one.
+    if (placeholderSnap.exists) {
+      await placeholderRef.set(patch, { merge: true });
+    } else {
+      const withoutListing = { ...patch };
+      delete withoutListing.listingCode;
+      await leadDoc.ref.set(withoutListing, { merge: true });
+    }
+    return;
+  }
+
+  const targetRef = leads.doc(buildLeadDocId(params.phone, params.listingCode));
+
+  if (placeholderSnap.exists) {
+    // A call lead starts filed under the "__pending__" placeholder because nobody
+    // knows the property yet. Now that we do, the row MOVES to its real identity.
+    // Writing the code into a row still filed as "__pending__" is exactly what
+    // produced the duplicates: the next write looked for the row of that
+    // property, found none, and created a second one.
+    await getDb().runTransaction(async (tx) => {
+      // All reads before any write — Firestore requires that order.
+      const fromSnap = await tx.get(placeholderRef);
+      const toSnap = await tx.get(targetRef);
+      const from = (fromSnap.data() || {}) as Record<string, unknown>;
+      const to = (toSnap.data() || {}) as Record<string, unknown>;
+      // Whatever the placeholder learned during the call — the name, the consent
+      // proof, when it started — comes along, unless the destination already
+      // knows better. Moving atomically means the proof can never be dropped.
+      tx.set(targetRef, { ...fieldsToCarryOver(to, from), ...patch }, { merge: true });
+      if (fromSnap.exists) tx.delete(placeholderRef);
+    });
+  } else {
+    // No placeholder: the chat is confirming, or moving on to, a real property.
+    // It gets its own row, carrying only who the person is — never the other
+    // property's qualification.
+    const targetSnap = await targetRef.get();
+    const identity = missingIdentityFields(
+      (targetSnap.data() || {}) as Record<string, unknown>,
+      source
+    );
+    const created = targetSnap.exists
+      ? {}
+      : {
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        firstMessageDate: admin.firestore.FieldValue.serverTimestamp(),
+        hasResponse: false,
+      };
+    await targetRef.set({ ...identity, ...created, chatId: params.chatId, ...patch }, { merge: true });
+  }
+
+  if (scopeForSync && isRealListing) {
     await syncAssignedAgentUidForListingCode(params.listingCode, scopeForSync);
   }
+}
+
+/**
+ * Mirror the person's own details onto every lead row of the same chat.
+ *
+ * A lead interested in two properties has two rows but one conversation, so the
+ * name or the consent proof would otherwise sit only on whichever row was
+ * current when the bot learned it, leaving the other looking empty. Only fills
+ * gaps: a row that already has a value keeps it.
+ */
+export async function syncLeadIdentityAcrossChat(params: {
+  chatId: string;
+  identity: Record<string, unknown>;
+  skipDocId?: string;
+}): Promise<void> {
+  const identity = Object.fromEntries(
+    Object.entries(params.identity).filter(([, v]) => v !== undefined)
+  );
+  if (Object.keys(identity).length === 0) return;
+
+  const snapshot = await getOrgDb()
+    .collection("leads")
+    .where("chatId", "in", getChatIdVariants(params.chatId))
+    .get();
+  if (snapshot.size <= 1) return;
+
+  await Promise.all(
+    snapshot.docs
+      .filter((doc) => doc.id !== params.skipDocId)
+      .map(async (doc) => {
+        const patch = missingIdentityFields(doc.data() as Record<string, unknown>, identity);
+        if (Object.keys(patch).length === 0) return;
+        await doc.ref.set(patch, { merge: true });
+      })
+  );
 }
 
 /**
@@ -789,19 +893,12 @@ export async function updateLeadChatInfo(params: {
   tags?: string[];
   recordings?: string[];
 }): Promise<void> {
-  // One lead row per person per conversation.
-  //
-  // Rows used to be keyed by phone + listing code, but a conversation is keyed by
-  // phone alone. So when a chat changed property — a call lead whose listing is
-  // resolved after the fact, or a lead asking about a second ad — this created a
-  // SECOND row, and the first one was orphaned: still visible in the table, never
-  // updated again, no name and no status. Reuse the row this chat already owns and
-  // move its listing code instead; only create when the chat has no row at all.
-  const existing = params.chatId ? await findLeadDocForChat(params.chatId, params.listingCode) : null;
-  const docRef = existing
-    ? existing.ref
-    : getOrgDb().collection("leads").doc(buildLeadDocId(params.phone, params.listingCode));
-  const previous = existing?.data() as Record<string, unknown> | undefined;
+  // One lead row per person PER PROPERTY: a lead interested in two ads is two
+  // rows, on purpose. The row is keyed by phone + listing code, so the same
+  // person asking again about the same ad updates their row instead of adding one.
+  const docId = buildLeadDocId(params.phone, params.listingCode);
+  const docRef = getOrgDb().collection("leads").doc(docId);
+  const snap = await docRef.get();
   const updateData: Record<string, unknown> = {
     phone: params.phone,
     listingCode: params.listingCode,
@@ -816,20 +913,7 @@ export async function updateLeadChatInfo(params: {
     }
   }
 
-  // Moving the row to another property would silently lose the previous one, so
-  // keep it: "asked about the rental first, then the sale" stays on the record.
-  // Timestamp.now() rather than serverTimestamp() — the latter is rejected inside
-  // an array element.
-  const previousListingCode = typeof previous?.listingCode === "string" ? previous.listingCode : "";
-  if (shouldRecordPreviousListing(previousListingCode, params.listingCode)) {
-    updateData.listingCodeHistory = admin.firestore.FieldValue.arrayUnion({
-      listingCode: previousListingCode,
-      operationType: (previous?.operationType as OperationType | undefined) || null,
-      replacedAt: admin.firestore.Timestamp.now(),
-    });
-  }
-
-  if (!existing) {
+  if (!snap.exists) {
     const ts = admin.firestore.FieldValue.serverTimestamp();
     updateData.createdAt = ts;
     updateData.firstMessageDate = ts;
@@ -1325,6 +1409,15 @@ export async function updateLeadStatus(params: {
   }
 
   await docRef.update(updateData);
+
+  // The name belongs to the person, not to one of their properties.
+  if (params.name !== undefined) {
+    await syncLeadIdentityAcrossChat({
+      chatId: params.chatId,
+      identity: { name: params.name },
+      skipDocId: docRef.id,
+    }).catch((error) => console.warn("Failed to mirror lead name across rows", error));
+  }
 }
 
 /**
@@ -1447,6 +1540,12 @@ export async function setLeadConsentByChatId(params: {
     },
     { merge: true }
   );
+  // Consent is given by the person, so it holds for every property they asked about.
+  await syncLeadIdentityAcrossChat({
+    chatId: params.chatId,
+    identity: { consent: params.consent, phone: params.phone },
+    skipDocId: docRef.id,
+  }).catch((error) => console.warn("Failed to mirror consent across rows", error));
   return { leadId: docRef.id };
 }
 
@@ -1518,6 +1617,20 @@ export async function ensureInboundWhatsAppConsentByChatId(params: {
     },
     { merge: true }
   );
+
+    // Same person, same consent: mirror it onto their other properties' rows.
+  await syncLeadIdentityAcrossChat({
+    chatId: params.chatId,
+    identity: {
+      consent: {
+        capturedAt: admin.firestore.Timestamp.now(),
+        source: "inbound_whatsapp",
+        language: params.language || "es",
+        proofUrl: params.proofUrl || undefined,
+      },
+    },
+    skipDocId: doc.id,
+  }).catch((error) => console.warn("Failed to mirror inbound consent across rows", error));
 
   return { leadId: doc.id };
 }

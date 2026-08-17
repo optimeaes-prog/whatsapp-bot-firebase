@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { pickLeadCandidate, shouldRecordPreviousListing, LeadCandidate } from "../services/leadSelection";
+import {
+  pickLeadCandidate,
+  fieldsToCarryOver,
+  missingIdentityFields,
+  LeadCandidate,
+} from "../services/leadSelection";
 
 const at = (millis: number) => ({ toMillis: () => millis });
 
@@ -85,19 +90,53 @@ test("a preferred property nobody has does not empty the result", () => {
   assert.equal(chosen?.id, qualifiedRow.id);
 });
 
-test("moving a lead to another property keeps the old one on the record", () => {
-  assert.equal(shouldRecordPreviousListing("111993451", "112009850"), true);
+
+// --- moving a call placeholder onto its real property ---
+
+test("the placeholder's details come along when the row moves", () => {
+  const placeholder = {
+    name: "Riccardo", consent: { source: "phone_call" }, phone: "34644402838",
+    listingCode: "__pending__", createdAt: 1_000, hasResponse: false,
+  };
+  const carried = fieldsToCarryOver({}, placeholder);
+  assert.equal(carried.name, "Riccardo");
+  assert.deepEqual(carried.consent, { source: "phone_call" });
+  assert.equal(carried.createdAt, 1_000);
 });
 
-test("the call placeholder is not a property worth remembering", () => {
-  assert.equal(shouldRecordPreviousListing("__pending__", "112009850"), false);
+test("the property's own fields never travel between rows", () => {
+  const carried = fieldsToCarryOver({}, {
+    listingCode: "__pending__", listingResolutionStatus: "pending",
+    assignedAgentUid: "uid_old", operationType: "Alquiler", name: "Ana",
+  });
+  assert.deepEqual(Object.keys(carried), ["name"]);
 });
 
-test("re-saving the same property is not a change", () => {
-  assert.equal(shouldRecordPreviousListing("112009850", "112009850"), false);
+test("a destination that already knows something keeps its own value", () => {
+  const carried = fieldsToCarryOver({ name: "Cristina florido" }, { name: "sin nombre", email: "a@b.c" });
+  assert.equal(carried.name, undefined);
+  assert.equal(carried.email, "a@b.c");
 });
 
-test("a brand new row has no previous property", () => {
-  assert.equal(shouldRecordPreviousListing(undefined, "112009850"), false);
-  assert.equal(shouldRecordPreviousListing("", "112009850"), false);
+test("blank values are not worth carrying", () => {
+  assert.deepEqual(fieldsToCarryOver({}, { name: "", email: null, notes: undefined }), {});
 });
+
+// --- one person, two properties, two rows that should read the same ---
+
+test("a row missing the name gets it from the person", () => {
+  assert.deepEqual(missingIdentityFields({ listingCode: "111" }, { name: "Renata" }), { name: "Renata" });
+});
+
+test("a row that already has the name is left alone", () => {
+  assert.deepEqual(missingIdentityFields({ name: "Renata" }, { name: "renata" }), {});
+});
+
+test("only the person's own details are mirrored, never the qualification", () => {
+  const patch = missingIdentityFields({}, {
+    name: "Ana", consent: { source: "inbound_whatsapp" },
+    qualificationStatus: "qualified", conversationSummary: "…",
+  } as Record<string, unknown>);
+  assert.deepEqual(Object.keys(patch).sort(), ["consent", "name"]);
+});
+
