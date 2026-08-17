@@ -49,6 +49,24 @@ test("the catalog endpoint hides closed listings", () => {
   );
 });
 
+/**
+ * La plantilla inicial del flujo per-org lleva el código del catálogo como
+ * variable. Si se enviara sin él, el lead recibiría el enlace a medias.
+ */
+test("the post-call template gets the catalog code, but only on the per-org flow", () => {
+  const src = readRepoFile("src/index.ts");
+  assert.match(
+    src,
+    /variables: await resolveVoiceOptInTemplateVariables\(isPerOrgGather \? orgId : ""\)/,
+    "the opt-in send must pass the code, and only when the agency is known"
+  );
+  assert.match(
+    src,
+    /async function resolveVoiceOptInTemplateVariables\(orgId: string\)[\s\S]*?if \(!orgId\) return \{\};/,
+    "the global intake org must keep sending its variable-free template"
+  );
+});
+
 test("the retry message only carries a catalog link on the per-org call flow", () => {
   const src = readRepoFile("src/index.ts");
   assert.match(

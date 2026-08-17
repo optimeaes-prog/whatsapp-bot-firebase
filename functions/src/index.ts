@@ -351,6 +351,31 @@ async function getAgentNotificationTemplateSidForCompactAlert(orgId: string): Pr
   return primary;
 }
 
+/**
+ * Variables de la plantilla que se manda nada más colgar (la del "pulse 1").
+ *
+ * En el flujo per-org esa plantilla lleva el enlace al catálogo de la agencia,
+ * y lo que viaja como variable es solo el código:
+ * `https://proplead.io/anuncios/{{1}}`. Se pasa el código y no la URL entera
+ * para que el dominio quede fijo dentro del texto aprobado.
+ *
+ * `orgId` vacío = intake global: ahí todavía no se sabe de qué agencia es el
+ * lead, así que su plantilla sigue siendo la de siempre, sin variables. Pasarle
+ * variables de más a una plantilla que no las usa es inofensivo, pero acuñarle
+ * un código de catálogo a la organización de intake no tendría sentido.
+ */
+async function resolveVoiceOptInTemplateVariables(orgId: string): Promise<Record<string, string>> {
+  if (!orgId) return {};
+  try {
+    return { "1": await getOrCreateCatalogCode(orgId) };
+  } catch (error) {
+    // Sin código se manda igualmente: el lead acaba de dar su permiso por
+    // teléfono y quedarse sin ningún mensaje es peor que uno con el enlace roto.
+    console.error("No se pudo resolver el código del catálogo para la plantilla inicial", error);
+    return {};
+  }
+}
+
 async function getVoiceOptInTemplateSid(orgId: string): Promise<string> {
   const { twilioTemplates } = await getOrgTemplateSnapshot(orgId);
   const sid = twilioTemplates.voiceOptInConsent || "HX8da52518b4b16392cffdd1f89dd49b55";
@@ -3843,7 +3868,7 @@ export const voiceGatherCallback = onRequest(
               to: phone,
               chatId,
               language: "es",
-              variables: {},
+              variables: await resolveVoiceOptInTemplateVariables(isPerOrgGather ? orgId : ""),
               templateSid,
             });
 
