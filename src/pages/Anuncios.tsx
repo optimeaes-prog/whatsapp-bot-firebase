@@ -219,10 +219,12 @@ function OperationTabs({
           aria-selected={value === tab.key}
           onClick={() => onChange(tab.key)}
           className={
+            // Mismo naranja de marca y mismo texto oscuro que el botón de
+            // copiar, para que la página tenga un solo color de acento.
             // text-[13px] y px-2: con "Alquiler (11)" a 14px la pestaña parte la
             // palabra en dos líneas en una pantalla de 375 px.
             value === tab.key
-              ? "rounded-btn bg-slate-900 px-2 py-2.5 text-[13px] font-heading font-semibold text-white whitespace-nowrap"
+              ? "rounded-btn bg-primary-500 px-2 py-2.5 text-[13px] font-heading font-semibold text-slate-900 whitespace-nowrap"
               : "rounded-btn border border-gray-200 bg-white px-2 py-2.5 text-[13px] font-heading font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           }
         >
