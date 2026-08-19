@@ -299,21 +299,31 @@ test("an existing two-ads pair gets the change on the ad being discussed", { ski
   );
 });
 
-test("an existing pair never grows a third row", { skip }, async () => {
-  await seed(PLACEHOLDER, { listingCode: AD_A, leadSource: "call", qualificationStatus: "not_qualified" });
+test("an intake on one of the existing pairs collapses it, losing nothing", { skip }, async () => {
+  // One of the 53 pairs already in production: the legacy stub kept its
+  // "__pending__" document id while the old code overwrote its listingCode with
+  // the real property. An intake for that property now absorbs it — a cleanup,
+  // but a real change to live rows, so exactly what survives is asserted here.
+  await seed(PLACEHOLDER, {
+    listingCode: AD_A, leadSource: "call", qualificationStatus: "not_qualified",
+    consent: { source: "phone_call" }, recordings: ["rec_1"],
+  });
   await seed(`lead_${PHONE}_${AD_A}`, { listingCode: AD_A, name: "Cristina florido" });
 
   await inOrg(async () => {
     await updateLeadChatInfo({ phone: PHONE, listingCode: AD_A, chatId: CHAT, tags: ["lead"] });
-    await setLeadConsentByChatId({
-      chatId: CHAT, phone: PHONE, listingCode: AD_A,
-      consent: { capturedAt: admin.firestore.Timestamp.now(), source: "inbound_whatsapp" },
+    await updateLeadStatus({
+      chatId: CHAT, name: "Cristina florido", qualificationStatus: "qualified", listingCode: AD_A,
     });
-    await updateLeadStatus({ chatId: CHAT, name: "Cristina florido", qualificationStatus: "qualified", listingCode: AD_A });
   });
 
   const all = await rows();
-  assert.equal(all.length, 2, `expected the same two rows, got ${all.map((r) => r.id).join(", ")}`);
+  assert.equal(all.length, 1, `the pair collapses, got ${all.map((r) => r.id).join(", ")}`);
+  assert.equal(all[0].id, `lead_${PHONE}_${AD_A}`, "the property's row is the one that survives");
+  assert.equal(all[0].name, "Cristina florido", "the populated row keeps its own name");
+  assert.equal(all[0].qualificationStatus, "qualified");
+  assert.ok(all[0].consent, "the stub's consent proof is carried over, not dropped");
+  assert.deepEqual(all[0].recordings, ["rec_1"], "and its call recordings");
 });
 
 // ---------------------------------------------------------------------------
@@ -431,3 +441,107 @@ test("a second call cannot undo a qualification even if the property never resol
   assert.equal(all[0].name, "Francisco");
   assert.ok(all[0].conversationSummary);
 });
+
+// ---------------------------------------------------------------------------
+// The "Karim" incident (18 Aug): he phoned at 14:38 and hung up without pressing
+// 1, so the call left a stub and never learned the property. Ten minutes later an
+// Idealista intake for ad 112306757 arrived — the property came in through the
+// OTHER door, where the folding did not run, and the stub was orphaned.
+// ---------------------------------------------------------------------------
+
+test("an Idealista intake absorbs the stub left by an unanswered call", { skip }, async () => {
+  const AD = "112306757";
+  await inOrg(async () => {
+    // 14:38 — he calls and hangs up: a stub, no name, no consent, no property.
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT, callFlowMode: "per_org" });
+    // 14:48 — the Idealista form arrives, property known from the first instant.
+    await updateLeadChatInfo({
+      phone: PHONE, listingCode: AD, chatId: CHAT, name: "Karim", qualificationStatus: "not_qualified",
+    });
+  });
+
+  const all = await rows();
+  assert.equal(all.length, 1, `expected one row, got ${all.map((r) => r.id).join(", ")}`);
+  assert.equal(all[0].id, `lead_${PHONE}_${AD}`, "the row named after the property survives");
+  assert.equal(all[0].listingCode, AD);
+  assert.equal(all[0].name, "Karim");
+  assert.equal((await leads.doc(PLACEHOLDER).get()).exists, false, "the stub is gone");
+});
+
+test("what the call did capture travels into the intake's row", { skip }, async () => {
+  const AD = "112306757";
+  await inOrg(async () => {
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT, name: "Karim" });
+    // He pressed 1 on the call, so consent was recorded against the stub.
+    await setLeadConsentByChatId({
+      chatId: CHAT, phone: PHONE, listingCode: "__pending__",
+      consent: { capturedAt: admin.firestore.Timestamp.now(), source: "phone_call", proofUrl: "CA999" },
+    });
+    // The intake knows the property but carries no name and no consent.
+    await updateLeadChatInfo({ phone: PHONE, listingCode: AD, chatId: CHAT });
+  });
+
+  const all = await rows();
+  assert.equal(all.length, 1);
+  assert.equal(all[0].name, "Karim", "the name captured on the call is not lost");
+  assert.ok(all[0].consent, "nor the consent proof");
+  assert.equal((all[0].consent as { source?: string }).source, "phone_call");
+});
+
+test("the surviving row keeps the intake's own start date", { skip }, async () => {
+  const AD = "112306757";
+  let stubCreatedAt = 0;
+  await inOrg(async () => {
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT });
+    const stub = (await leads.doc(PLACEHOLDER).get()).data() as Record<string, unknown>;
+    stubCreatedAt = (stub.createdAt as { toMillis: () => number }).toMillis();
+    await new Promise((r) => setTimeout(r, 25));
+    await updateLeadChatInfo({ phone: PHONE, listingCode: AD, chatId: CHAT, name: "Karim" });
+  });
+
+  const row = (await leads.doc(`lead_${PHONE}_${AD}`).get()).data() as Record<string, unknown>;
+  const createdAt = (row.createdAt as { toMillis: () => number }).toMillis();
+  assert.ok(
+    createdAt > stubCreatedAt,
+    `the row should date from the intake (${createdAt}), not the earlier call (${stubCreatedAt})`
+  );
+});
+
+test("a stub is never folded into another property's lead by accident", { skip }, async () => {
+  // Two real properties plus a stub: the intake for B must absorb the stub, and
+  // A must be left completely alone.
+  await inOrg(async () => {
+    await updateLeadChatInfo({ phone: PHONE, listingCode: AD_A, chatId: CHAT, name: "Karim" });
+    await updateLeadStatus({ chatId: CHAT, qualificationStatus: "qualified", listingCode: AD_A });
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT });
+    await updateLeadChatInfo({ phone: PHONE, listingCode: AD_B, chatId: CHAT });
+  });
+
+  const all = await rows();
+  assert.equal(all.length, 2, `expected A and B only, got ${all.map((r) => r.id).join(", ")}`);
+  assert.equal(all.find((r) => r.id === `lead_${PHONE}_${AD_A}`)!.qualificationStatus, "qualified");
+  assert.ok(all.find((r) => r.id === `lead_${PHONE}_${AD_B}`), "B has its own row");
+  assert.equal((await leads.doc(PLACEHOLDER).get()).exists, false, "the stub is absorbed, not left over");
+});
+
+test("a call that arrives after the intake still leaves a stub until it resolves", { skip }, async () => {
+  // The known edge, pinned down rather than assumed: this stub is a genuinely
+  // unresolved call, so it stays until its own chat identifies a property.
+  const AD = "112306757";
+  await inOrg(async () => {
+    await updateLeadChatInfo({ phone: PHONE, listingCode: AD, chatId: CHAT, name: "Karim" });
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT });
+  });
+
+  assert.equal((await rows()).length, 2, "documented behaviour: the stub waits for its property");
+
+  // ...and once that call does identify the property, it folds in.
+  await inOrg(() => updateLeadListingByChatId({
+    chatId: CHAT, phone: PHONE, listingCode: AD, listingResolutionStatus: "resolved",
+  }));
+  const all = await rows();
+  assert.equal(all.length, 1);
+  assert.equal(all[0].id, `lead_${PHONE}_${AD}`);
+});
+
+

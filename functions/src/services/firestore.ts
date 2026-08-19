@@ -714,6 +714,50 @@ export async function createPendingCallLead(params: {
   }
 }
 
+/**
+ * Fold a call's "__pending__" stub into the row of a real property, and remove it.
+ *
+ * A phone call creates a stub before anyone knows which flat the caller means.
+ * The stub is that lead, only unnamed — so the moment the property becomes known
+ * it has to stop existing separately, whichever door the property came through:
+ * the call flow working it out mid-chat, or an Idealista intake for the same
+ * person arriving minutes later. Leaving it behind is what shows up in the table
+ * as a duplicate.
+ *
+ * Only gaps on the destination are filled, so the property row keeps everything
+ * it already knows — including its own start date. One transaction, so a consent
+ * proof captured on the call can never be dropped between the copy and the delete.
+ *
+ * Returns true when a stub was actually absorbed.
+ */
+async function absorbPlaceholderInto(params: {
+  phone: string;
+  targetRef: FirebaseFirestore.DocumentReference;
+  extraPatch?: Record<string, unknown>;
+}): Promise<boolean> {
+  const placeholderRef = getOrgDb().collection("leads").doc(buildLeadDocId(params.phone, "__pending__"));
+  if (placeholderRef.path === params.targetRef.path) return false;
+
+  const exists = (await placeholderRef.get()).exists;
+  if (!exists) return false;
+
+  await getDb().runTransaction(async (tx) => {
+    // All reads before any write — Firestore requires that order.
+    const fromSnap = await tx.get(placeholderRef);
+    const toSnap = await tx.get(params.targetRef);
+    if (!fromSnap.exists) return;
+    const from = (fromSnap.data() || {}) as Record<string, unknown>;
+    const to = (toSnap.data() || {}) as Record<string, unknown>;
+    tx.set(
+      params.targetRef,
+      { ...fieldsToCarryOver(to, from), ...(params.extraPatch || {}) },
+      { merge: true }
+    );
+    tx.delete(placeholderRef);
+  });
+  return true;
+}
+
 export async function updateLeadListingByChatId(params: {
   chatId: string;
   phone: string;
@@ -783,23 +827,8 @@ export async function updateLeadListingByChatId(params: {
   const targetRef = leads.doc(buildLeadDocId(params.phone, params.listingCode));
 
   if (placeholderSnap.exists) {
-    // A call lead starts filed under the "__pending__" placeholder because nobody
-    // knows the property yet. Now that we do, the row MOVES to its real identity.
-    // Writing the code into a row still filed as "__pending__" is exactly what
-    // produced the duplicates: the next write looked for the row of that
-    // property, found none, and created a second one.
-    await getDb().runTransaction(async (tx) => {
-      // All reads before any write — Firestore requires that order.
-      const fromSnap = await tx.get(placeholderRef);
-      const toSnap = await tx.get(targetRef);
-      const from = (fromSnap.data() || {}) as Record<string, unknown>;
-      const to = (toSnap.data() || {}) as Record<string, unknown>;
-      // Whatever the placeholder learned during the call — the name, the consent
-      // proof, when it started — comes along, unless the destination already
-      // knows better. Moving atomically means the proof can never be dropped.
-      tx.set(targetRef, { ...fieldsToCarryOver(to, from), ...patch }, { merge: true });
-      if (fromSnap.exists) tx.delete(placeholderRef);
-    });
+    // The call flow has just worked out the property: the stub becomes this row.
+    await absorbPlaceholderInto({ phone: params.phone, targetRef, extraPatch: patch });
   } else {
     // No placeholder: the chat is confirming, or moving on to, a real property.
     // It gets its own row, carrying only who the person is — never the other
@@ -947,6 +976,21 @@ export async function updateLeadChatInfo(params: {
   }
 
   await docRef.set(updateData, { merge: true });
+
+  // The other door. A caller who hung up — or who never got as far as naming a
+  // flat — leaves a "__pending__" stub behind. When that same person then comes
+  // in through Idealista, the property is known from the first instant and this
+  // row is created directly, so the call flow's folding never runs and the stub
+  // is orphaned: two rows for one person, which is the duplicate the agency sees.
+  //
+  // Deliberately after the write, so the row keeps the intake's own start date
+  // rather than inheriting the earlier call's. Best-effort: if absorbing fails,
+  // the lead itself is already saved and we are no worse off than before.
+  if (params.listingCode && params.listingCode !== "__pending__") {
+    await absorbPlaceholderInto({ phone: params.phone, targetRef: docRef }).catch((error) =>
+      console.warn(`Failed to absorb the call placeholder for ${params.phone}`, error)
+    );
+  }
 }
 
 // Conversations
