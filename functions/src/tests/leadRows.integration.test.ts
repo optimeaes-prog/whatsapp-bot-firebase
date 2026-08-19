@@ -545,3 +545,48 @@ test("a call that arrives after the intake still leaves a stub until it resolves
 });
 
 
+
+// ---------------------------------------------------------------------------
+// A caller who is already a lead. The stub is kept on purpose — it is the only
+// visible sign that they rang again, and the call may well be about another
+// flat — but it has to say WHO called.
+// ---------------------------------------------------------------------------
+
+test("a second call from a known lead shows their name, not an anonymous row", { skip }, async () => {
+  const AD = "112306757";
+  await inOrg(async () => {
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT });
+    await updateLeadListingByChatId({
+      chatId: CHAT, phone: PHONE, listingCode: AD, listingResolutionStatus: "resolved",
+    });
+    await updateLeadStatus({ chatId: CHAT, name: "Karim", qualificationStatus: "qualified", listingCode: AD });
+    // He rings again and hangs up.
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT });
+  });
+
+  const all = await rows();
+  assert.equal(all.length, 2, "the call is still recorded as its own row");
+  const stub = all.find((r) => r.id === PLACEHOLDER)!;
+  assert.equal(stub.name, "Karim", "the agent should see who called");
+  assert.equal(stub.listingCode, "__pending__", "the property is still genuinely unknown");
+  assert.equal(stub.qualificationStatus, "not_qualified");
+  const real = all.find((r) => r.id === `lead_${PHONE}_${AD}`)!;
+  assert.equal(real.qualificationStatus, "qualified", "his real lead is untouched");
+});
+
+test("a first-ever call from a stranger stays nameless", { skip }, async () => {
+  await inOrg(() => createPendingCallLead({ phone: PHONE, chatId: CHAT }));
+  const all = await rows();
+  assert.equal(all.length, 1);
+  assert.equal(all[0].name, undefined, "there is no name to show yet, and none is invented");
+});
+
+test("a name captured on the call itself still wins", { skip }, async () => {
+  const AD = "112306757";
+  await inOrg(async () => {
+    await updateLeadChatInfo({ phone: PHONE, listingCode: AD, chatId: CHAT, name: "Karim" });
+    await createPendingCallLead({ phone: PHONE, chatId: CHAT, name: "Karim Ben" });
+  });
+  const stub = (await leads.doc(PLACEHOLDER).get()).data() as Record<string, unknown>;
+  assert.equal(stub.name, "Karim Ben", "what the call captured is not overwritten by the older row");
+});

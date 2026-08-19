@@ -670,17 +670,33 @@ export async function createPendingCallLead(params: {
   // directly. Looking it up by chat would find whichever row the caller already
   // has — and marking an existing property's lead "pending resolution" would be
   // a lie about that property.
-  await getOrgDb()
-    .collection("leads")
-    .doc(buildLeadDocId(params.phone, sentinelListingCode))
-    .set(
-      {
-        leadSource: "call",
-        listingResolutionStatus: "pending",
-        ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
-      },
-      { merge: true }
-    );
+  const placeholderRef = getOrgDb().collection("leads").doc(buildLeadDocId(params.phone, sentinelListingCode));
+  await placeholderRef.set(
+    {
+      leadSource: "call",
+      listingResolutionStatus: "pending",
+      ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
+    },
+    { merge: true }
+  );
+
+  // Put a name on it when we already know one. A lead who has called before —
+  // or who is already a lead on some property — otherwise appears as a nameless
+  // "property unknown" row next to their real one, which an agent reads as junk
+  // rather than as "this person just rang us again about something". The row is
+  // the signal; the name is what makes it legible.
+  if (!params.name) {
+    try {
+      const known = await findLeadDocForChat(params.chatId);
+      const knownName = known?.data()?.name;
+      if (known && known.id !== placeholderRef.id && typeof knownName === "string" && knownName.trim()) {
+        const current = (await placeholderRef.get()).data() as Record<string, unknown> | undefined;
+        if (!current?.name) await placeholderRef.set({ name: knownName }, { merge: true });
+      }
+    } catch (error) {
+      console.warn(`Failed to name the call placeholder for ${params.phone}`, error);
+    }
+  }
 
   // Ensure there's a conversation doc to buffer messages into.
   // IMPORTANT: only initialize transient fields (history, pendingUserMessages, isFinished, tags)
