@@ -1156,6 +1156,12 @@ function extractStripeId(value: unknown): string {
 
 const BULLET_SYMBOL = "•";
 const NO_DATA_LABEL = "Sin datos";
+/**
+ * Header copy for the qualified-lead alert when we could not resolve the property.
+ * The approved template renders {{3}} inline ("Nuevo lead cualificado de *{{3}}* ✅"),
+ * so a bare "Sin datos" would read as a broken sentence there.
+ */
+const UNKNOWN_PROPERTY_LABEL = "propiedad sin identificar";
 const SUMMARY_EMPTY_TOKENS = new Set(["SINDATOS", "NODATOS", "UNKNOWN", "NA", "N/A", "NOINFO", "NOHAYDATOS"]);
 
 async function getFeaturesForLanguage(features: string, language: InitialLanguage): Promise<string> {
@@ -1415,7 +1421,7 @@ function buildPropleadAgentNotificationTwilioVariables(params: {
   const property =
     listingDesc ||
     propFromSummary ||
-    (listingCode ? `Anuncio ${listingCode}` : NO_DATA_LABEL);
+    (listingCode ? `Anuncio ${listingCode}` : UNKNOWN_PROPERTY_LABEL);
 
   const operation =
     (typeof after.operationType === "string" && after.operationType) ||
@@ -1458,13 +1464,20 @@ function buildPropleadAgentNotificationTwilioVariables(params: {
   };
 }
 
+/**
+ * Mirrors the approved 8-var WhatsApp template copy for the free-form (24h window open) path.
+ *
+ * The property ({{3}}) leads the first line on purpose: WhatsApp collapses long messages behind
+ * "Read more" but never folds the opening line, so agents see which listing the lead came from
+ * without tapping. It is therefore not repeated further down.
+ */
 function renderPropleadAgentNotificationBody(vars: Record<string, string>): string {
   return [
-    "Nuevo lead cualificado ✅",
+    `Nuevo lead cualificado de *${vars["3"] || UNKNOWN_PROPERTY_LABEL}* ✅`,
     "",
     `Tu nuevo lead se llama *${vars["1"] || NO_DATA_LABEL}* y su teléfono es *${vars["2"] || NO_DATA_LABEL}*.`,
-    `Está interesado en *${vars["3"] || NO_DATA_LABEL}*, con operación *${vars["4"] || NO_DATA_LABEL}*.`,
-    `La forma de pago prevista es *${vars["5"] || NO_DATA_LABEL}* y sus ingresos: *${vars["6"] || NO_DATA_LABEL}*.`,
+    `La operación es *${vars["4"] || NO_DATA_LABEL}* y la forma de pago prevista *${vars["5"] || NO_DATA_LABEL}*.`,
+    `Sus ingresos: *${vars["6"] || NO_DATA_LABEL}*.`,
     `Su disponibilidad para visitar es: *${vars["7"] || NO_DATA_LABEL}*.`,
     `Notas adicionales: *${vars["8"] || NO_DATA_LABEL}*.`,
     "",
