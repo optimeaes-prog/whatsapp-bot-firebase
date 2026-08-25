@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { Check, Copy, ExternalLink, MapPin } from "lucide-react";
 
 const API_PATH = "/api/anuncios";
@@ -14,6 +14,10 @@ const API_PATH = "/api/anuncios";
  * Se abre casi siempre desde el navegador dentro de WhatsApp y en móvil, así
  * que manda la lectura rápida: tarjetas grandes, un solo botón importante por
  * tarjeta y nada de tablas.
+ *
+ * Idioma: `?lang=en` la enseña en inglés; sin parámetro va en castellano. Lo
+ * pone la plantilla de WhatsApp que manda el enlace, que es quien ya sabe en qué
+ * idioma se está hablando con ese lead.
  */
 
 type CatalogCard = {
@@ -27,14 +31,98 @@ type CatalogCard = {
   link: string;
 };
 
+/**
+ * Las claves del filtro son los valores que guarda Firestore ("Venta",
+ * "Alquiler"), no lo que se enseña. Así el filtrado no depende del idioma y
+ * traducir es solo cambiar la etiqueta.
+ */
 type OperationFilter = "todos" | "Venta" | "Alquiler";
 
-const ERROR_MESSAGES: Record<string, string> = {
-  missing_code: "Falta el enlace de acceso.",
-  invalid_code: "Este enlace ya no es válido. Pídenos uno nuevo por WhatsApp.",
-  rate_limited: "Demasiadas peticiones. Vuelve a intentarlo en un minuto.",
-  query_failed: "No se pudieron cargar los anuncios.",
+type Lang = "es" | "en";
+
+type Strings = {
+  title: string;
+  intro: string;
+  tabs: Record<OperationFilter, string>;
+  tabsLabel: string;
+  noAddress: string;
+  reference: string;
+  copy: string;
+  copied: string;
+  copyAria: (listingCode: string) => string;
+  copyFailed: string;
+  viewOnIdealista: string;
+  loading: string;
+  empty: string;
+  emptyFiltered: (operation: string) => string;
+  /** Cómo se nombra la operación dentro de la frase de "no hay anuncios de …". */
+  operationInSentence: Record<"Venta" | "Alquiler", string>;
+  rooms: (rooms: string) => string;
+  errors: Record<string, string>;
 };
+
+const STRINGS: Record<Lang, Strings> = {
+  es: {
+    title: "Nuestros anuncios",
+    intro:
+      "Busca tu vivienda, copia su número de referencia y pégalo en el chat de WhatsApp para que podamos ayudarte.",
+    tabs: { todos: "Todos", Venta: "Venta", Alquiler: "Alquiler" },
+    tabsLabel: "Tipo de operación",
+    noAddress: "Sin dirección",
+    reference: "Referencia:",
+    copy: "Copiar referencia",
+    copied: "¡Copiado!",
+    copyAria: (listingCode) => `Copiar la referencia ${listingCode}`,
+    copyFailed: "No se ha podido copiar. Selecciona la referencia de arriba y cópiala a mano.",
+    viewOnIdealista: "Ver el anuncio en Idealista",
+    loading: "Cargando…",
+    empty: "No hay anuncios disponibles ahora mismo.",
+    emptyFiltered: (operation) => `No hay anuncios de ${operation} ahora mismo.`,
+    operationInSentence: { Venta: "venta", Alquiler: "alquiler" },
+    rooms: (rooms) => `${rooms} hab`,
+    errors: {
+      missing_code: "Falta el enlace de acceso.",
+      invalid_code: "Este enlace ya no es válido. Pídenos uno nuevo por WhatsApp.",
+      rate_limited: "Demasiadas peticiones. Vuelve a intentarlo en un minuto.",
+      query_failed: "No se pudieron cargar los anuncios.",
+      network: "Error de red al cargar los anuncios.",
+      generic: "No se pudieron cargar los anuncios.",
+    },
+  },
+  en: {
+    title: "Our properties",
+    intro:
+      "Find your property, copy its reference number and paste it into the WhatsApp chat so we can help you.",
+    tabs: { todos: "All", Venta: "For sale", Alquiler: "To rent" },
+    tabsLabel: "Operation type",
+    noAddress: "No address",
+    reference: "Reference:",
+    copy: "Copy reference",
+    copied: "Copied!",
+    copyAria: (listingCode) => `Copy reference ${listingCode}`,
+    copyFailed: "Couldn't copy it. Select the reference above and copy it by hand.",
+    viewOnIdealista: "View the listing on Idealista",
+    loading: "Loading…",
+    empty: "No properties available right now.",
+    emptyFiltered: (operation) => `No properties ${operation} right now.`,
+    operationInSentence: { Venta: "for sale", Alquiler: "to rent" },
+    // "bed." es como lo abrevia Idealista, y el lead viene de ahí.
+    rooms: (rooms) => `${rooms} bed.`,
+    errors: {
+      missing_code: "This link is incomplete.",
+      invalid_code: "This link is no longer valid. Ask us for a new one on WhatsApp.",
+      rate_limited: "Too many requests. Please try again in a minute.",
+      query_failed: "The properties couldn't be loaded.",
+      network: "Network error while loading the properties.",
+      generic: "The properties couldn't be loaded.",
+    },
+  },
+};
+
+/** Sin parámetro, o con cualquier otra cosa, se queda en castellano. */
+function resolveLang(raw: string | null): Lang {
+  return (raw || "").trim().toLowerCase().startsWith("en") ? "en" : "es";
+}
 
 /** Cuánto se queda el botón en "¡Copiado!" antes de volver a su estado normal. */
 const COPIED_FEEDBACK_MS = 2000;
@@ -76,20 +164,31 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 /**
- * "3 hab · 115 m²" — solo con lo que el anuncio tenga relleno.
+ * "3 hab · 115 m²" / "3 bed. · 115 m²" — solo con lo que el anuncio tenga
+ * relleno.
  *
  * Un "0" en habitaciones es un estudio, no un dato que falte; escribir "0 hab"
  * parecería un error de la página, así que en esos anuncios se queda solo con
  * los metros.
  */
-function buildFeatureLine(card: CatalogCard): string {
+function buildFeatureLine(card: CatalogCard, t: Strings): string {
   const parts: string[] = [];
-  if (card.rooms && card.rooms !== "0") parts.push(`${card.rooms} hab`);
+  if (card.rooms && card.rooms !== "0") parts.push(t.rooms(card.rooms));
   if (card.m2) parts.push(`${card.m2} m²`);
   return parts.join(" · ");
 }
 
-function CopyReferenceButton({ listingCode }: { listingCode: string }) {
+/**
+ * El precio llega tal cual lo escribió el agente ("2500 €/mes"), así que el
+ * "/mes" viene dentro del dato. En la página en inglés se cambia solo al
+ * enseñarlo; en Firestore se queda como está.
+ */
+function formatPrice(price: string, lang: Lang): string {
+  if (lang !== "en") return price;
+  return price.replace(/\s*\/\s*mes\b/i, "/month");
+}
+
+function CopyReferenceButton({ listingCode, t }: { listingCode: string; t: Strings }) {
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -110,7 +209,7 @@ function CopyReferenceButton({ listingCode }: { listingCode: string }) {
       <button
         type="button"
         onClick={() => void onCopy()}
-        aria-label={`Copiar la referencia ${listingCode}`}
+        aria-label={t.copyAria(listingCode)}
         className={
           // Naranja de marca en la acción principal, con texto oscuro: sobre
           // #FFB03F el blanco se lee mal, y esta página se abre en la calle y a
@@ -124,26 +223,28 @@ function CopyReferenceButton({ listingCode }: { listingCode: string }) {
         {copied ? (
           <>
             <Check size={16} className="shrink-0" aria-hidden="true" />
-            ¡Copiado!
+            {t.copied}
           </>
         ) : (
           <>
             <Copy size={16} className="shrink-0" aria-hidden="true" />
-            Copiar referencia
+            {t.copy}
           </>
         )}
       </button>
-      {failed && (
-        <p className="mt-1.5 text-xs text-slate-500">
-          No se ha podido copiar. Selecciona la referencia de arriba y cópiala a mano.
-        </p>
-      )}
+      {failed && <p className="mt-1.5 text-xs text-slate-500">{t.copyFailed}</p>}
     </div>
   );
 }
 
-function ListingCard({ card }: { card: CatalogCard }) {
-  const featureLine = buildFeatureLine(card);
+function ListingCard({ card, t, lang }: { card: CatalogCard; t: Strings; lang: Lang }) {
+  const featureLine = buildFeatureLine(card, t);
+  // La etiqueta traducida solo si la operación es una de las conocidas; si
+  // llegara cualquier otra cosa se enseña tal cual antes que dejar el hueco.
+  const operationLabel =
+    card.operationType === "Venta" || card.operationType === "Alquiler"
+      ? t.tabs[card.operationType]
+      : card.operationType;
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4">
@@ -153,29 +254,32 @@ function ListingCard({ card }: { card: CatalogCard }) {
               el botón, que es lo que el lead tiene que pulsar. */}
           <MapPin size={16} className="mt-0.5 shrink-0 text-primary-500" aria-hidden="true" />
           <p className="min-w-0 text-sm font-semibold text-gray-900 break-words">
-            {card.street || "Sin dirección"}
+            {card.street || t.noAddress}
           </p>
         </div>
         {card.operationType && (
           <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-            {card.operationType}
+            {operationLabel}
           </span>
         )}
       </div>
 
       <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        {card.price && <p className="text-base font-semibold text-gray-900">{card.price}</p>}
+        {card.price && (
+          <p className="text-base font-semibold text-gray-900">{formatPrice(card.price, lang)}</p>
+        )}
         {featureLine && <p className="text-sm text-slate-600">{featureLine}</p>}
       </div>
 
       {/* La referencia, además de en el botón, como texto seleccionable: es el
           plan C si el portapapeles falla dentro del navegador de WhatsApp. */}
       <p className="mt-3 text-sm text-slate-600">
-        Referencia: <span className="font-mono font-semibold text-gray-900 select-all">{card.listingCode}</span>
+        {t.reference}{" "}
+        <span className="font-mono font-semibold text-gray-900 select-all">{card.listingCode}</span>
       </p>
 
       <div className="mt-3">
-        <CopyReferenceButton listingCode={card.listingCode} />
+        <CopyReferenceButton listingCode={card.listingCode} t={t} />
       </div>
 
       {card.link && (
@@ -186,7 +290,7 @@ function ListingCard({ card }: { card: CatalogCard }) {
           className="mt-3 inline-flex items-center gap-1.5 text-sm font-heading font-semibold text-slate-700 underline"
         >
           <ExternalLink size={15} className="shrink-0" aria-hidden="true" />
-          Ver el anuncio en Idealista
+          {t.viewOnIdealista}
         </a>
       )}
     </div>
@@ -198,37 +302,35 @@ function OperationTabs({
   value,
   counts,
   onChange,
+  t,
 }: {
   value: OperationFilter;
   counts: Record<OperationFilter, number>;
   onChange: (next: OperationFilter) => void;
+  t: Strings;
 }) {
-  const tabs: { key: OperationFilter; label: string }[] = [
-    { key: "todos", label: "Todos" },
-    { key: "Venta", label: "Venta" },
-    { key: "Alquiler", label: "Alquiler" },
-  ];
+  const tabs: OperationFilter[] = ["todos", "Venta", "Alquiler"];
 
   return (
-    <div className="mb-4 grid grid-cols-3 gap-2" role="tablist" aria-label="Tipo de operación">
-      {tabs.map((tab) => (
+    <div className="mb-4 grid grid-cols-3 gap-2" role="tablist" aria-label={t.tabsLabel}>
+      {tabs.map((key) => (
         <button
-          key={tab.key}
+          key={key}
           type="button"
           role="tab"
-          aria-selected={value === tab.key}
-          onClick={() => onChange(tab.key)}
+          aria-selected={value === key}
+          onClick={() => onChange(key)}
           className={
             // Mismo naranja de marca y mismo texto oscuro que el botón de
             // copiar, para que la página tenga un solo color de acento.
             // text-[13px] y px-2: con "Alquiler (11)" a 14px la pestaña parte la
             // palabra en dos líneas en una pantalla de 375 px.
-            value === tab.key
+            value === key
               ? "rounded-btn bg-primary-500 px-2 py-2.5 text-[13px] font-heading font-semibold text-slate-900 whitespace-nowrap"
               : "rounded-btn border border-gray-200 bg-white px-2 py-2.5 text-[13px] font-heading font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           }
         >
-          {tab.label} ({counts[tab.key]})
+          {t.tabs[key]} ({counts[key]})
         </button>
       ))}
     </div>
@@ -237,7 +339,10 @@ function OperationTabs({
 
 export function Anuncios() {
   const { code } = useParams<{ code?: string }>();
+  const [searchParams] = useSearchParams();
   const shortCode = code?.trim() ?? "";
+  const lang = resolveLang(searchParams.get("lang"));
+  const t = STRINGS[lang];
 
   // Es la cartera de una agencia concreta, no un portal: que no la indexe nadie.
   // La cabecera X-Robots-Tag del hosting es la defensa real; esto cubre al
@@ -252,6 +357,17 @@ export function Anuncios() {
     };
   }, []);
 
+  // El idioma del documento, para lectores de pantalla y para que el navegador
+  // no ofrezca traducir una página que ya está en su idioma. Se restaura al
+  // salir porque el resto de la aplicación está en castellano.
+  useEffect(() => {
+    const previous = document.documentElement.lang;
+    document.documentElement.lang = lang;
+    return () => {
+      document.documentElement.lang = previous;
+    };
+  }, [lang]);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cards, setCards] = useState<CatalogCard[]>([]);
@@ -259,7 +375,7 @@ export function Anuncios() {
 
   const load = useCallback(async () => {
     if (!shortCode) {
-      setError(ERROR_MESSAGES.missing_code);
+      setError(t.errors.missing_code);
       setLoading(false);
       return;
     }
@@ -272,25 +388,25 @@ export function Anuncios() {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setError(ERROR_MESSAGES[j.error] || "No se pudieron cargar los anuncios.");
+        setError(t.errors[j.error] || t.errors.generic);
         setCards([]);
         return;
       }
       if (!Array.isArray(j.listings)) {
         // 200 pero sin lista: decirlo es mejor que enseñar un "no hay anuncios"
         // que no es verdad.
-        setError("No se pudieron cargar los anuncios.");
+        setError(t.errors.generic);
         setCards([]);
         return;
       }
       setCards(j.listings);
     } catch {
-      setError("Error de red al cargar los anuncios.");
+      setError(t.errors.network);
       setCards([]);
     } finally {
       setLoading(false);
     }
-  }, [shortCode]);
+  }, [shortCode, t]);
 
   useEffect(() => {
     void load();
@@ -314,12 +430,9 @@ export function Anuncios() {
     <div className="min-h-screen bg-slate-50 font-body text-slate-800 py-8 px-4 sm:py-12">
       <div className="max-w-2xl mx-auto card p-5 sm:p-8">
         <h1 className="text-2xl font-heading font-bold text-[var(--TITLE,#402e32)] mb-2">
-          Nuestros anuncios
+          {t.title}
         </h1>
-        <p className="text-sm text-slate-600 mb-6">
-          Busca tu vivienda, copia su número de referencia y pégalo en el chat de WhatsApp para que
-          podamos ayudarte.
-        </p>
+        <p className="text-sm text-slate-600 mb-6">{t.intro}</p>
 
         {error && (
           <p className="text-sm text-red-600 mb-4" role="alert">
@@ -328,20 +441,22 @@ export function Anuncios() {
         )}
 
         {loading ? (
-          <p className="text-sm text-slate-500">Cargando…</p>
+          <p className="text-sm text-slate-500">{t.loading}</p>
         ) : error ? null : cards.length === 0 ? (
-          <p className="text-sm text-slate-500">No hay anuncios disponibles ahora mismo.</p>
+          <p className="text-sm text-slate-500">{t.empty}</p>
         ) : (
           <>
-            <OperationTabs value={filter} counts={counts} onChange={setFilter} />
+            <OperationTabs value={filter} counts={counts} onChange={setFilter} t={t} />
             {visible.length === 0 ? (
               <p className="text-sm text-slate-500">
-                No hay anuncios de {filter === "Venta" ? "venta" : "alquiler"} ahora mismo.
+                {t.emptyFiltered(
+                  t.operationInSentence[filter === "Venta" ? "Venta" : "Alquiler"]
+                )}
               </p>
             ) : (
               <div className="space-y-3">
                 {visible.map((card) => (
-                  <ListingCard key={card.id} card={card} />
+                  <ListingCard key={card.id} card={card} t={t} lang={lang} />
                 ))}
               </div>
             )}
