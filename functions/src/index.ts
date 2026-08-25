@@ -3848,9 +3848,10 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
           // Twilio can clip the opening moment of a <Play> when the call has only just
           // connected, which swallows the first word of the greeting. A beat of silence first.
           `<Pause length="1"/>`,
-          // Language menu — one bilingual recording. The 5s window runs from the end of it,
-          // and a keypress during the audio itself ends the Gather immediately.
-          `<Gather numDigits="1" timeout="5" action="${twimlEscape(languageUrl)}" method="POST">`,
+          // Language menu — one bilingual recording. The timeout below runs from the END of the
+          // audio, not the start of the call, so it is silence the caller waits through; a
+          // keypress during the recording itself ends the Gather immediately.
+          `<Gather numDigits="1" timeout="4" action="${twimlEscape(languageUrl)}" method="POST">`,
           `  <Play>${twimlEscape(langMenu)}</Play>`,
           `</Gather>`,
           // No digit → the Gather times out and execution simply continues here, so waiting
