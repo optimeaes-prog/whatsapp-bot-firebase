@@ -225,15 +225,23 @@ if (admin.apps.length === 0) {
 
 // Config params
 const NOTIFICATION_NUMBER = defineString("NOTIFICATION_NUMBER");
-const VOICE_AUDIO_1_URL = defineString("VOICE_AUDIO_1_URL");
+// VOICE_AUDIO_1_URL was retired by the bilingual language menu below. The old greeting asked
+// for the caller's name, which no part of the TwiML ever recorded, and the menu now opens the
+// call. The audio file itself is still in public/voice/ if the wording is ever wanted back.
 // A6c — idealista confirm template removed; cold Idealista leads now receive an
 // SMS opt-in link (Meta Business Messaging Policy requires prior consent before
 // sending a marketing template).
+// Language menu, played as the first thing on every inbound call: greets, tells Spanish
+// speakers to wait, and tells English speakers to press 1. One bilingual file — the Spanish
+// voice reads both sentences — so nothing can drift out of sync between the two halves.
+const VOICE_AUDIO_LANG_MENU_URL = defineString("VOICE_AUDIO_LANG_MENU_URL");
 // Public URL for the second voice prompt (DTMF 1 opt-in). Served from Firebase Hosting.
 const VOICE_AUDIO_2_OPTIN_URL = defineString("VOICE_AUDIO_2_OPTIN_URL");
+const VOICE_AUDIO_2_OPTIN_EN_URL = defineString("VOICE_AUDIO_2_OPTIN_EN_URL");
 // Public URL for the post-DTMF confirmation locución ("Gracias…"). Generated with the same
 // approved ElevenLabs voice as the greeting/opt-in prompts so the whole inbound call is one voice.
 const VOICE_AUDIO_3_URL = defineString("VOICE_AUDIO_3_URL");
+const VOICE_AUDIO_3_EN_URL = defineString("VOICE_AUDIO_3_EN_URL");
 const PROPLEAD_INTAKE_ORG_ID = defineString("PROPLEAD_INTAKE_ORG_ID");
 const VOICE_CONSENT_SCRIPT_VERSION = defineString("VOICE_CONSENT_SCRIPT_VERSION");
 const OUTBOUND_CALLER_NUMBER = defineString("OUTBOUND_CALLER_NUMBER");
@@ -388,6 +396,37 @@ async function getVoiceOptInTemplateSid(orgId: string): Promise<string> {
 
 function buildTwiml(xmlBody: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n${xmlBody}\n</Response>`;
+}
+
+/** Language of an inbound call. "es" is the default — the caller reaches it by waiting. */
+type InboundCallLanguage = "es" | "en";
+
+function parseInboundCallLanguage(value: unknown): InboundCallLanguage {
+  return value === "en" ? "en" : "es";
+}
+
+/**
+ * The consent step, in the caller's chosen language: play the opt-in prompt and gather one
+ * digit. Pressing 1 lands on voiceGatherCallback, which records consent and sends the
+ * WhatsApp template; pressing nothing ends the call having sent nothing.
+ *
+ * `gatherUrl` already carries a query string, so the language rides along on it — that's how
+ * voiceGatherCallback knows which confirmation locución to play back.
+ *
+ * The English audio falls back to the Spanish one when its URL is not configured: a caller
+ * hearing the wrong language is a far better failure than an empty <Play> breaking the call.
+ */
+function buildConsentGatherTwiml(params: { language: InboundCallLanguage; gatherUrl: string }): string {
+  const optInAudio =
+    (params.language === "en" ? VOICE_AUDIO_2_OPTIN_EN_URL.value() : "") || VOICE_AUDIO_2_OPTIN_URL.value();
+  const gatherUrl = `${params.gatherUrl}&lang=${params.language}`;
+  return [
+    `<Gather numDigits="1" timeout="6" action="${twimlEscape(gatherUrl)}" method="POST">`,
+    `  <Play>${twimlEscape(optInAudio)}</Play>`,
+    `</Gather>`,
+    // Fallback: no digit pressed → hang up without sending anything (no consent).
+    `<Hangup/>`,
+  ].join("\n");
 }
 
 // Allowlist of browser origins that may call our authenticated HTTP functions.
@@ -3684,9 +3723,12 @@ async function dispatchCloudApiInbound(orgId: string, inboundMessages: Array<{ c
  * Configure your Twilio phone number "A CALL COMES IN" to point to this function's URL.
  *
  * Flow:
- * - Play audio1 (existing intro)
- * - <Pause length="3"/>
- * - Play audio2_optin (new prompt: "…pulse 1 o cuelgue…")
+ * - Play the language menu (greeting + "para continuar en español, espere / press 1 for English")
+ * - <Gather numDigits="1" action=voiceLanguageCallback>
+ *   - DTMF 1 → English; voiceLanguageCallback returns the English consent step
+ *   - timeout → Spanish; the Gather simply falls through to the Spanish consent step below,
+ *     which is exactly what "espere" promises the caller
+ * - Consent step: Play audio2_optin ("…por favor pulse 1")
  * - <Gather numDigits="1" action=voiceGatherCallback>
  *   - DTMF 1 → consent captured, template sent by voiceGatherCallback
  *   - timeout / hangup → no consent, no template
@@ -3725,10 +3767,10 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
       return;
     }
 
-    const audio1 = VOICE_AUDIO_1_URL.value();
+    const langMenu = VOICE_AUDIO_LANG_MENU_URL.value();
     const audio2 = VOICE_AUDIO_2_OPTIN_URL.value();
-    if (!audio1 || !audio2) {
-      console.error("VOICE_AUDIO_1_URL / VOICE_AUDIO_2_OPTIN_URL not configured");
+    if (!langMenu || !audio2) {
+      console.error("VOICE_AUDIO_LANG_MENU_URL / VOICE_AUDIO_2_OPTIN_URL not configured");
       res.set("Content-Type", "text/xml");
       res.status(200).send(buildTwiml(`<Say>Audio not configured.</Say><Hangup/>`));
       return;
@@ -3753,12 +3795,17 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
       console.warn(`voiceWebhook: dialed number maps to org ${voiceOrgId} but inboundVoicePerOrgEnabled is off; using legacy intake flow`);
     }
 
-    let gatherUrl =
-      `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceGatherCallback` +
+    // Both callbacks (language menu and consent) need the same call identity, so the query
+    // string is built once and reused. voiceLanguageCallback passes its own copy straight
+    // through to voiceGatherCallback, which keeps the two steps in the same call context.
+    let callbackQuery =
       `?phone=${encodeURIComponent(fromPhone)}&chatId=${encodeURIComponent(chatId)}&callSid=${encodeURIComponent(callSid)}`;
     if (useNewFlow && voiceOrgId) {
-      gatherUrl += `&orgId=${encodeURIComponent(voiceOrgId)}&callFlowMode=per_org`;
+      callbackQuery += `&orgId=${encodeURIComponent(voiceOrgId)}&callFlowMode=per_org`;
     }
+    const functionsBaseUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net`;
+    const gatherUrl = `${functionsBaseUrl}/voiceGatherCallback${callbackQuery}`;
+    const languageUrl = `${functionsBaseUrl}/voiceLanguageCallback${callbackQuery}`;
 
     // Initialize the pending call lead BEFORE responding. On Cloud Functions Gen 2 (Cloud Run),
     // setImmediate background work is CPU-throttled and runs late — late enough that it can race
@@ -3798,13 +3845,18 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
     res.status(200).send(
       buildTwiml(
         [
-          `<Play>${twimlEscape(audio1)}</Play>`,
-          `<Pause length="3"/>`,
-          `<Gather numDigits="1" timeout="6" action="${twimlEscape(gatherUrl)}" method="POST">`,
-          `  <Play>${twimlEscape(audio2)}</Play>`,
+          // Twilio can clip the opening moment of a <Play> when the call has only just
+          // connected, which swallows the first word of the greeting. A beat of silence first.
+          `<Pause length="1"/>`,
+          // Language menu — one bilingual recording. The 5s window runs from the end of it,
+          // and a keypress during the audio itself ends the Gather immediately.
+          `<Gather numDigits="1" timeout="5" action="${twimlEscape(languageUrl)}" method="POST">`,
+          `  <Play>${twimlEscape(langMenu)}</Play>`,
           `</Gather>`,
-          // Fallback: no digit pressed → hang up without sending anything (no consent).
-          `<Hangup/>`,
+          // No digit → the Gather times out and execution simply continues here, so waiting
+          // lands the caller in Spanish without a second round-trip. Pressing 1 abandons the
+          // rest of this document and hands over to voiceLanguageCallback instead.
+          buildConsentGatherTwiml({ language: "es", gatherUrl }),
         ].join("\n")
       )
     );
@@ -3814,6 +3866,84 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
     res.status(200).send(buildTwiml(`<Say>Error.</Say><Hangup/>`));
   }
 });
+
+/**
+ * Twilio <Gather> callback for the language menu. DTMF 1 = English; any other digit
+ * continues in Spanish, the same place waiting would have led to — a mis-key should never
+ * cost the caller the call.
+ *
+ * Choosing English is also written onto the conversation, so the WhatsApp thread that
+ * follows the call speaks the language the caller just asked for. Without it the language
+ * is guessed from the phone prefix (resolveInitialLanguage), which gets every English
+ * speaker holding a Spanish number wrong. Waiting writes nothing: silence is not a
+ * statement about language, so the existing guess stands.
+ */
+export const voiceLanguageCallback = onRequest(
+  { cors: false, region: REGION, secrets: [TWILIO_AUTH_TOKEN] },
+  async (req, res) => {
+    try {
+      const signature = req.header("x-twilio-signature") || "";
+      // Gen 2 Cloud Functions (Cloud Run) strip the function path from req.originalUrl,
+      // so we re-add /voiceLanguageCallback to match the URL Twilio used to sign.
+      const queryIdx = (req.originalUrl || "").indexOf("?");
+      const queryString = queryIdx >= 0 ? (req.originalUrl || "").substring(queryIdx) : "";
+      const signedUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceLanguageCallback${queryString}`;
+      const body = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : {};
+
+      // Same dual-token check as voiceWebhook / voiceGatherCallback: a per-org voice number
+      // may live on a subaccount, which signs with its own auth token.
+      const queryOrgId = typeof req.query.orgId === "string" ? req.query.orgId : "";
+      let signatureValid = verifyTwilioSignature(TWILIO_AUTH_TOKEN.value(), signature, signedUrl, body);
+      if (!signatureValid && signature && queryOrgId) {
+        const orgAuthToken = await getOrgTwilioAuthToken(queryOrgId);
+        if (orgAuthToken) {
+          signatureValid = verifyTwilioSignature(orgAuthToken, signature, signedUrl, body);
+        }
+      }
+      if (!signatureValid) {
+        console.warn("voiceLanguageCallback: invalid or missing X-Twilio-Signature");
+        res.status(401).send("Unauthorized");
+        return;
+      }
+
+      const digits = typeof body.Digits === "string" ? body.Digits.trim() : "";
+      const language: InboundCallLanguage = digits === "1" ? "en" : "es";
+      // Guard the fallback on a real phone: normalizeToCanonicalChatId("") happily returns
+      // "@s.whatsapp.net", which would write the language onto a junk conversation.
+      const fromPhone = normalizeE164FromTwilio(body.From);
+      const chatId =
+        (typeof req.query.chatId === "string" && req.query.chatId) ||
+        (fromPhone ? normalizeToCanonicalChatId(fromPhone) : "");
+
+      // Written BEFORE responding, for the same reason as voiceWebhook: on Cloud Run, work
+      // deferred past res.send() runs CPU-throttled and may never finish.
+      if (language === "en" && chatId) {
+        const orgId =
+          req.query.callFlowMode === "per_org" && queryOrgId ? queryOrgId : PROPLEAD_INTAKE_ORG_ID.value();
+        if (orgId) {
+          try {
+            await requestContext.run({ orgId }, async () => {
+              await upsertConversation(chatId, { language: "en" });
+            });
+          } catch (error) {
+            // Losing this write costs the caller an English WhatsApp thread, not the call.
+            console.error("voiceLanguageCallback failed storing the language choice", error);
+          }
+        }
+      }
+
+      // Hand the caller to the consent step in their language, reusing this request's query
+      // string so voiceGatherCallback sees the same phone / chatId / callSid / org.
+      const gatherUrl = `https://${REGION}-real-estate-idealista-bot.cloudfunctions.net/voiceGatherCallback${queryString}`;
+      res.set("Content-Type", "text/xml");
+      res.status(200).send(buildTwiml(buildConsentGatherTwiml({ language, gatherUrl })));
+    } catch (error) {
+      console.error("voiceLanguageCallback error", error);
+      res.set("Content-Type", "text/xml");
+      res.status(200).send(buildTwiml(`<Hangup/>`));
+    }
+  }
+);
 
 /**
  * Twilio <Gather> callback: if the caller pressed "1", we record explicit consent
@@ -3929,15 +4059,19 @@ export const voiceGatherCallback = onRequest(
         // Fall through and still respond so the call ends gracefully.
       }
 
-      // Confirmation locución (#3). Played with the same approved ElevenLabs voice as the
-      // greeting/opt-in prompts so all three locuciones sound identical. Falls back to the old
-      // Twilio Polly voice only if VOICE_AUDIO_3_URL is not configured.
-      const audio3 = VOICE_AUDIO_3_URL.value();
+      // Confirmation locución (#3), in the language chosen at the menu and carried here on the
+      // gather URL. Each language uses its own approved ElevenLabs voice, so the caller hears
+      // the same person who read them the opt-in prompt. Falls back to the old Twilio Polly
+      // voice only if the URL is not configured.
+      const language = parseInboundCallLanguage(req.query.lang);
+      const audio3 = (language === "en" ? VOICE_AUDIO_3_EN_URL.value() : "") || VOICE_AUDIO_3_URL.value();
       res.status(200).send(
         buildTwiml(
           audio3
             ? `<Play>${twimlEscape(audio3)}</Play><Hangup/>`
-            : `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
+            : language === "en"
+              ? `<Say voice="Polly.Amy-Neural" language="en-GB">Thank you. You will receive a WhatsApp message shortly.</Say><Hangup/>`
+              : `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
         )
       );
     } catch (error) {
@@ -6469,9 +6603,11 @@ async function evaluateCallHandoffReadiness(targetOrgId: string): Promise<{
   };
 
   add("PROPLEAD_INTAKE_ORG_ID", PROPLEAD_INTAKE_ORG_ID.value(), "Global intake org for call entry.");
-  add("VOICE_AUDIO_1_URL", VOICE_AUDIO_1_URL.value(), "First voice prompt.");
-  add("VOICE_AUDIO_2_OPTIN_URL", VOICE_AUDIO_2_OPTIN_URL.value(), "DTMF opt-in prompt.");
-  add("VOICE_AUDIO_3_URL", VOICE_AUDIO_3_URL.value(), "Post-DTMF confirmation locución.");
+  add("VOICE_AUDIO_LANG_MENU_URL", VOICE_AUDIO_LANG_MENU_URL.value(), "Bilingual language menu (also the greeting).");
+  add("VOICE_AUDIO_2_OPTIN_URL", VOICE_AUDIO_2_OPTIN_URL.value(), "DTMF opt-in prompt (ES).");
+  add("VOICE_AUDIO_2_OPTIN_EN_URL", VOICE_AUDIO_2_OPTIN_EN_URL.value(), "DTMF opt-in prompt (EN).");
+  add("VOICE_AUDIO_3_URL", VOICE_AUDIO_3_URL.value(), "Post-DTMF confirmation locución (ES).");
+  add("VOICE_AUDIO_3_EN_URL", VOICE_AUDIO_3_EN_URL.value(), "Post-DTMF confirmation locución (EN).");
   add("VOICE_CONSENT_SCRIPT_VERSION", VOICE_CONSENT_SCRIPT_VERSION.value(), "Consent script version for audits.");
 
   if (provider === "cloud_api") {
