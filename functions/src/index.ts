@@ -319,6 +319,8 @@ const TWILIO_AGENT_NOTIFICATION_8VAR_CONTENT_SIDS = new Set(
   [
     "HX0f65d74044e27ae2f344b28eabad2776",
     "HX553ad04854fe0627b4f521e8c0fe6cdd",
+    // proplead_lead_cualificado_v2 — property name moved into the header line.
+    "HXc1ca5be1e544485e5962372147eed31b",
   ].map((s) => s.trim().toUpperCase())
 );
 
