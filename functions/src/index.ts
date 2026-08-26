@@ -2351,15 +2351,25 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
   // reason we fall back to the old token heuristic so a reply is never blocked.
   const fallbackLanguage: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
   let inferredLanguage: InitialLanguage = fallbackLanguage;
-  try {
-    inferredLanguage = await resolveReplyLanguageWithAgent({
-      history: state.history,
-      newMessages: sortedMessages.map((m) => m.text),
-      currentLanguage: fallbackLanguage,
-    });
-  } catch (err) {
-    console.warn("language router failed, falling back to token heuristic", err);
-    inferredLanguage = resolveReplyLanguageFromMessages(sortedMessages, fallbackLanguage);
+  /**
+   * Un mensaje sin una sola letra —una referencia de nueve dígitos, por ejemplo—
+   * no dice nada del idioma de nadie. Se le preguntaba igual al modelo, que leía
+   * una conversación llena de plantillas en castellano y cambiaba el idioma que
+   * el caller acababa de elegir por teclado. Ahora, sin letras no se toca: se
+   * mantiene lo decidido y encima nos ahorramos la llamada.
+   */
+  const carriesLanguageSignal = sortedMessages.some((m) => /[a-záéíóúñü]/i.test(m.text || ""));
+  if (carriesLanguageSignal) {
+    try {
+      inferredLanguage = await resolveReplyLanguageWithAgent({
+        history: state.history,
+        newMessages: sortedMessages.map((m) => m.text),
+        currentLanguage: fallbackLanguage,
+      });
+    } catch (err) {
+      console.warn("language router failed, falling back to token heuristic", err);
+      inferredLanguage = resolveReplyLanguageFromMessages(sortedMessages, fallbackLanguage);
+    }
   }
   if (state.language !== inferredLanguage) {
     state.language = inferredLanguage;
@@ -3922,29 +3932,12 @@ export const voiceLanguageCallback = onRequest(
 
       const digits = typeof body.Digits === "string" ? body.Digits.trim() : "";
       const language: InboundCallLanguage = digits === "1" ? "en" : "es";
-      // Guard the fallback on a real phone: normalizeToCanonicalChatId("") happily returns
-      // "@s.whatsapp.net", which would write the language onto a junk conversation.
-      const fromPhone = normalizeE164FromTwilio(body.From);
-      const chatId =
-        (typeof req.query.chatId === "string" && req.query.chatId) ||
-        (fromPhone ? normalizeToCanonicalChatId(fromPhone) : "");
 
-      // Written BEFORE responding, for the same reason as voiceWebhook: on Cloud Run, work
-      // deferred past res.send() runs CPU-throttled and may never finish.
-      if (language === "en" && chatId) {
-        const orgId =
-          req.query.callFlowMode === "per_org" && queryOrgId ? queryOrgId : PROPLEAD_INTAKE_ORG_ID.value();
-        if (orgId) {
-          try {
-            await requestContext.run({ orgId }, async () => {
-              await upsertConversation(chatId, { language: "en" });
-            });
-          } catch (error) {
-            // Losing this write costs the caller an English WhatsApp thread, not the call.
-            console.error("voiceLanguageCallback failed storing the language choice", error);
-          }
-        }
-      }
+      // Aquí no se guarda nada. La elección viaja en la URL del siguiente <Gather>
+      // y la escribe voiceGatherCallback, que es el paso por el que pasan las dos
+      // ramas: la de quien pulsa 1 y la de quien deja que salte el castellano.
+      // Antes se escribía aquí, y solo el inglés, que es justo lo que dejaba
+      // conversaciones marcadas en inglés para siempre.
 
       // Hand the caller to the consent step in their language, reusing this request's query
       // string so voiceGatherCallback sees the same phone / chatId / callSid / org.
@@ -4008,6 +4001,14 @@ export const voiceGatherCallback = onRequest(
         (typeof req.query.callSid === "string" && req.query.callSid) ||
         (typeof body.CallSid === "string" ? body.CallSid : "");
 
+      /**
+       * Idioma decidido DURANTE esta llamada. `lang` lo pone el TwiML del paso de
+       * consentimiento: "en" si el caller pulsó 1 en el menú, "es" si dejó pasar el
+       * menú. Es una decisión deliberada, así que manda sobre el prefijo del
+       * teléfono — un número español puede querer inglés, y al revés.
+       */
+      const callLanguage = parseInboundCallLanguage(req.query.lang);
+
       res.set("Content-Type", "text/xml");
       if (digits !== "1" || !phone || !chatId) {
         res.status(200).send(buildTwiml(`<Hangup/>`));
@@ -4028,16 +4029,18 @@ export const voiceGatherCallback = onRequest(
         } else {
           await requestContext.run({ orgId }, async () => {
             await recordVoiceConsent({ phone, chatId, callSid });
-            // El idioma sale del prefijo del teléfono, la misma regla que ya usa
-            // el resto de la conversación; antes aquí siempre se daba por hecho
-            // el castellano y quien llamaba desde fuera recibía un primer
-            // mensaje que no entendía.
-            const optInLanguage = resolveInitialLanguage(phone);
-            const templateSid = await getVoiceOptInTemplateSid(orgId, optInLanguage);
+            // La elección de la llamada es también la del chat, y se guarda SIEMPRE,
+            // en los dos idiomas. Antes solo se escribía al elegir inglés, así que
+            // una vez marcada una conversación en inglés no había forma de volver:
+            // esperar a que saltara el castellano no escribía nada y la marca vieja
+            // seguía ahí llamada tras llamada. Guardándolo siempre, cada llamada
+            // vuelve a decidir.
+            await upsertConversation(chatId, { language: callLanguage });
+            const templateSid = await getVoiceOptInTemplateSid(orgId, callLanguage);
             const sendResult = await sendInitialTemplateMessage({
               to: phone,
               chatId,
-              language: optInLanguage,
+              language: callLanguage,
               variables: await resolveVoiceOptInTemplateVariables(isPerOrgGather ? orgId : ""),
               templateSid,
             });
@@ -4082,13 +4085,12 @@ export const voiceGatherCallback = onRequest(
       // gather URL. Each language uses its own approved ElevenLabs voice, so the caller hears
       // the same person who read them the opt-in prompt. Falls back to the old Twilio Polly
       // voice only if the URL is not configured.
-      const language = parseInboundCallLanguage(req.query.lang);
-      const audio3 = (language === "en" ? VOICE_AUDIO_3_EN_URL.value() : "") || VOICE_AUDIO_3_URL.value();
+      const audio3 = (callLanguage === "en" ? VOICE_AUDIO_3_EN_URL.value() : "") || VOICE_AUDIO_3_URL.value();
       res.status(200).send(
         buildTwiml(
           audio3
             ? `<Play>${twimlEscape(audio3)}</Play><Hangup/>`
-            : language === "en"
+            : callLanguage === "en"
               ? `<Say voice="Polly.Amy-Neural" language="en-GB">Thank you. You will receive a WhatsApp message shortly.</Say><Hangup/>`
               : `<Say voice="Polly.Lucia-Neural" language="es-ES">Gracias. En breve recibirá un mensaje por WhatsApp.</Say><Hangup/>`
         )

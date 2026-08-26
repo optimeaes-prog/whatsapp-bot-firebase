@@ -10,21 +10,16 @@ function readRepoFile(relativePathFromRepoRoot: string): string {
 }
 
 /**
- * Quien llama desde un número que no es español recibe el primer mensaje en
- * inglés. Antes ese envío daba por hecho el castellano y solo se traducía el
- * resto de la conversación.
+ * El primer mensaje sale en el idioma de la llamada. Antes este envío daba por
+ * hecho el castellano, y quien llamaba desde fuera abría con un mensaje que
+ * quizá no entendía.
  */
-test("the post-call template is chosen with the caller's language", () => {
+test("the post-call send follows the language decided during the call", () => {
   const src = readRepoFile("src/index.ts");
   assert.match(
     src,
-    /const optInLanguage = resolveInitialLanguage\(phone\);/,
-    "the language must come from the phone, like the rest of the call flow"
-  );
-  assert.match(
-    src,
-    /const templateSid = await getVoiceOptInTemplateSid\(orgId, optInLanguage\);/,
-    "the template has to be picked with that language"
+    /language: callLanguage,/,
+    "the send must carry the call's language"
   );
   assert.doesNotMatch(
     src,
@@ -74,5 +69,60 @@ test("the legacy intake send keeps its Spanish template", () => {
     src,
     /const templateSid = await getVoiceOptInTemplateSid\(orgId\);\n\s+await sendInitialTemplateMessage\(\{/,
     "the intake path must keep calling without a language"
+  );
+});
+
+/**
+ * Lo que el caller elige en la llamada vale para esa llamada y para el chat: si
+ * pulsa 1 recibe la plantilla (y por tanto el catálogo) en inglés, y si deja que
+ * salte el castellano recibe la castellana. Y como se guarda en los dos idiomas,
+ * la siguiente llamada vuelve a decidir desde cero.
+ */
+test("the caller's choice during the call decides the language, not the phone prefix", () => {
+  const src = readRepoFile("src/index.ts");
+  assert.match(
+    src,
+    /const callLanguage = parseInboundCallLanguage\(req\.query\.lang\);/,
+    "the consent step must read the choice carried on the gather URL"
+  );
+  assert.match(
+    src,
+    /const templateSid = await getVoiceOptInTemplateSid\(orgId, callLanguage\);/,
+    "the template must follow that choice"
+  );
+  assert.doesNotMatch(
+    src,
+    /const optInLanguage = resolveInitialLanguage\(phone\);/,
+    "the phone prefix must no longer override a deliberate keypress"
+  );
+});
+
+test("the choice is stored in both languages, so a later call can choose again", () => {
+  const src = readRepoFile("src/index.ts");
+  assert.match(
+    src,
+    /await upsertConversation\(chatId, \{ language: callLanguage \}\);/,
+    "the language has to be written whichever one was chosen"
+  );
+  // La escritura de un solo sentido del menú era la que dejaba conversaciones
+  // marcadas en inglés para siempre.
+  assert.doesNotMatch(
+    src,
+    /await upsertConversation\(chatId, \{ language: "en" \}\);/,
+    "the English-only write must be gone"
+  );
+});
+
+test("a message with no letters never changes the language", () => {
+  const src = readRepoFile("src/index.ts");
+  assert.match(
+    src,
+    /const carriesLanguageSignal = sortedMessages\.some\(\(m\) => \/\[a-záéíóúñü\]\/i\.test\(m\.text \|\| ""\)\);/,
+    "there must be a check for any letter at all"
+  );
+  assert.match(
+    src,
+    /if \(carriesLanguageSignal\) \{[\s\S]*?resolveReplyLanguageWithAgent\(/,
+    "the router may only run when the message actually carries words"
   );
 });

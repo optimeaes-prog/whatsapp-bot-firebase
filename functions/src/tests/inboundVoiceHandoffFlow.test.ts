@@ -70,10 +70,20 @@ test("pressing 1 for English follows the caller into the confirmation and the Wh
   // The choice is stored so the WhatsApp conversation that follows the call speaks the same
   // language — otherwise it is guessed from the phone prefix, which is wrong for an English
   // speaker holding a Spanish number.
+  //
+  // It is written by voiceGatherCallback, not here: that is the step both branches pass
+  // through (pressing 1, and letting the menu time out into Spanish), and it writes whichever
+  // language was chosen. Storing only English here left conversations marked English with no
+  // way back, because choosing Spanish wrote nothing at all.
   assert.match(
     source,
-    /export const voiceLanguageCallback[\s\S]*?if \(language === "en" && chatId\)[\s\S]*?upsertConversation\(chatId, \{ language: "en" \}\)/,
-    "choosing English should persist the language onto the conversation"
+    /export const voiceGatherCallback[\s\S]*?await upsertConversation\(chatId, \{ language: callLanguage \}\)/,
+    "the language chosen on the call should be persisted onto the conversation"
+  );
+  assert.doesNotMatch(
+    source,
+    /upsertConversation\(chatId, \{ language: "en" \}\)/,
+    "the old English-only write must be gone, or Spanish can never win it back"
   );
 
   // Signature verification must match the other two voice endpoints, including the subaccount
@@ -87,7 +97,7 @@ test("pressing 1 for English follows the caller into the confirmation and the Wh
   // The confirmation locución follows the language chosen at the menu.
   assert.match(
     source,
-    /export const voiceGatherCallback[\s\S]*?const language = parseInboundCallLanguage\(req\.query\.lang\);[\s\S]*?VOICE_AUDIO_3_EN_URL\.value\(\) : ""\) \|\| VOICE_AUDIO_3_URL\.value\(\)/,
+    /export const voiceGatherCallback[\s\S]*?const callLanguage = parseInboundCallLanguage\(req\.query\.lang\);[\s\S]*?VOICE_AUDIO_3_EN_URL\.value\(\) : ""\) \|\| VOICE_AUDIO_3_URL\.value\(\)/,
     "voiceGatherCallback should play the confirmation in the language carried on the gather URL"
   );
 });
