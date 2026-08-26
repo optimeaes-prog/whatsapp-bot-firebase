@@ -111,6 +111,12 @@ export const TWILIO_TEMPLATE_SLOT_PREFIXES: ReadonlyArray<{
   { prefix: "call_handoff_org_no_name_en", slot: "callHandoffOrgNoNameEn" },
   { prefix: "call_handoff_org_es", slot: "callHandoffOrgEs" },
   { prefix: "call_handoff_org_en", slot: "callHandoffOrgEn" },
+  // El inglés va ANTES que el genérico: el prefijo se compara con
+  // startsWith, así que "voice_optin_consent_en_..." también empieza por
+  // "voice_optin_consent" y, puesto debajo, la plantilla inglesa acabaría en
+  // el hueco de la castellana. Mismo motivo por el que agent_notification_8var
+  // está por encima de agent_notification.
+  { prefix: "voice_optin_consent_en", slot: "voiceOptInConsentEn" },
   { prefix: "voice_optin_consent", slot: "voiceOptInConsent" },
   { prefix: "idealista_confirm_es", slot: "idealistaInitialEs" },
   { prefix: "idealista_confirm_en", slot: "idealistaInitialEn" },

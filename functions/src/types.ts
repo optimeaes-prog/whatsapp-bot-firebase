@@ -283,6 +283,12 @@ export type TwilioTemplateNames = {
   callHandoffOrgNoNameEs?: string;
   callHandoffOrgNoNameEn?: string;
   voiceOptInConsent?: string;
+  /**
+   * Igual que `voiceOptInConsent` pero en inglés, para quien llama desde un
+   * número que no es español. Opcional a propósito: si una agencia no la
+   * tiene, se le manda la castellana, que es lo que pasaba hasta ahora.
+   */
+  voiceOptInConsentEn?: string;
   idealistaInitialEs?: string;
   idealistaInitialEn?: string;
   /**

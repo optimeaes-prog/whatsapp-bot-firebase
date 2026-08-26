@@ -387,9 +387,20 @@ async function resolveVoiceOptInTemplateVariables(orgId: string): Promise<Record
   }
 }
 
-async function getVoiceOptInTemplateSid(orgId: string): Promise<string> {
+/**
+ * Plantilla que se manda nada más colgar, en el idioma del lead.
+ *
+ * En inglés solo si la agencia tiene esa plantilla puesta; si no, se le manda la
+ * castellana, que es lo que ha hecho siempre. Así una agencia sin plantilla
+ * inglesa sigue funcionando igual el día que se despliegue esto.
+ */
+async function getVoiceOptInTemplateSid(
+  orgId: string,
+  language: InitialLanguage = "es"
+): Promise<string> {
   const { twilioTemplates } = await getOrgTemplateSnapshot(orgId);
-  const sid = twilioTemplates.voiceOptInConsent || "HX8da52518b4b16392cffdd1f89dd49b55";
+  const englishSid = language === "en" ? (twilioTemplates.voiceOptInConsentEn || "").trim() : "";
+  const sid = englishSid || twilioTemplates.voiceOptInConsent || "HX8da52518b4b16392cffdd1f89dd49b55";
   return requireTemplate(
     sid,
     "Twilio voice opt-in template missing for intake org (voiceOptInConsent)"
@@ -4017,11 +4028,16 @@ export const voiceGatherCallback = onRequest(
         } else {
           await requestContext.run({ orgId }, async () => {
             await recordVoiceConsent({ phone, chatId, callSid });
-            const templateSid = await getVoiceOptInTemplateSid(orgId);
+            // El idioma sale del prefijo del teléfono, la misma regla que ya usa
+            // el resto de la conversación; antes aquí siempre se daba por hecho
+            // el castellano y quien llamaba desde fuera recibía un primer
+            // mensaje que no entendía.
+            const optInLanguage = resolveInitialLanguage(phone);
+            const templateSid = await getVoiceOptInTemplateSid(orgId, optInLanguage);
             const sendResult = await sendInitialTemplateMessage({
               to: phone,
               chatId,
-              language: "es",
+              language: optInLanguage,
               variables: await resolveVoiceOptInTemplateVariables(isPerOrgGather ? orgId : ""),
               templateSid,
             });
