@@ -963,14 +963,23 @@ async function shouldAskBeforeSwitchingListing(params: {
 }
 
 /**
- * El último mensaje de la conversación ANTES de los que se están procesando ahora.
- * Es el reloj de las 48 horas: si contamos el mensaje que acaba de llegar, la
- * ventana no se cerraría nunca.
+ * Cuándo escribió el lead por última vez ANTES de los mensajes que se están
+ * procesando ahora. Es el reloj de las 48 horas.
+ *
+ * Cuentan solo los mensajes del lead, no los nuestros. Cada llamada deja en el
+ * historial la plantilla que le mandamos, con la hora de ese momento: contando
+ * también los nuestros, el reloj se reiniciaba en cada llamada y la ventana no se
+ * cerraba nunca — justo el caso en el que hay que cambiar de vivienda sin
+ * preguntar es el del lead que lleva días sin decir nada y vuelve a llamar.
+ *
+ * Y sin contar el mensaje que acaba de llegar, que si no la ventana estaría
+ * siempre abierta.
  */
-function lastMessageBeforeBatchMs(history: HistoryItem[], batch: PendingItem[]): number {
+function lastLeadMessageBeforeBatchMs(history: HistoryItem[], batch: PendingItem[]): number {
   const oldestInBatch = batch.reduce((min, m) => Math.min(min, m.timestamp || 0), Number.MAX_SAFE_INTEGER);
   let last = 0;
   for (const item of history || []) {
+    if (item?.role !== "user") continue;
     const at = item?.timestamp || 0;
     if (at < oldestInBatch && at > last) last = at;
   }
@@ -1031,6 +1040,26 @@ async function mentionsADifferentListing(params: {
   } catch (error) {
     console.warn("No se pudo comprobar si la referencia mencionada existe", error);
     return false;
+  }
+}
+
+/**
+ * Borra de verdad `pendingListingSwitch` del documento.
+ *
+ * Escribir `undefined` no vale: el cliente de Firestore va con
+ * `ignoreUndefinedProperties`, así que la clave se ignora y el valor anterior se
+ * queda ahí. Con la pregunta de cambio ya resuelta, dejar la vivienda candidata
+ * escrita solo sirve para despistar a quien lea la conversación después.
+ */
+async function clearPendingListingSwitch(chatId: string): Promise<void> {
+  try {
+    const db = getFirestore(admin.app(), "realestate-whatsapp-bot");
+    await db
+      .doc(`organizations/${getActiveOrgId()}/conversations/${normalizeToCanonicalChatId(chatId)}`)
+      .update({ pendingListingSwitch: admin.firestore.FieldValue.delete() });
+  } catch (error) {
+    // Que no se pueda limpiar no debe cortar la conversación.
+    console.warn("No se pudo limpiar pendingListingSwitch", error);
   }
 }
 
@@ -2573,7 +2602,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       const askFirst = await shouldAskBeforeSwitchingListing({
         chatId: state.chatId,
         previousListingCode,
-        lastMessageBeforeNowMs: lastMessageBeforeBatchMs(state.history || [], sortedMessages),
+        lastMessageBeforeNowMs: lastLeadMessageBeforeBatchMs(state.history || [], sortedMessages),
         nowMs: Date.now(),
       });
 
@@ -2616,6 +2645,8 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     const initialLanguage = state.language || resolveInitialLanguage(state.phone);
     const featuresText = await getFeaturesForLanguage(listing.features, initialLanguage);
 
+    state.pendingListingSwitch = undefined;
+    await clearPendingListingSwitch(state.chatId);
     state.listingCode = listing.listingCode;
     state.operationType = listing.operationType;
     state.description = listing.description;
@@ -2664,7 +2695,6 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       flowStep: nextFlowStep,
       pendingListingCandidate: undefined,
       pendingListingCandidates: undefined,
-      pendingListingSwitch: undefined,
       ...(state.previousListingCode ? { previousListingCode: state.previousListingCode } : {}),
       listingResolveAttempts: state.listingResolveAttempts || 0,
       handoff: state.handoff || undefined,
@@ -3123,10 +3153,8 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           // La vivienda ha desaparecido entre la pregunta y la respuesta: se queda
           // donde estaba, que es mejor que dejarlo sin ninguna.
           state.flowStep = "qualification";
-          await upsertConversation(state.chatId, {
-            flowStep: "qualification",
-            pendingListingSwitch: undefined,
-          });
+          await clearPendingListingSwitch(state.chatId);
+          await upsertConversation(state.chatId, { flowStep: "qualification" });
           await sendAssistantTextAndRecord(
             state,
             buildListingNotFoundFallback(undefined, callFlowLanguage)
@@ -3138,10 +3166,8 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
           // Se queda con la que ya tenía.
           state.pendingListingSwitch = undefined;
           state.flowStep = "qualification";
-          await upsertConversation(state.chatId, {
-            flowStep: "qualification",
-            pendingListingSwitch: undefined,
-          });
+          await clearPendingListingSwitch(state.chatId);
+          await upsertConversation(state.chatId, { flowStep: "qualification" });
           await sendAssistantTextAndRecord(state, buildListingSwitchKeptMessage(callFlowLanguage));
           return;
         }
@@ -3173,9 +3199,9 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
         }
         state.pendingListingSwitch = undefined;
         state.flowStep = "qualification";
+        await clearPendingListingSwitch(state.chatId);
         await upsertConversation(state.chatId, {
           flowStep: "qualification",
-          pendingListingSwitch: undefined,
           listingResolveAttempts: 0,
         });
         await sendAssistantTextAndRecord(state, buildListingSwitchKeptMessage(callFlowLanguage));

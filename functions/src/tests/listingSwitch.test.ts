@@ -51,13 +51,16 @@ test("only an unsettled lead inside 48h is asked before switching property", () 
   );
 });
 
-test("the 48h clock ignores the message that just arrived", () => {
+test("the 48h clock counts only what the lead sent, and not the message just received", () => {
   const src = readRepoFile("src/index.ts");
   const fn = src.slice(
-    src.indexOf("function lastMessageBeforeBatchMs"),
+    src.indexOf("function lastLeadMessageBeforeBatchMs"),
     src.indexOf("/** \"Estabas preguntando por X")
   );
   assert.match(fn, /at < oldestInBatch/, "counting the new message would keep the window open for ever");
+  // Cada llamada escribe nuestra plantilla en el historial: contándola, el reloj se
+  // reiniciaba en cada llamada y la ventana no se cerraba jamás.
+  assert.match(fn, /if \(item\?\.role !== "user"\) continue;/, "our own messages must not reset the window");
 });
 
 test("switching property is decided in one place, where the listing is applied", () => {
@@ -119,4 +122,19 @@ test("only a real Idealista reference counts as naming another property", () => 
   assert.match(fn, /\\b\(1\\d\{8\}\)\\b/, "nine digits starting with 1, not any number");
   assert.match(fn, /idealista\\\.com\\\/inmueble/, "or the listing link");
   assert.match(fn, /await fetchListingByCode\(code\)/, "and it has to be a property that exists");
+});
+
+/**
+ * Escribir `undefined` no borra nada: el cliente de Firestore va con
+ * ignoreUndefinedProperties, así que la clave se ignora y el valor viejo se queda.
+ */
+test("the pending switch is actually deleted, not set to undefined", () => {
+  const src = readRepoFile("src/index.ts");
+  assert.match(
+    src,
+    /pendingListingSwitch: admin\.firestore\.FieldValue\.delete\(\)/,
+    "clearing has to be a real delete"
+  );
+  const block = src.slice(src.indexOf('currentStep === "call_listing_switch_confirm"'), src.indexOf('currentStep === "call_listing_confirm"'));
+  assert.doesNotMatch(block, /pendingListingSwitch: undefined,\s*\}\)/, "undefined would silently leave it behind");
 });
