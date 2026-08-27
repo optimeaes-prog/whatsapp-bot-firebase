@@ -3868,13 +3868,18 @@ export const voiceWebhook = onRequest({ cors: false, region: REGION, secrets: [T
     res.status(200).send(
       buildTwiml(
         [
-          // Twilio can clip the opening moment of a <Play> when the call has only just
-          // connected, which swallows the first word of the greeting. A beat of silence first.
-          `<Pause length="1"/>`,
-          // Language menu — one bilingual recording. The timeout below runs from the END of the
-          // audio, not the start of the call, so it is silence the caller waits through; a
-          // keypress during the recording itself ends the Gather immediately.
+          // Language menu — one bilingual recording, inside the Gather so the line is
+          // listening from the instant the call connects.
           `<Gather numDigits="1" timeout="4" action="${twimlEscape(languageUrl)}" method="POST">`,
+          // Twilio can clip the opening moment of a <Play> when the call has only just
+          // connected, which swallows the first word of the greeting. A beat of silence
+          // first. It goes INSIDE the Gather on purpose: outside it, the line was not yet
+          // collecting digits and a caller who pressed straight away — which is what people
+          // do — lost the keypress and landed in Spanish without knowing why.
+          `  <Pause length="1"/>`,
+          // The timeout below runs from the END of the audio, not the start of the call, so it
+          // is silence the caller waits through; a keypress during the recording itself ends
+          // the Gather immediately.
           `  <Play>${twimlEscape(langMenu)}</Play>`,
           `</Gather>`,
           // No digit → the Gather times out and execution simply continues here, so waiting

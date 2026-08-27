@@ -11,12 +11,13 @@ function readRepoFile(relativePathFromRepoRoot: string): string {
 test("inbound voice flow opens with the language menu and captures DTMF consent", () => {
   const source = readRepoFile("src/index.ts");
 
-  // voiceWebhook: a beat of silence (Twilio clips a <Play> that starts too early), then the
-  // bilingual language menu inside a Gather routed to voiceLanguageCallback.
+  // voiceWebhook: the bilingual language menu inside a Gather routed to voiceLanguageCallback,
+  // with the beat of silence (Twilio clips a <Play> that starts too early) INSIDE the Gather —
+  // otherwise the line is not collecting yet and a caller who presses immediately loses it.
   assert.match(
     source,
-    /export const voiceWebhook[\s\S]*?<Pause length="1"\/>[\s\S]*?<Gather numDigits="1"[\s\S]*?<Play>\$\{twimlEscape\(langMenu\)\}<\/Play>/,
-    "voiceWebhook should pause, then Play the language menu inside a DTMF gather"
+    /export const voiceWebhook[\s\S]*?<Gather numDigits="1"[\s\S]*?<Pause length="1"\/>[\s\S]*?<Play>\$\{twimlEscape\(langMenu\)\}<\/Play>[\s\S]*?<\/Gather>/,
+    "the pause and the language menu should both sit inside the DTMF gather"
   );
   assert.match(
     source,
