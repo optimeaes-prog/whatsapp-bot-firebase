@@ -718,13 +718,29 @@ export async function createPendingCallLead(params: {
       ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
     } as Partial<ConversationState>);
   } else {
-    // Doc exists — only refresh identity fields, leave transient state alone.
-    // callFlowMode is an identity field (it reflects which number was dialed this call),
-    // so refresh it too in case a repeat caller's prior conversation predates per-org mode.
+    // Doc exists — refresh identity fields and REOPEN the conversation for this call.
+    //
+    // Reopening is the important part. A conversation that ended — qualified, rejected or
+    // handed to a person — is left `isFinished: true`, and after that every inbound message
+    // is dropped before it is even written to history: the lead who just consented on the
+    // phone writes into a chat nobody reads, and the agency never sees it. Whoever calls
+    // again is asking for something, so the line goes back open.
+    //
+    // `flowStep` goes back to collecting so the caller can name a property again — the
+    // listing they had is deliberately NOT cleared here, because deciding whether to move
+    // them to a new one depends on where the old one got to (see the switch rule in
+    // index.ts). Buffered messages and history are left alone: this runs while a call is
+    // still in progress and must not clobber anything already in flight.
     await upsertConversation(params.chatId, {
       phone: params.phone,
       chatId: params.chatId,
       type: "lead",
+      isFinished: false,
+      flowStep: "call_listing_collect",
+      listingResolveAttempts: 0,
+      pendingListingCandidate: undefined,
+      pendingListingQueue: undefined,
+      pendingListingQueueIndex: undefined,
       ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
     } as Partial<ConversationState>);
   }
@@ -782,6 +798,12 @@ export async function updateLeadListingByChatId(params: {
   name?: string;
   listingResolutionStatus: "resolved" | "failed";
   tags?: string[];
+  /**
+   * Vivienda de la que viene este lead cuando ha cambiado de una a otra. Se guarda
+   * para que el aviso al agente pueda decirlo: un lead que aparece de golpe sobre
+   * otra vivienda se lee raro si no se cuenta de dónde salió.
+   */
+  previousListingCode?: string;
 }): Promise<void> {
   // The call flow has worked out which property the caller meant.
   const leadDoc = await findLeadDocForChat(params.chatId);
@@ -813,6 +835,7 @@ export async function updateLeadListingByChatId(params: {
       name: params.name,
       listingResolutionStatus: params.listingResolutionStatus,
       tags: params.tags,
+      previousListingCode: params.previousListingCode,
       lastMessageDate: admin.firestore.FieldValue.serverTimestamp(),
       ...assignedPatch,
     }).filter(([, value]) => value !== undefined)

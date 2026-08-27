@@ -925,6 +925,129 @@ async function resolveCallCatalogUrl(state: ConversationState): Promise<string |
   }
 }
 
+/**
+ * Cuánto dura el "standby" de un lead sin cualificar: mientras siga dentro de esta
+ * ventana, cambiarle de vivienda se le pregunta en vez de darlo por hecho.
+ */
+const LISTING_SWITCH_CONFIRM_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * ¿Hay que preguntar antes de mover a este lead a otra vivienda?
+ *
+ * Solo en un caso: el anuncio que tiene ahora sigue en el aire —"No cualificado",
+ * que es el estado con el que nace toda fila— y han pasado menos de 48 horas desde
+ * el último mensaje. Ahí no se sabe si el lead se ha equivocado de referencia o si
+ * de verdad quiere cambiar, y preguntarlo cuesta un mensaje.
+ *
+ * Cualificado, Rechazado y Sin respuesta se cambian solos: ese anuncio ya está
+ * cerrado para él, así que la referencia nueva es lo único que hay sobre la mesa.
+ * Pasadas las 48 horas, también: la conversación anterior ya se enfrió.
+ */
+async function shouldAskBeforeSwitchingListing(params: {
+  chatId: string;
+  previousListingCode: string;
+  lastMessageBeforeNowMs: number;
+  nowMs: number;
+}): Promise<boolean> {
+  if (params.nowMs - params.lastMessageBeforeNowMs > LISTING_SWITCH_CONFIRM_WINDOW_MS) return false;
+  try {
+    const doc = await findLeadDocForChat(params.chatId, params.previousListingCode);
+    const status = doc?.data()?.qualificationStatus;
+    // Sin fila que consultar se cambia sin preguntar: es lo mismo que hace hoy y no
+    // deja al lead esperando por una pregunta que no podemos fundamentar.
+    return status === "not_qualified";
+  } catch (error) {
+    console.warn("No se pudo leer el estado del lead para decidir el cambio de anuncio", error);
+    return false;
+  }
+}
+
+/**
+ * El último mensaje de la conversación ANTES de los que se están procesando ahora.
+ * Es el reloj de las 48 horas: si contamos el mensaje que acaba de llegar, la
+ * ventana no se cerraría nunca.
+ */
+function lastMessageBeforeBatchMs(history: HistoryItem[], batch: PendingItem[]): number {
+  const oldestInBatch = batch.reduce((min, m) => Math.min(min, m.timestamp || 0), Number.MAX_SAFE_INTEGER);
+  let last = 0;
+  for (const item of history || []) {
+    const at = item?.timestamp || 0;
+    if (at < oldestInBatch && at > last) last = at;
+  }
+  return last;
+}
+
+/** "Estabas preguntando por X. ¿Te paso a Y?" */
+function buildListingSwitchQuestion(params: {
+  previousDescription: string;
+  nextDescription: string;
+  language: InitialLanguage;
+}): string {
+  if (params.language === "en") {
+    return compactMessage([
+      `You were asking about ${params.previousDescription}.`,
+      "",
+      `Do you want to switch to ${params.nextDescription}?`,
+      "",
+      "Reply YES to switch, or NO to carry on with the first one.",
+    ]);
+  }
+  return compactMessage([
+    `Estabas preguntando por ${params.previousDescription}.`,
+    "",
+    `¿Quieres que pasemos a ${params.nextDescription}?`,
+    "",
+    "Responde SÍ para cambiar, o NO para seguir con la primera.",
+  ]);
+}
+
+/**
+ * ¿Está el lead nombrando OTRA vivienda en mitad de una conversación que ya tiene una?
+ *
+ * Se exige una referencia de Idealista de verdad: el enlace, o nueve dígitos que
+ * empiecen por 1. `extractListingCodeFromText` acepta cualquier grupo de 6 a 12
+ * dígitos, y en plena cualificación el lead escribe números constantemente — su
+ * teléfono, sin ir más lejos, que en España tiene nueve dígitos y empieza por 6 o 7.
+ * Con la regla suelta, decir "mi móvil es 622053377" le habría cambiado de piso.
+ *
+ * Y además tiene que existir: si no, el lead se iría de la cualificación a un
+ * "no encuentro ese anuncio" por haber escrito un número cualquiera.
+ */
+async function mentionsADifferentListing(params: {
+  text: string;
+  currentListingCode?: string;
+}): Promise<boolean> {
+  const current = (params.currentListingCode || "").trim();
+  if (!current || current === CALL_PENDING_LISTING_CODE) return false;
+
+  const text = params.text || "";
+  const fromUrl = text.match(/idealista\.com\/inmueble\/(\d{6,12})/i)?.[1];
+  const fromDigits = text.match(/\b(1\d{8})\b/)?.[1];
+  const code = fromUrl || fromDigits;
+  if (!code || code === current) return false;
+
+  try {
+    return Boolean(await fetchListingByCode(code));
+  } catch (error) {
+    console.warn("No se pudo comprobar si la referencia mencionada existe", error);
+    return false;
+  }
+}
+
+/** Cuando decide quedarse con la vivienda que ya tenía. */
+function buildListingSwitchKeptMessage(language: InitialLanguage): string {
+  return language === "en"
+    ? "Understood — we'll carry on with the first property."
+    : "Entendido, seguimos con la primera vivienda.";
+}
+
+/** Cómo se nombra una vivienda dentro de esas preguntas: dirección si la hay, si no la referencia. */
+function describeListingForLead(listing: { description?: string; address?: string; listingCode: string }): string {
+  const address = (listing.address || "").trim();
+  const description = (listing.description || "").trim();
+  return address || description || `ref. ${listing.listingCode}`;
+}
+
 function buildConfirmListingMessage(candidate: ListingCandidate, language: InitialLanguage): string {
   if (language === "en") {
     return compactMessage([
@@ -1499,10 +1622,23 @@ function buildPropleadAgentNotificationTwilioVariables(params: {
     extractQualifiedSummaryField(summary, "Disponibilidad visita") ||
     NO_DATA_LABEL;
 
-  const notes =
+  const baseNotes =
     (typeof after.notes === "string" && after.notes.trim()) ||
     extractQualifiedSummaryField(summary, "Notas") ||
     NO_DATA_LABEL;
+
+  // Si el lead viene de otra vivienda, se dice en las notas. Es texto libre dentro
+  // de la plantilla ya aprobada ({{8}}), así que no hace falta pasar por Meta otra
+  // vez — y sin esta línea el agente ve aparecer un lead sobre una vivienda que no
+  // había pedido, sin saber que es el mismo de antes.
+  const previousListingCode =
+    typeof after.previousListingCode === "string" ? after.previousListingCode.trim() : "";
+  const previousLine = previousListingCode
+    ? `Antes preguntaba por la referencia ${previousListingCode}.`
+    : "";
+  const notes = previousLine
+    ? (baseNotes === NO_DATA_LABEL ? previousLine : `${baseNotes}\n${previousLine}`)
+    : baseNotes;
 
   return {
     "1": name,
@@ -2423,6 +2559,54 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
   const applyListingToStateAndPersist = async (listing: ListingRow, targetOrgId: string): Promise<void> => {
     const sourceOrgId = getActiveOrgId();
+
+    // ¿Viene de otra vivienda? Entonces esto es un cambio, no una primera
+    // identificación, y hay que decidir si se le pregunta antes.
+    const previousListingCode = (state.listingCode || "").trim();
+    const isListingSwitch =
+      !!previousListingCode &&
+      previousListingCode !== CALL_PENDING_LISTING_CODE &&
+      previousListingCode !== listing.listingCode;
+
+    if (isListingSwitch) {
+      const switchLanguage: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
+      const askFirst = await shouldAskBeforeSwitchingListing({
+        chatId: state.chatId,
+        previousListingCode,
+        lastMessageBeforeNowMs: lastMessageBeforeBatchMs(state.history || [], sortedMessages),
+        nowMs: Date.now(),
+      });
+
+      if (askFirst) {
+        state.flowStep = "call_listing_switch_confirm";
+        state.pendingListingSwitch = {
+          listingCode: listing.listingCode,
+          orgId: targetOrgId,
+          description: listing.description,
+          address: listing.address,
+        };
+        await upsertConversation(state.chatId, {
+          flowStep: "call_listing_switch_confirm",
+          pendingListingSwitch: state.pendingListingSwitch,
+        });
+        const previous = await fetchListingByCode(previousListingCode).catch(() => null);
+        await sendAssistantTextAndRecord(
+          state,
+          buildListingSwitchQuestion({
+            previousDescription: describeListingForLead(
+              previous || { description: state.description, address: state.address, listingCode: previousListingCode }
+            ),
+            nextDescription: describeListingForLead(listing),
+            language: switchLanguage,
+          })
+        );
+        return;
+      }
+
+      // Cambio directo: se deja constancia de dónde venía para el aviso al agente.
+      state.previousListingCode = previousListingCode;
+    }
+
     // Per-org calls are handled IN PLACE in the org that received the call — never a handoff,
     // even though they carry the "call" tag. (Without this guard the `|| includes("call")`
     // term below would force every call down the legacy name-collect + handoff path.)
@@ -2480,6 +2664,8 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       flowStep: nextFlowStep,
       pendingListingCandidate: undefined,
       pendingListingCandidates: undefined,
+      pendingListingSwitch: undefined,
+      ...(state.previousListingCode ? { previousListingCode: state.previousListingCode } : {}),
       listingResolveAttempts: state.listingResolveAttempts || 0,
       handoff: state.handoff || undefined,
     });
@@ -2491,6 +2677,7 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
       operationType: listing.operationType,
       name: state.name,
       listingResolutionStatus: "resolved",
+      previousListingCode: state.previousListingCode,
       tags: state.tags,
     });
 
@@ -2798,11 +2985,26 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     timestamp: Date.now(),
   }));
   // #endregion
+  /**
+   * El lead ya tiene vivienda pero nombra otra referencia sin haber vuelto a llamar.
+   *
+   * Se mira solo la referencia explícita (nueve dígitos o el enlace de Idealista),
+   * que es justo lo que se le pide: en mitad de la cualificación va a contestar con
+   * números —personas, ingresos, fechas— y buscar vivienda en cada uno de ellos
+   * acabaría cambiándole de piso por decir que gana 1.200 €.
+   */
+  const mentionsAnotherListing = await mentionsADifferentListing({
+    text: sortedMessages.map((m) => m.text).join("\n"),
+    currentListingCode: state.listingCode,
+  });
+
   if (
     (state.tags || []).includes("call") &&
     (state.flowStep === "call_listing_collect" ||
       state.flowStep === "call_listing_confirm" ||
-      state.listingCode === CALL_PENDING_LISTING_CODE)
+      state.flowStep === "call_listing_switch_confirm" ||
+      state.listingCode === CALL_PENDING_LISTING_CODE ||
+      mentionsAnotherListing)
   ) {
     const callFlowLanguage: InitialLanguage = state.language || resolveInitialLanguage(state.phone);
     const currentStep = state.flowStep || "call_listing_collect";
@@ -2897,6 +3099,88 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
 
       const queue = state.pendingListingQueue || [];
       const queueIndex = Math.max(0, state.pendingListingQueueIndex || 0);
+
+      // "Estabas preguntando por X, ¿te paso a Y?" — la respuesta llega aquí.
+      if (currentStep === "call_listing_switch_confirm" && state.pendingListingSwitch?.listingCode) {
+        const pending = state.pendingListingSwitch;
+        const decision = await classifyBinaryDecision(lastUserText, {
+          listingCode: pending.listingCode,
+          orgId: pending.orgId,
+          description: pending.description,
+          address: pending.address,
+        } as ListingCandidate);
+
+        if (decision === "confirm") {
+          const listing = await fetchListingGlobally(pending.listingCode);
+          state.pendingListingSwitch = undefined;
+          if (listing) {
+            // El cambio ya está confirmado: se aplica sin volver a preguntar.
+            state.previousListingCode = state.listingCode;
+            state.listingCode = CALL_PENDING_LISTING_CODE;
+            await applyListingToStateAndPersist(listing.data, pending.orgId || listing.orgId);
+            return;
+          }
+          // La vivienda ha desaparecido entre la pregunta y la respuesta: se queda
+          // donde estaba, que es mejor que dejarlo sin ninguna.
+          state.flowStep = "qualification";
+          await upsertConversation(state.chatId, {
+            flowStep: "qualification",
+            pendingListingSwitch: undefined,
+          });
+          await sendAssistantTextAndRecord(
+            state,
+            buildListingNotFoundFallback(undefined, callFlowLanguage)
+          );
+          return;
+        }
+
+        if (decision === "deny") {
+          // Se queda con la que ya tenía.
+          state.pendingListingSwitch = undefined;
+          state.flowStep = "qualification";
+          await upsertConversation(state.chatId, {
+            flowStep: "qualification",
+            pendingListingSwitch: undefined,
+          });
+          await sendAssistantTextAndRecord(state, buildListingSwitchKeptMessage(callFlowLanguage));
+          return;
+        }
+
+        // Ni sí ni no: se repregunta una vez y, si sigue sin estar claro, se queda
+        // con la vivienda actual, que es lo reversible — el lead siempre puede
+        // volver a mandar la referencia.
+        const switchAttempt = (state.listingResolveAttempts || 0) + 1;
+        state.listingResolveAttempts = switchAttempt;
+        if (switchAttempt <= MAX_LISTING_LOOKUP_RETRIES) {
+          await upsertConversation(state.chatId, { listingResolveAttempts: switchAttempt });
+          await sendAssistantTextAndRecord(
+            state,
+            buildListingSwitchQuestion({
+              previousDescription: describeListingForLead({
+                description: state.description,
+                address: state.address,
+                listingCode: state.listingCode || "",
+              }),
+              nextDescription: describeListingForLead({
+                description: pending.description,
+                address: pending.address,
+                listingCode: pending.listingCode,
+              }),
+              language: callFlowLanguage,
+            })
+          );
+          return;
+        }
+        state.pendingListingSwitch = undefined;
+        state.flowStep = "qualification";
+        await upsertConversation(state.chatId, {
+          flowStep: "qualification",
+          pendingListingSwitch: undefined,
+          listingResolveAttempts: 0,
+        });
+        await sendAssistantTextAndRecord(state, buildListingSwitchKeptMessage(callFlowLanguage));
+        return;
+      }
 
       if (currentStep === "call_listing_confirm" && queue.length > 0) {
         const candidate = queue[queueIndex];

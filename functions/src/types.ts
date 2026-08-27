@@ -42,6 +42,8 @@ export type ConversationState = {
     | "call_listing_collect"
     | "call_listing_pick"
     | "call_listing_confirm"
+    /** Ya tenía una vivienda y ha nombrado otra: se le pregunta a cuál se refiere. */
+    | "call_listing_switch_confirm"
     | "call_name_confirm"
     | "call_name_collect"
     | "qualification"
@@ -58,6 +60,16 @@ export type ConversationState = {
   pendingListingQueueIndex?: number;
   rejectedListingCodes?: string[];
   listingResolveAttempts?: number;
+  /**
+   * Vivienda nueva a la espera de que el lead confirme el cambio. Se guarda porque
+   * la respuesta ("sí" / "no") llega en un mensaje posterior, ya sin la referencia.
+   */
+  pendingListingSwitch?: { listingCode: string; orgId?: string; description?: string; address?: string };
+  /**
+   * De qué vivienda venía cuando cambió. Solo para contarlo: el aviso al agente lo
+   * menciona, para que no parezca que este lead ha salido de la nada.
+   */
+  previousListingCode?: string;
   pendingNameConfirmation?: {
     capturedName?: string;
     listingCode: string;
