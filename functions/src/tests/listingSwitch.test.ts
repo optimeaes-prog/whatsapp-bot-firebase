@@ -138,3 +138,21 @@ test("the pending switch is actually deleted, not set to undefined", () => {
   const block = src.slice(src.indexOf('currentStep === "call_listing_switch_confirm"'), src.indexOf('currentStep === "call_listing_confirm"'));
   assert.doesNotMatch(block, /pendingListingSwitch: undefined,\s*\}\)/, "undefined would silently leave it behind");
 });
+
+/**
+ * El helper puede estar bien y no estar enchufado. Aquí solo se comprueba que el
+ * punto donde se aplica la vivienda lo usa, en vez de volver a sumar etiquetas.
+ */
+test("applying the listing runs the tags through the resolved-tags rule", () => {
+  const src = readRepoFile("src/index.ts");
+  const fn = src.slice(
+    src.indexOf("const applyListingToStateAndPersist"),
+    src.indexOf("await updateLeadListingByChatId")
+  );
+  assert.match(fn, /state\.tags = tagsAfterListingResolved\(state\.tags\);/, "the pending marker has to come off");
+  assert.doesNotMatch(
+    fn,
+    /state\.tags = Array\.from\(new Set\(\[\.\.\.\(state\.tags/,
+    "merging tags here is what left 'pending-listing' behind for ever"
+  );
+});

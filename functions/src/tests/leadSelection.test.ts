@@ -6,6 +6,8 @@ import {
   fieldsToCarryOver,
   missingIdentityFields,
   shouldApplyQualificationStatus,
+  tagsAfterListingResolved,
+  PENDING_LISTING_TAG,
   LeadCandidate,
 } from "../services/leadSelection";
 
@@ -165,4 +167,46 @@ test("qualifying or rejecting always wins", () => {
 
 test("no status means nothing to write", () => {
   assert.equal(shouldApplyQualificationStatus("qualified", undefined), false);
+});
+
+// --- once the property is known, the lead must stop reading as "pending" ---
+
+/**
+ * The bug the agency saw: the call came in without a property, the lead named one,
+ * the row moved to it — and still showed "pending-listing" for ever, so every
+ * resolved call looked like one nobody had dealt with.
+ */
+test("resolving the property drops the pending marker", () => {
+  assert.deepEqual(tagsAfterListingResolved(["lead", "call", PENDING_LISTING_TAG]), ["lead", "call"]);
+});
+
+test("the other tags of the call survive", () => {
+  assert.deepEqual(
+    tagsAfterListingResolved(["lead", "call", "handoff", PENDING_LISTING_TAG]),
+    ["lead", "call", "handoff"]
+  );
+});
+
+test("a lead that never had the marker is left alone", () => {
+  assert.deepEqual(tagsAfterListingResolved(["lead", "call"]), ["lead", "call"]);
+});
+
+test("\"lead\" is always there, and only once", () => {
+  assert.deepEqual(tagsAfterListingResolved(undefined), ["lead"]);
+  assert.deepEqual(tagsAfterListingResolved([]), ["lead"]);
+  assert.deepEqual(tagsAfterListingResolved(["lead", "lead"]), ["lead"]);
+});
+
+/**
+ * The other door: the call stub is folded into a row whose property was known from
+ * the start (an Idealista intake). Its tags come along only when the target has
+ * none — and they must not bring "pending" onto a row that never was.
+ */
+test("absorbing a call placeholder does not carry its pending marker over", () => {
+  const carried = fieldsToCarryOver(
+    { listingCode: "112009850" },
+    { tags: ["lead", "call", PENDING_LISTING_TAG], name: "Riccardo" }
+  );
+  assert.deepEqual(carried.tags, ["lead", "call"]);
+  assert.equal(carried.name, "Riccardo");
 });

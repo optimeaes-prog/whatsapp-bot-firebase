@@ -73,6 +73,7 @@ import {
   syncAssignedAgentUidForListingCode,
   reconcileAllListingAgentScopesInOrg,
 } from "./services/firestore";
+import { PENDING_LISTING_TAG, tagsAfterListingResolved } from "./services/leadSelection";
 import { resolveQualifiedLeadNotificationRecipients } from "./services/qualifiedLeadNotificationTargets";
 import { sendIdealistaOptInSms } from "./services/smsOptIn";
 import {
@@ -2009,7 +2010,7 @@ export async function ensureConversationState(
       pendingUserMessages: [],
       isFinished: false,
       type: "lead",
-      tags: ["lead", "call", "pending-listing"],
+      tags: ["lead", "call", PENDING_LISTING_TAG],
       flowStep: "call_listing_collect",
       language: initialLanguage,
       botDisabled: false,
@@ -2658,7 +2659,8 @@ async function processBufferedMessages(state: ConversationState, messages: Pendi
     state.profitabilityReportAvailable = listing.profitabilityReportAvailable;
     state.profitabilityReport = listing.profitabilityReport;
     state.type = "lead";
-    state.tags = Array.from(new Set([...(state.tags || ["lead"]), "lead"]));
+    // La vivienda ya está identificada: la marca de "pendiente" deja de ser cierta.
+    state.tags = tagsAfterListingResolved(state.tags);
     state.language = initialLanguage;
     if (isCrossOrgCallHandoff) {
       state.handoff = {

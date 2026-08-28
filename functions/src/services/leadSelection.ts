@@ -62,6 +62,18 @@ function isBlank(value: unknown): boolean {
 }
 
 /**
+ * Marks a call whose property we could not identify yet. It goes on the moment the
+ * call comes in, and has to come off the moment the property is known: a resolved
+ * lead still labelled "pending" reads, to the agent, as one nobody has dealt with.
+ */
+export const PENDING_LISTING_TAG = "pending-listing";
+
+/** The tags a lead carries once its property is known. */
+export function tagsAfterListingResolved(tags: string[] | undefined): string[] {
+  return Array.from(new Set([...(tags || []), "lead"])).filter((tag) => tag !== PENDING_LISTING_TAG);
+}
+
+/**
  * What to copy from one lead row onto another: everything the target is missing,
  * minus the fields that describe the property rather than the person.
  *
@@ -78,7 +90,10 @@ export function fieldsToCarryOver(
     if (PROPERTY_FIELDS.has(key)) continue;
     if (isBlank(value)) continue;
     if (!isBlank((target || {})[key])) continue;
-    carried[key] = value;
+    // The placeholder's tags come along, but never its "property unknown" marker:
+    // the row we are moving onto owns a real property.
+    carried[key] =
+      key === "tags" && Array.isArray(value) ? value.filter((tag) => tag !== PENDING_LISTING_TAG) : value;
   }
   return carried;
 }

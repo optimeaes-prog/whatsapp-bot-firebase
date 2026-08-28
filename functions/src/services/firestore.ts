@@ -24,6 +24,7 @@ import {
   fieldsToCarryOver,
   missingIdentityFields,
   shouldApplyQualificationStatus,
+  PENDING_LISTING_TAG,
 } from "./leadSelection";
 
 
@@ -662,7 +663,7 @@ export async function createPendingCallLead(params: {
     chatId: params.chatId,
     name: params.name,
     qualificationStatus: "not_qualified",
-    tags: ["lead", "call", "pending-listing"],
+    tags: ["lead", "call", PENDING_LISTING_TAG],
     recordings: [],
   });
 
@@ -714,7 +715,7 @@ export async function createPendingCallLead(params: {
       isFinished: false,
       botDisabled: false,
       type: "lead",
-      tags: ["lead", "call", "pending-listing"],
+      tags: ["lead", "call", PENDING_LISTING_TAG],
       ...(params.callFlowMode ? { callFlowMode: params.callFlowMode } : {}),
     } as Partial<ConversationState>);
   } else {
