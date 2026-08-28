@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ListTodo, Search, CalendarClock, Target, ChevronDown, CheckSquare, Square, Trash2, RefreshCw, UserCog, Users, X, Plus } from "lucide-react";
@@ -172,6 +172,8 @@ export function Seguimiento() {
   }, [search]);
 
   const [opFilter, setOpFilter] = useState<OpFilter>("all");
+  // "" = todos los agentes; "none" = sin asignar; cualquier otro valor = uid del agente.
+  const [agentFilter, setAgentFilter] = useState<string>("");
   const [stageFilter, setStageFilter] = useState<Set<ProspectStage>>(new Set());
   const [statusFilter, setStatusFilter] = useState<Set<StatusFilterValue>>(new Set());
   const [dueOnly, setDueOnly] = useState(false);
@@ -242,6 +244,25 @@ export function Seguimiento() {
     loadLeads();
   }
 
+  /**
+   * Nombre del agente de una captación. Se resuelve por uid contra el equipo, y solo
+   * se recurre a `assignedAgentName` si ese uid ya no está en el equipo: ese campo es
+   * una copia que no siempre se escribe y que envejece si alguien cambia de nombre.
+   */
+  const agentNameFor = useCallback((p: Prospect) => {
+    const uid = (p.assignedAgentUid || "").trim();
+    if (!uid) return "";
+    const member = members.find((m) => m.uid === uid);
+    return member ? (member.name || member.displayName || member.email || "") : (p.assignedAgentName || "");
+  }, [members]);
+
+  /** Opciones del filtro: el equipo, más "sin asignar" para encontrar las huérfanas. */
+  const agentFilterOptions = useMemo(() => [
+    { value: "", label: "Todos" },
+    ...members.map((m) => ({ value: m.uid, label: m.name || m.displayName || m.email || m.uid })),
+    { value: "none", label: "Sin asignar" },
+  ], [members]);
+
   // --- Filtros comunes (todas las pestañas): búsqueda + operación + pendientes ---
 
   const prospectsCommon = useMemo(() => {
@@ -255,9 +276,11 @@ export function Seguimiento() {
         p.address?.toLowerCase().includes(q);
       const matchesOp = opFilter === "all" || p.operationType === opFilter;
       const matchesDue = !dueOnly || isDueToday(p);
-      return matchesSearch && matchesOp && matchesDue;
+      const assignedUid = (p.assignedAgentUid || "").trim();
+      const matchesAgent = !agentFilter || (agentFilter === "none" ? !assignedUid : assignedUid === agentFilter);
+      return matchesSearch && matchesOp && matchesDue && matchesAgent;
     });
-  }, [prospects, debouncedSearch, opFilter, dueOnly]);
+  }, [prospects, debouncedSearch, opFilter, dueOnly, agentFilter]);
 
   const leadsCommon = useMemo(() => {
     const q = debouncedSearch.toLowerCase();
@@ -340,7 +363,7 @@ export function Seguimiento() {
     setSelectedProspectIds(new Set());
     setSelectedLeadIds(new Set());
     setBulkMenuOpen(false);
-  }, [subject, debouncedSearch, opFilter, stageFilter, statusFilter, dueOnly]);
+  }, [subject, debouncedSearch, opFilter, agentFilter, stageFilter, statusFilter, dueOnly]);
 
   function toggleProspectSelection(id: string) {
     setSelectedProspectIds((prev) => {
@@ -634,6 +657,14 @@ export function Seguimiento() {
               onChange={(v) => setOpFilter(v as OpFilter)}
               options={PROSPECT_OPERATION_FILTER_OPTIONS}
             />
+            {subject === "owner" && isManager && (
+              <FilterDropdown
+                label="Agente"
+                value={agentFilter}
+                onChange={setAgentFilter}
+                options={agentFilterOptions}
+              />
+            )}
             {subject === "owner" && (
               <MultiFilterDropdown
                 label="Etapa"
@@ -731,6 +762,7 @@ export function Seguimiento() {
               selectedIds={selectedProspectIds}
               onToggleSelect={toggleProspectSelection}
               onToggleAll={toggleAllProspects}
+              agentNameFor={isManager ? agentNameFor : undefined}
             />
           )}
         </>

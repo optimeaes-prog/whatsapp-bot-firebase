@@ -67,6 +67,18 @@ function EventsCell({ prospect, tdClass, textClass }: { prospect: Prospect; tdCl
   );
 }
 
+/**
+ * Celda "Agente": quién lleva la captación. Solo se pinta para gestores — un agente
+ * únicamente ve las suyas, así que la columna repetiría su propio nombre en cada fila.
+ */
+function AgentCell({ name, tdClass, textClass }: { name: string; tdClass: string; textClass: string }) {
+  return (
+    <td className={cn("align-middle text-gray-700 min-w-[140px]", tdClass, textClass)}>
+      <span className={cn(!name && "text-gray-300")}>{name || "Sin asignar"}</span>
+    </td>
+  );
+}
+
 /** Color de fila como en el Excel: verde = vendido/ganado, ámbar = citado o pendiente hoy. */
 function rowTint(p: Prospect): string {
   if (p.stage === "ganado") return "bg-emerald-50";
@@ -132,6 +144,7 @@ export function ProspectSpreadsheet({
   selectedIds,
   onToggleSelect,
   onToggleAll,
+  agentNameFor,
 }: {
   rows: Prospect[];
   onOpen: (p: Prospect) => void;
@@ -142,6 +155,11 @@ export function ProspectSpreadsheet({
   selectedIds?: Set<string>;
   onToggleSelect?: (id: string) => void;
   onToggleAll?: () => void;
+  /**
+   * Cómo se llama el agente de una captación. Pasarlo enciende la columna "Agente";
+   * omitirlo la oculta, que es lo que queremos para los agentes (ver AgentCell).
+   */
+  agentNameFor?: (p: Prospect) => string;
 }) {
   const cfg = zoomCfg(zoom);
   const thClass = cn(cfg.td, cfg.text, "whitespace-nowrap");
@@ -193,6 +211,7 @@ export function ProspectSpreadsheet({
               <th className={thClass}>Etapa</th>
               <th className={thClass}>Publicación</th>
               <th className={thClass}>Nombre</th>
+              {agentNameFor && <th className={thClass}>Agente</th>}
               <th className={thClass}>Municipio</th>
               <th className={thClass}>Dirección</th>
               <th className={thClass}>Teléfono</th>
@@ -247,6 +266,10 @@ export function ProspectSpreadsheet({
                     tdClassName="min-w-[140px]"
                     onSave={(v) => onChanged(p.id, { ownerName: v })}
                   />
+                  {/* AGENTE */}
+                  {agentNameFor && (
+                    <AgentCell name={agentNameFor(p)} tdClass={cfg.td} textClass={cfg.text} />
+                  )}
                   <EditableTextCell
                     value={p.municipality}
                     readOnly={true}
