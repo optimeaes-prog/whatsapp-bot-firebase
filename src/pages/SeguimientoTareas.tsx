@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Search, Phone, MessageSquare, PhoneCall, ListTodo, Check } from "lucide-react";
+import { Search, Phone, PhoneCall, ListTodo, Check } from "lucide-react";
 import type { Lead, Prospect, ProspectTask } from "../types";
 import { getProspects, getProspectsForAgent, completeProspectTask } from "../services/prospects";
 import { getLeads, getLeadsForAgent, completeLeadTask } from "../services/leads";
+import { getOrgMembers, type SystemUser } from "../services/users";
 import { useAuth } from "../contexts/AuthContext";
 import { cn } from "../lib/utils";
 import { pendingTasks } from "../lib/tasks";
@@ -39,9 +40,11 @@ type TodoRow = {
 export function SeguimientoTareas() {
   const { user, organizationId, effectiveRole, effectiveUid, isImpersonationReadOnly } = useAuth();
   const isAgent = effectiveRole === "agent";
+  const isManager = effectiveRole === "owner" || effectiveRole === "admin" || effectiveRole === "super_admin";
 
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [members, setMembers] = useState<SystemUser[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [subject, setSubject] = useState<Subject>("all");
@@ -61,7 +64,28 @@ export function SeguimientoTareas() {
     if (!organizationId || !effectiveRole) return;
     if (isAgent && !effectiveUid) return;
     load();
+    // El equipo solo se pide para gestores: un agente solo ve sus propias tareas,
+    // así que el nombre se repetiría en todas las filas.
+    if (isManager) {
+      getOrgMembers(organizationId)
+        .then((m) => setMembers(m.filter((u) => u.role === "agent" || u.role === "admin" || u.role === "owner")))
+        .catch((e) => console.error("[Tareas] members failed", e));
+    }
   }, [organizationId, effectiveRole, effectiveUid]);
+
+  /**
+   * Nombre del agente de una tarea. Se resuelve por uid contra el equipo; solo se
+   * recurre a `assignedAgentName` (que únicamente tienen las captaciones) si ese uid
+   * ya no está en el equipo, porque es una copia que envejece.
+   */
+  const agentNameFor = useCallback((item: FollowUpItem) => {
+    const source = item.kind === "prospect" ? item.prospect : item.lead;
+    const uid = (source.assignedAgentUid || "").trim();
+    if (!uid) return "";
+    const member = members.find((m) => m.uid === uid);
+    if (member) return member.name || member.displayName || member.email || "";
+    return item.kind === "prospect" ? (item.prospect.assignedAgentName || "") : "";
+  }, [members]);
 
   async function load(opts?: { silent?: boolean }) {
     if (!organizationId || !effectiveRole) return;
@@ -211,7 +235,11 @@ export function SeguimientoTareas() {
               <div className="rounded-xl border border-gray-200 bg-white shadow-sm divide-y divide-gray-50">
                 {groups[bucket].map((row) => {
                   const overdue = isOverdueMillis(row.dueMillis);
-                  const wa = whatsappLink(row.item.phone);
+                  // Igual que el correo diario: solo las tareas de WhatsApp llevan el
+                  // mensaje precargado; en las demás no hay nada que escribir.
+                  const waWithMessage =
+                    row.task.type === "message" ? whatsappLink(row.item.phone, row.task.message) : null;
+                  const agentName = isManager ? agentNameFor(row.item) : "";
                   return (
                     <div
                       key={row.key}
@@ -235,11 +263,28 @@ export function SeguimientoTareas() {
                       >
                         <KindBadge kind={row.item.kind} />
                         <span className="font-semibold text-gray-900 text-sm truncate hover:text-primary-700">{row.item.name}</span>
+                        {agentName && (
+                          <span className="text-xs text-gray-400 truncate shrink-0">· {agentName}</span>
+                        )}
                       </button>
 
-                      <span className="rounded-full bg-primary-50 text-primary-700 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">
-                        {NEXT_ACTION_TYPE_LABELS[row.task.type]}
-                      </span>
+                      {/* En las tareas de WhatsApp la etiqueta abre el chat con el mensaje ya escrito. */}
+                      {waWithMessage ? (
+                        <a
+                          href={waWithMessage}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Abrir WhatsApp con el mensaje escrito"
+                          className="rounded-full bg-primary-50 text-primary-700 px-2 py-0.5 text-xs font-semibold whitespace-nowrap hover:bg-primary-100 transition-colors"
+                        >
+                          {NEXT_ACTION_TYPE_LABELS[row.task.type]}
+                        </a>
+                      ) : (
+                        <span className="rounded-full bg-primary-50 text-primary-700 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">
+                          {NEXT_ACTION_TYPE_LABELS[row.task.type]}
+                        </span>
+                      )}
 
                       {row.item.phone && (
                         <span className="hidden sm:inline-flex items-center gap-2">
@@ -265,17 +310,6 @@ export function SeguimientoTareas() {
                       </span>
 
                       <div className="flex items-center gap-1 ml-auto">
-                        {wa && (
-                          <a
-                            href={wa}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="Abrir WhatsApp"
-                            className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors"
-                          >
-                            <MessageSquare size={15} />
-                          </a>
-                        )}
                         <button
                           type="button"
                           disabled={isImpersonationReadOnly}

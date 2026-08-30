@@ -218,8 +218,11 @@ export function formatRelativeDays(ms: number, now: Date = new Date()): string {
 }
 
 /** Enlace wa.me a partir de un teléfono en cualquier formato. */
-export function whatsappLink(phone?: string | null): string | null {
+export function whatsappLink(phone?: string | null, text?: string | null): string | null {
   if (!phone) return null;
   const digits = phone.replace(/[^\d]/g, "");
-  return digits ? `https://wa.me/${digits}` : null;
+  if (!digits) return null;
+  const base = `https://wa.me/${digits}`;
+  // Mismo criterio que el correo diario: sin texto, se abre la conversación vacía.
+  return text && text.trim() ? `${base}?text=${encodeURIComponent(text)}` : base;
 }
