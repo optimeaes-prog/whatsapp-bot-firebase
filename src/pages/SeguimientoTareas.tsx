@@ -49,6 +49,8 @@ export function SeguimientoTareas() {
 
   const [subject, setSubject] = useState<Subject>("all");
   const [opFilter, setOpFilter] = useState<OperationFilterValue>("all");
+  // "" = todos los agentes; "none" = sin asignar; cualquier otro valor = uid del agente.
+  const [agentFilter, setAgentFilter] = useState<string>("");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useEffect(() => {
@@ -87,6 +89,13 @@ export function SeguimientoTareas() {
     return item.kind === "prospect" ? (item.prospect.assignedAgentName || "") : "";
   }, [members]);
 
+  /** Opciones del filtro: el equipo, más "sin asignar" para encontrar las huérfanas. */
+  const agentFilterOptions = useMemo(() => [
+    { value: "", label: "Todos" },
+    ...members.map((m) => ({ value: m.uid, label: m.name || m.displayName || m.email || m.uid })),
+    { value: "none", label: "Sin asignar" },
+  ], [members]);
+
   async function load(opts?: { silent?: boolean }) {
     if (!organizationId || !effectiveRole) return;
     if (isAgent && !effectiveUid) return;
@@ -111,6 +120,13 @@ export function SeguimientoTareas() {
     const q = debouncedSearch.toLowerCase();
     const out: TodoRow[] = [];
 
+    // Vale igual para captaciones y para leads: ambos guardan el uid del agente.
+    const matchesAgent = (assignedAgentUid?: string) => {
+      if (!agentFilter) return true;
+      const uid = (assignedAgentUid || "").trim();
+      return agentFilter === "none" ? !uid : uid === agentFilter;
+    };
+
     const pushFrom = (item: FollowUpItem, tasks: ProspectTask[] | undefined) => {
       if (item.isClosed) return; // fuera del pipeline activo (ganado/descartado/cerrado)
       for (const task of pendingTasks(tasks)) {
@@ -121,6 +137,7 @@ export function SeguimientoTareas() {
     if (subject !== "buyer") {
       for (const p of prospects) {
         if (opFilter !== "all" && p.operationType !== opFilter) continue;
+        if (!matchesAgent(p.assignedAgentUid)) continue;
         if (q && !(p.ownerName?.toLowerCase().includes(q) || p.phone?.includes(debouncedSearch) || p.municipality?.toLowerCase().includes(q))) continue;
         pushFrom(prospectToItem(p), p.tasks);
       }
@@ -128,12 +145,13 @@ export function SeguimientoTareas() {
     if (subject !== "owner") {
       for (const l of leads) {
         if (opFilter !== "all" && l.operationType !== opFilter) continue;
+        if (!matchesAgent(l.assignedAgentUid)) continue;
         if (q && !(l.name?.toLowerCase().includes(q) || l.phone?.includes(debouncedSearch) || l.email?.toLowerCase().includes(q))) continue;
         pushFrom(leadToItem(l), l.tasks);
       }
     }
     return out.filter((r) => !doneKeys.has(r.key));
-  }, [prospects, leads, subject, opFilter, debouncedSearch, doneKeys]);
+  }, [prospects, leads, subject, opFilter, agentFilter, debouncedSearch, doneKeys]);
 
   // Agrupar por urgencia (vencidas/hoy/mañana/semana/adelante) y ordenar por fecha.
   const groups = useMemo(() => {
@@ -208,6 +226,14 @@ export function SeguimientoTareas() {
             onChange={(v) => setOpFilter(v as OperationFilterValue)}
             options={PROSPECT_OPERATION_FILTER_OPTIONS}
           />
+          {isManager && (
+            <FilterDropdown
+              label="Agente"
+              value={agentFilter}
+              onChange={setAgentFilter}
+              options={agentFilterOptions}
+            />
+          )}
         </div>
       </FilterCard>
 
